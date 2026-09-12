@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import {
   Activity,
   BarChart3,
@@ -726,6 +726,13 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
 
   return (
     <section className="pod-workspace">
+      {demo && (
+        <div className="pod-demo-banner" role="note">
+          <Sparkles size={15} />
+          <span>You're exploring a demo pod — nothing here is saved, connected, or published.</span>
+          <Link to="/signup">Create your own pod →</Link>
+        </div>
+      )}
       <header className="pod-workspace-topbar">
         <div className="pod-workspace-title"><span className="pod-brand-orb"><Sparkles size={18} /></span><div><p className="eyebrow">{pod.brand_name || pod.pod_type}</p><h1>{pod.pod_name}</h1></div></div>
         <div className="pod-workspace-actions"><StatusPill tone={directionApproved ? 'green' : 'gold'}>{directionApproved ? 'Direction approved' : 'AI brain ready'}</StatusPill><button className="pod-command-trigger" type="button" onClick={() => setPaletteOpen(true)}><Command size={15} /> Commands <kbd>Ctrl K</kbd></button></div>

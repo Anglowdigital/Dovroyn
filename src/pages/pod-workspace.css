@@ -493,3 +493,19 @@ kbd {
   .pod-cal-thumb { height: 24px; }
   .pod-cal-badges span { font-size: 0.5rem; padding: 0 0.2rem; }
 }
+
+/* ─── Demo pod banner ─── */
+.pod-demo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 1rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--navy);
+  background: linear-gradient(120deg, var(--gold-soft), #f5ecd2);
+  border-bottom: 1px solid var(--gold-border);
+}
+.pod-demo-banner a { color: var(--navy); font-weight: 800; text-decoration: underline; }
