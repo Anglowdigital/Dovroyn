@@ -119,19 +119,19 @@ const DASHBOARD_PREVIEW_CARDS = [
 
 const MULTI_POD_CARDS = [
   {
-    name: 'Summit Trail Co',
-    slug: 'summit-trail-co',
+    name: 'Gidgee Co',
+    slug: 'gidgee-co',
     type: 'Brand Pod',
     status: 'AI Brain Active',
     contentCount: '18 ideas',
     calendarCount: '12 posts',
-    avatarInitials: 'JW',
-    avatarGradient: 'linear-gradient(135deg, #B88A32, #E0C070)',
+    avatarInitials: 'GC',
+    avatarGradient: 'linear-gradient(135deg, #8A5A2B, #D9A55B)',
     platforms: [
       { name: 'Instagram', icon: FaInstagram, color: '#E1306C' },
       { name: 'TikTok', icon: FaTiktok, color: '#0F1419' },
       { name: 'Pinterest', icon: FaPinterestP, color: '#E60023' },
-      { name: 'YouTube', icon: FaYoutube, color: '#FF0000' },
+      { name: 'Facebook', icon: FaFacebookF, color: '#1877F2' },
     ],
   },
   {
@@ -165,18 +165,19 @@ const MULTI_POD_CARDS = [
     ],
   },
   {
-    name: 'Cheeky Drawers',
-    slug: 'cheeky-drawers',
-    type: 'Social Pod',
-    status: 'Social Hooks Ready',
-    contentCount: '21 hooks',
-    calendarCount: '15 posts',
-    avatarInitials: 'RB',
-    avatarGradient: 'linear-gradient(135deg, #C2563B, #E8926F)',
+    name: 'Dovroyn',
+    slug: 'dovroyn',
+    type: 'Platform Pod',
+    status: 'Growth Plan Ready',
+    contentCount: '24 angles',
+    calendarCount: '9 dates',
+    avatarInitials: 'D',
+    avatarGradient: 'linear-gradient(135deg, #0A1930, #B88A32)',
     platforms: [
-      { name: 'TikTok', icon: FaTiktok, color: '#0F1419' },
-      { name: 'Instagram', icon: FaInstagram, color: '#E1306C' },
+      { name: 'LinkedIn', icon: FaLinkedinIn, color: '#0A66C2' },
       { name: 'X / Twitter', icon: FaXTwitter, color: '#0F1419' },
+      { name: 'YouTube', icon: FaYoutube, color: '#FF0000' },
+      { name: 'Threads', icon: FaThreads, color: '#0F1419' },
     ],
   },
   {
@@ -913,7 +914,7 @@ const TESTIMONIALS = [
   {
     quote: "We used to plan campaigns in spreadsheets. Now one pod holds the strategy, calendar, and ad angles — and it actually remembers what worked.",
     name: "Marcus T.",
-    role: "CMO, Summit Trail Co",
+    role: "Founder, Gidgee Co",
     metric: "12 pods active",
   },
   {

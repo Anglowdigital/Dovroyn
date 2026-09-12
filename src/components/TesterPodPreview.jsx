@@ -29,7 +29,7 @@ const DASHBOARD_ROWS = [
   {
     icon: Palette,
     label: 'Brand Colours',
-    detail: 'Core palette inspired by Australian landscapes for hats, totes, and accessories.',
+    detail: 'Core palette inspired by the Australian outback — ochre, eucalyptus, and rust tones for embroidered hats and apparel.',
     swatches: BRAND_SWATCHES,
   },
   {
@@ -41,7 +41,7 @@ const DASHBOARD_ROWS = [
   {
     icon: Users,
     label: 'Target Audience',
-    detail: 'Audience segments most likely to buy premium outdoor lifestyle products.',
+    detail: 'Audience segments most likely to buy Australian-made embroidered headwear.',
     chips: ['Outdoor enthusiasts', 'Travellers', 'Gift buyers', 'Australian lifestyle lovers'],
   },
   {
@@ -125,8 +125,8 @@ function TesterPodHeader() {
           <Leaf size={24} strokeWidth={1.85} />
         </span>
         <div>
-          <p className="tester-pod-title">Summit Trail Co</p>
-          <p className="tester-pod-subtitle">Australian Outdoor Lifestyle</p>
+          <p className="tester-pod-title">Gidgee Co</p>
+          <p className="tester-pod-subtitle">Australian Hat Embroidery</p>
         </div>
       </div>
       <div className="tester-pod-controls" aria-label="Preview controls">
@@ -147,7 +147,7 @@ function TesterPodChrome({ children }) {
 
 function TesterPodTabs() {
   return (
-    <div className="tester-pod-tabs" aria-label="Summit Trail Co pod sections">
+    <div className="tester-pod-tabs" aria-label="Gidgee Co pod sections">
       {DASHBOARD_NAV_ITEMS.map((item, index) => (
         <span key={item} className={`tester-pod-tab ${index === 0 ? 'active' : ''}`}>
           {item}
@@ -208,15 +208,15 @@ function TesterPodMobileValues({ row }) {
 
 function TesterPodMobileDashboard() {
   return (
-    <div className="tester-pod-mobile-card" aria-label="Summit Trail Co compact mobile pod preview">
+    <div className="tester-pod-mobile-card" aria-label="Gidgee Co compact mobile pod preview">
       <div className="tester-pod-mobile-header">
         <div className="tester-pod-mobile-brand">
           <span className="tester-pod-mobile-avatar" aria-hidden="true">
             <Leaf size={22} strokeWidth={1.85} />
           </span>
           <div>
-            <p className="tester-pod-mobile-title">Summit Trail Co</p>
-            <p className="tester-pod-mobile-subtitle">Australian Outdoor Lifestyle</p>
+            <p className="tester-pod-mobile-title">Gidgee Co</p>
+            <p className="tester-pod-mobile-subtitle">Australian Hat Embroidery</p>
           </div>
         </div>
         <div className="tester-pod-mobile-actions" aria-label="Mobile preview controls">
@@ -225,7 +225,7 @@ function TesterPodMobileDashboard() {
         </div>
       </div>
 
-      <div className="tester-pod-mobile-tabs" aria-label="Summit Trail Co pod sections">
+      <div className="tester-pod-mobile-tabs" aria-label="Gidgee Co pod sections">
         {DASHBOARD_NAV_ITEMS.map((item, index) => (
           <span key={item} className={`tester-pod-mobile-tab ${index === 0 ? 'active' : ''}`}>
             {item}

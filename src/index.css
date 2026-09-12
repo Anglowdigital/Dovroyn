@@ -3219,3 +3219,53 @@ select {
 @media (prefers-reduced-motion: reduce) {
   .pod-library-card { animation: none; transition: none; }
 }
+
+/* ─── Pod style unification: landing previews match the pod workspace ─── */
+.dashboard-preview {
+  background:
+    radial-gradient(ellipse 70% 60% at 50% -10%, rgba(216, 184, 103, 0.22), transparent 65%),
+    linear-gradient(165deg, #FFFDF7, var(--panel) 70%);
+  border: 1px solid var(--gold-border);
+  box-shadow: 0 26px 60px rgba(7, 22, 45, 0.10);
+}
+
+.dashboard-preview .eyebrow { color: var(--gold); }
+.dashboard-preview .section-title { color: var(--navy); }
+
+.dashboard-preview .preview-card,
+.preview-card {
+  background: var(--panel);
+  border: 1px solid var(--gold-border);
+  box-shadow: 0 14px 34px rgba(7, 22, 45, 0.08);
+}
+
+.preview-card:hover {
+  background: linear-gradient(120deg, rgba(216, 184, 103, 0.10), rgba(243, 233, 216, 0.4));
+  border-color: var(--gold);
+}
+
+.preview-label { color: var(--navy); }
+.preview-note { color: var(--navy-65); }
+.dashboard-preview .preview-metric { color: var(--gold); }
+
+/* Serif section headings, matching pod workspace panels */
+.section-title {
+  font-family: 'Playfair Display', Georgia, serif;
+}
+
+/* Tester pod preview: gold monogram avatar + serif pod name, like the workspace */
+.tester-pod-avatar,
+.tester-pod-mobile-avatar {
+  background: linear-gradient(135deg, var(--gold-soft), var(--gold)) !important;
+  color: var(--navy);
+}
+
+.tester-pod-title,
+.tester-pod-mobile-title {
+  font-family: 'Playfair Display', Georgia, serif;
+}
+
+/* Multipod command screen: pod-style names */
+.multipod-name {
+  font-family: 'Playfair Display', Georgia, serif;
+}
