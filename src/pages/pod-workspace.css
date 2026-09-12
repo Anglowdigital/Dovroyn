@@ -386,3 +386,110 @@ kbd {
   .pod-launch-orbit,
   .pod-toast { animation: none; }
 }
+
+/* ─── Website-first note ─── */
+.pod-note-card {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--gold-border);
+  border-radius: 14px;
+  background: linear-gradient(120deg, rgba(216, 184, 103, 0.14), rgba(243, 233, 216, 0.4));
+  display: grid;
+  gap: 0.25rem;
+}
+.pod-note-card strong { font-size: 0.82rem; }
+.pod-note-card p { margin: 0; color: var(--navy-65); font-size: 0.74rem; }
+
+/* ─── Platform picker (social accounts overrides) ─── */
+.pod-platform-select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.75rem;
+}
+.pod-platform-select {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  gap: 0.6rem;
+  padding: 0.85rem;
+  border: 1px solid var(--gold-border);
+  border-radius: 14px;
+  cursor: pointer;
+  background: var(--panel);
+}
+.pod-platform-select.selected {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(184, 138, 50, 0.12);
+}
+.pod-platform-select input { margin-top: 0.4rem; accent-color: var(--gold); }
+.pod-platform-select h3 { font-size: 0.88rem; }
+.pod-platform-select p { margin: 0.15rem 0; color: var(--navy-65); font-size: 0.72rem; }
+.pod-platform-select small { color: var(--muted); font-size: 0.62rem; }
+.pod-platform-select .button { grid-column: 1 / -1; justify-self: start; }
+
+/* ─── Post photos ─── */
+.pod-post-photo {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--gold-border);
+}
+.pod-photo-source { color: var(--muted); font-size: 0.64rem; }
+
+/* ─── 30 day calendar ─── */
+.pod-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+.pod-cal-dow {
+  text-align: center;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 0.2rem;
+}
+.pod-cal-day {
+  min-height: 108px;
+  padding: 0.45rem;
+  border: 1px solid var(--gold-border);
+  border-radius: 12px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.66rem;
+}
+.pod-cal-empty { border: none; background: transparent; }
+.pod-cal-post {
+  border-color: var(--gold);
+  background: linear-gradient(160deg, rgba(216, 184, 103, 0.16), rgba(243, 233, 216, 0.35));
+}
+.pod-cal-date { font-weight: 700; font-size: 0.72rem; }
+.pod-cal-thumb {
+  height: 34px;
+  border-radius: 8px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(120deg, var(--gold-soft), var(--gold));
+}
+.pod-cal-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.pod-cal-post strong { font-size: 0.62rem; line-height: 1.25; }
+.pod-cal-badges { display: flex; flex-wrap: wrap; gap: 0.2rem; }
+.pod-cal-badges span {
+  border: 1px solid var(--gold-border);
+  border-radius: 6px;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.56rem;
+  background: var(--panel);
+}
+
+@media (max-width: 640px) {
+  .pod-platform-select-grid { grid-template-columns: 1fr; }
+  .pod-cal-grid { gap: 0.3rem; }
+  .pod-cal-day { min-height: 84px; padding: 0.3rem; }
+  .pod-cal-thumb { height: 24px; }
+  .pod-cal-badges span { font-size: 0.5rem; padding: 0 0.2rem; }
+}

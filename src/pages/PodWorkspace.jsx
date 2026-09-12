@@ -28,7 +28,7 @@ import {
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
 import { formatPlatformPost } from '../lib/podEngine';
 import { getPlan } from '../lib/plans';
-import { getPlatform } from '../lib/platforms';
+import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askDemoPodAssistant, askPodAssistant, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import {
@@ -47,10 +47,10 @@ const TAB_GROUPS = [
   {
     label: 'Pod brain',
     items: [
-      ['overview', 'Overview', LayoutDashboard],
-      ['assistant', 'Pod AI', Bot],
       ['sources', 'Website & photos', Globe2],
       ['direction', 'AI direction', Palette],
+      ['overview', 'Overview', LayoutDashboard],
+      ['assistant', 'Pod AI', Bot],
       ['assets', 'Assets', FileImage],
     ],
   },
@@ -153,7 +153,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   const { podId } = useParams();
   const [pod, setPod] = useState(demo ? DEMO_POD : null);
   const [loading, setLoading] = useState(!demo);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState(demo ? 'sources' : 'overview');
   const [analysis, setAnalysis] = useState(demo ? INITIAL_ANALYSIS : null);
   const [analysisState, setAnalysisState] = useState(demo ? 'ready' : 'idle');
   const [aiMessages, setAiMessages] = useState(demo ? [{ id: 'demo-welcome', role: 'assistant', content: 'I am the private AI for this Aurora pod. Ask me about this brand, campaign, content or approved direction.' }] : []);
@@ -165,6 +165,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   const [sourceType, setSourceType] = useState(demo ? 'website' : 'website');
   const [sourceUrl, setSourceUrl] = useState('');
   const [assets, setAssets] = useState([]);
+  const [selectedPlatformKeys, setSelectedPlatformKeys] = useState([]);
   const [posts, setPosts] = useState([]);
   const [calendarCreated, setCalendarCreated] = useState(false);
   const [campaignState, setCampaignState] = useState('Draft');
@@ -257,10 +258,22 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   }, []);
 
   useEffect(() => {
+    if (analysis) setSelectedPlatformKeys(analysis.platforms || []);
+  }, [analysis]);
+
+  useEffect(() => {
     if (!notice) return undefined;
     const timer = window.setTimeout(() => setNotice(''), 3200);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  const togglePlatform = (platformKey) => {
+    const next = selectedPlatformKeys.includes(platformKey)
+      ? selectedPlatformKeys.filter((key) => key !== platformKey)
+      : [...selectedPlatformKeys, platformKey];
+    setSelectedPlatformKeys(next);
+    setAnalysis((currentAnalysis) => (currentAnalysis ? { ...currentAnalysis, platforms: next } : currentAnalysis));
+  };
 
   const allTabs = useMemo(() => TAB_GROUPS.flatMap((group) => group.items), []);
   const commands = useMemo(() => [
@@ -572,6 +585,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">One pod, one source</p><h2>Brand analysis inputs</h2><p className="subtle">Choose one website, social page, Shopify store, or photos-only source. Add one logo and up to five photos, then analyse and lock this pod.</p></div>{sourceLocked && <StatusPill tone="green">Source locked</StatusPill>}</header>
+            <article className="pod-note-card"><strong>Website photos first. Asset folder second.</strong><p>Every post and campaign uses the photos from this website before anything else. The Asset folder is only for extras — a Christmas party, a flash sale, a seasonal push.</p></article>
             {sourceLocked ? (
               <article className="pod-lock-card"><LockKeyhole size={22} /><div><strong>This pod is permanently tied to its analysed source.</strong><p>Create another pod for a different website, social page, Shopify store, or brand. This prevents one subscription pod from being reused for multiple businesses.</p></div></article>
             ) : (
@@ -626,31 +640,75 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
         );
       case 'assets':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Library</p><h2>Campaign assets</h2><p className="subtle">Add working campaign images without changing the logo and brand sources locked during analysis.</p></div></header><label className="pod-upload-zone"><Upload size={24} /><strong>Add campaign assets</strong><span>These files stay inside this pod and do not replace its locked analysis source.</span><input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => addAssets(event, 'campaign_asset')} /></label>{assets.length ? <div className="pod-media-grid">{assets.map((asset) => <article key={asset.id}><img src={asset.preview} alt={asset.name} /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Locked logo' : asset.assetRole === 'brand_photo' ? 'Locked brand photo' : 'Campaign asset'}</small></div></article>)}</div> : <EmptyState icon={FileImage} title="No campaign assets yet" body="Upload images for campaigns and social content after this pod's brand source has been analysed." />}</div>;
-      case 'socials':
+      case 'socials': {
+        const recommendedKeys = analysis?.platforms || ['instagram', 'facebook', 'tiktok', 'email'];
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Recommended channels</p><h2>Connect social accounts</h2><p className="subtle">Sign in through each official provider. Dovroyn never asks for your social password.</p></div></header>
-            <div className="pod-social-grid">
-              {(analysis?.platforms || ['instagram', 'facebook', 'tiktok', 'email']).map((key) => { const platform = getPlatform(key); return <article key={key} className="pod-social-card"><span className="pod-social-monogram">{platform.name.slice(0, 2)}</span><div><h3>{platform.name}</h3><p>{platform.focus}</p><small>Planning ready · Provider setup required for live connection</small></div><button className="button button-ghost button-sm" type="button" onClick={() => setModal({ type: 'connect', platform })}>Connect account</button></article>; })}
+            <header className="pod-panel-heading"><div><p className="eyebrow">Recommended channels</p><h2>Connect social accounts</h2><p className="subtle">The pod recommends the best platforms — tick or untick any of them. Your selection controls what content is generated and where it posts.</p></div></header>
+            <div className="pod-platform-select-grid">
+              {getPlanningPlatforms().map((platform) => {
+                const selected = selectedPlatformKeys.includes(platform.key);
+                const recommended = recommendedKeys.includes(platform.key);
+                return (
+                  <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
+                    <input type="checkbox" checked={selected} onChange={() => togglePlatform(platform.key)} />
+                    <span className="pod-social-monogram">{platform.name.slice(0, 2)}</span>
+                    <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}Provider setup required for live connection</small></div>
+                    {selected && <button className="button button-ghost button-sm" type="button" onClick={(event) => { event.preventDefault(); setModal({ type: 'connect', platform }); }}>Connect account</button>}
+                  </label>
+                );
+              })}
             </div>
             <p className="pod-honesty-note">Dovroyn can plan for 30+ platforms. Live sign-in and publishing become available one provider at a time after its developer app, permissions, and API review are configured.</p>
           </div>
         );
-      case 'content':
+      }
+      case 'content': {
+        const contentPhoto = [...brandPhotos, ...assets.filter((asset) => asset.assetRole === 'campaign_asset')][0] || null;
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>Platform-specific content</h2><p className="subtle">The same campaign idea is rewritten to behave naturally on each selected platform.</p></div><button className="button button-primary" type="button" onClick={generateContent}><Sparkles size={16} /> Generate content</button></header>
-            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate content for the recommended platforms." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => showNotice(`${post.platformName} draft saved in this pod.`)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Choose a campaign day for this draft.'); }}>Add to calendar</button></footer></article>)}</div>}
+            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign, posted everywhere</h2><p className="subtle">The same approved campaign goes to every selected platform on the same day — with photos from the website gallery first, the asset folder second.</p></div><button className="button button-primary" type="button" onClick={generateContent}><Sparkles size={16} /> Generate content</button></header>
+            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => showNotice(`${post.platformName} draft saved in this pod.`)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Campaign placed on the next posting day for every selected platform.'); }}>Add to calendar</button></footer></article>)}</div>}
           </div>
         );
-      case 'calendar':
+      }
+      case 'calendar': {
+        const today = new Date();
+        const startOffset = (new Date(today.getFullYear(), today.getMonth(), 1).getDay() + 6) % 7;
+        const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+        const postWeekdays = [0, 2, 4, 6, 1, 3, 5].slice(0, Math.max(1, plan.weeklyPostingDays));
+        const calThumb = brandPhotos[0]?.preview || assets.find((asset) => asset.assetRole === 'campaign_asset')?.preview || '';
+        const calPlatforms = selectedPlatformKeys.length ? selectedPlatformKeys : (analysis?.platforms || []);
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Current allowance period</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week.</p></div><button className="button button-primary" type="button" onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
+            <header className="pod-panel-heading"><div><p className="eyebrow">Current allowance period</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. Every posting day ships the same approved campaign to all selected platforms.</p></div><button className="button button-primary" type="button" onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
             <label className="pod-toggle"><input type="checkbox" checked={observancesEnabled} onChange={(event) => setObservancesEnabled(event.target.checked)} /><span /><div><strong>Include selected religious observances</strong><small>Off by default. Dovroyn will never guess a user's religion.</small></div></label>
-            {calendarCreated ? <div className="pod-calendar-grid">{['Mon 3', 'Wed 5', 'Fri 7', 'Mon 10', 'Thu 13', 'Sat 15'].slice(0, Math.max(2, plan.weeklyPostingDays)).map((day, index) => <article key={day}><small>{day}</small><strong>{posts[index % posts.length]?.platformName || 'Campaign'}</strong><p>{index === 1 ? 'Regional public-holiday angle' : 'Approved brand campaign'}</p><StatusPill>{index < 2 ? 'Ready' : 'Draft'}</StatusPill></article>)}</div> : <EmptyState icon={CalendarDays} title="Calendar not generated" body="Generate content drafts first, then the pod can place them within the paid allowance period." />}
+            {calendarCreated ? (
+              <div className="pod-cal-grid" aria-label="30 day content calendar">
+                {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((dow) => <span key={dow} className="pod-cal-dow">{dow}</span>)}
+                {Array.from({ length: startOffset }).map((_, index) => <div key={`pad-${index}`} className="pod-cal-day pod-cal-empty" />)}
+                {Array.from({ length: daysInMonth }).map((_, index) => {
+                  const date = index + 1;
+                  const weekday = (startOffset + index) % 7;
+                  const isPostDay = postWeekdays.includes(weekday);
+                  return (
+                    <div key={date} className={`pod-cal-day${isPostDay ? ' pod-cal-post' : ''}`}>
+                      <span className="pod-cal-date">{date}</span>
+                      {isPostDay && (
+                        <>
+                          <span className="pod-cal-thumb">{calThumb ? <img src={calThumb} alt="" /> : <Sparkles size={14} />}</span>
+                          <strong>Approved brand campaign</strong>
+                          <span className="pod-cal-badges">{calPlatforms.map((key) => <span key={key}>{getPlatform(key)?.name || key}</span>)}</span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <EmptyState icon={CalendarDays} title="Calendar not generated" body="Generate content drafts first, then the pod can place them within the paid allowance period." />}
           </div>
         );
+      }
       case 'campaigns':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Campaigns</p><h2>Winter barrier launch</h2></div><StatusPill>{campaignState}</StatusPill></header><section className="pod-campaign-board">{['Brief', 'Creative', 'Schedule', 'Approval'].map((stage, index) => <article key={stage}><small>0{index + 1}</small><h3>{stage}</h3><p>{['Website and offer analysed', 'Four platform drafts ready', 'Waiting for calendar generation', 'Nothing publishes without approval'][index]}</p><span className={index < (campaignState === 'Approved' ? 4 : 2) ? 'complete' : ''} /></article>)}</section><div className="pod-action-row"><button className="button button-primary" type="button" onClick={() => { setCampaignState('Approved'); showNotice('Campaign approved. Publishing still requires connected accounts.'); }}>Approve campaign</button><button className="button button-ghost" type="button" onClick={() => { setCampaignState('Draft'); showNotice('Campaign returned to draft.'); }}>Return to draft</button></div></div>;
       case 'analytics':
