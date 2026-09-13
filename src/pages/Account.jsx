@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
 import { redirectToCheckout } from '../lib/stripe';
@@ -6,16 +7,18 @@ import { redirectToCheckout } from '../lib/stripe';
 const TIER_INFO = {
   free: {
     label: 'Free',
-    pods: '0 pods',
+    pods: '1 pod',
     price: 'Free',
     posting: null,
-    note: 'No paid pod access.',
+    seats: '1 seat',
+    note: 'Build your pod free — subscribe to publish and unlock more.',
   },
   starter: {
     label: 'Starter Pod',
     pods: '1 active pod',
     price: '$89/mo',
     posting: '2 campaign posting days per week',
+    seats: '1 seat',
     note: null,
   },
   growth: {
@@ -23,6 +26,7 @@ const TIER_INFO = {
     pods: 'Up to 3 active pods',
     price: '$249/mo',
     posting: '3 campaign posting days per week',
+    seats: '3 team seats',
     note: 'Extra posting days available as add-ons.',
   },
   pro: {
@@ -30,6 +34,7 @@ const TIER_INFO = {
     pods: 'Up to 7 active pods',
     price: '$599/mo',
     posting: '6 campaign posting days per week',
+    seats: '5 team seats',
     note: null,
   },
   scale: {
@@ -37,6 +42,7 @@ const TIER_INFO = {
     pods: 'Up to 12 active pods',
     price: '$1,299/mo',
     posting: '7 campaign posting days per week',
+    seats: 'Unlimited team seats',
     note: null,
   },
 };
@@ -56,6 +62,9 @@ function TierBadge({ tier }) {
         <li style={{ padding: '0.25rem 0', color: 'var(--navy)' }}>✓ {info.pods}</li>
         {info.posting && (
           <li style={{ padding: '0.25rem 0', color: 'var(--navy)' }}>✓ {info.posting}</li>
+        )}
+        {info.seats && (
+          <li style={{ padding: '0.25rem 0', color: 'var(--navy)' }}>✓ {info.seats}</li>
         )}
         {info.note && (
           <li style={{ padding: '0.25rem 0', color: 'var(--muted)', fontSize: '0.875rem' }}>
@@ -95,7 +104,10 @@ function UpgradeOptions({ currentTier }) {
             </p>
             <p className="subtle" style={{ marginBottom: '0.5rem' }}>{t.pods}</p>
             {t.posting && (
-              <p className="subtle" style={{ marginBottom: '0.75rem' }}>{t.posting}</p>
+              <p className="subtle" style={{ marginBottom: '0.5rem' }}>{t.posting}</p>
+            )}
+            {t.seats && (
+              <p className="subtle" style={{ marginBottom: '0.75rem' }}>{t.seats}</p>
             )}
             <button
               className="button button-primary"
@@ -107,6 +119,49 @@ function UpgradeOptions({ currentTier }) {
           </div>
         ))}
       </div>
+    </article>
+  );
+}
+
+
+function ProfileSection({ user }) {
+  const [fullName, setFullName] = useState(user?.user_metadata?.full_name || '');
+  const [company, setCompany] = useState(user?.user_metadata?.company || '');
+  const [newEmail, setNewEmail] = useState(user?.email || '');
+  const [status, setStatus] = useState('');
+
+  const saveIdentity = async () => {
+    if (!supabaseConfigured || !supabase) return;
+    const { error } = await supabase.auth.updateUser({ data: { full_name: fullName.trim(), company: company.trim() } });
+    setStatus(error ? error.message : 'Profile saved.');
+  };
+  const changeEmail = async () => {
+    if (!supabaseConfigured || !supabase) return;
+    const clean = newEmail.trim().toLowerCase();
+    if (!clean || clean === user?.email) { setStatus('Enter a new email address to change it.'); return; }
+    const { error } = await supabase.auth.updateUser({ email: clean });
+    setStatus(error ? error.message : 'Confirmation sent to your new email address — click the link there to complete the change.');
+  };
+
+  return (
+    <article className="panel detail-card">
+      <p className="eyebrow">Profile</p>
+      <div style={{ display: 'grid', gap: '0.6rem', marginTop: '0.5rem', maxWidth: '28rem' }}>
+        <label>Name<input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Your name" /></label>
+        <label>Company (optional)<input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Your business name" /></label>
+        <button className="button button-primary" type="button" onClick={saveIdentity}>Save profile</button>
+        <div>
+          <p className="subtle" style={{ fontSize: '0.8rem', marginBottom: '0.1rem' }}>Email</p>
+          <p style={{ fontWeight: 500 }}>{user?.email || '—'}</p>
+        </div>
+        <label>Change email<input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="new@address.com" /></label>
+        <button className="button button-ghost" type="button" onClick={changeEmail}>Change email</button>
+        <div>
+          <p className="subtle" style={{ fontSize: '0.8rem', marginBottom: '0.1rem' }}>User ID</p>
+          <p style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--muted)' }}>{user?.id || '—'}</p>
+        </div>
+      </div>
+      {status && <p className="subtle" style={{ marginTop: '0.6rem' }}>{status}</p>}
     </article>
   );
 }
@@ -134,21 +189,7 @@ export default function AccountPage({ session, subscription }) {
       </header>
 
       {/* Profile */}
-      <article className="panel detail-card">
-        <p className="eyebrow">Profile</p>
-        <div style={{ display: 'grid', gap: '0.5rem', marginTop: '0.5rem' }}>
-          <div>
-            <p className="subtle" style={{ fontSize: '0.8rem', marginBottom: '0.1rem' }}>Email</p>
-            <p style={{ fontWeight: 500 }}>{user?.email || '—'}</p>
-          </div>
-          <div>
-            <p className="subtle" style={{ fontSize: '0.8rem', marginBottom: '0.1rem' }}>User ID</p>
-            <p style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--muted)' }}>
-              {user?.id || '—'}
-            </p>
-          </div>
-        </div>
-      </article>
+      <ProfileSection user={user} />
 
       {/* Subscription */}
       <TierBadge tier={tier} />

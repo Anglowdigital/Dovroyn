@@ -3269,3 +3269,43 @@ select {
 .multipod-name {
   font-family: 'Playfair Display', Georgia, serif;
 }
+
+/* ─── Back button (all app pages) ─── */
+.back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+  padding: 0.45rem 0.95rem;
+  border-radius: 999px;
+  border: 1px solid var(--gold);
+  background: var(--panel);
+  color: var(--navy);
+  font-weight: 700;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.back-button:hover { background: var(--gold-soft); }
+
+/* ─── Gold brand inside the dark mobile drawer ─── */
+@media (max-width: 900px) {
+  .sidebar-brand .brand-logo { display: none; }
+  .sidebar-brand { display: block; }
+  .sidebar-brand::before {
+    content: 'DOVROYN';
+    display: block;
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 1.3rem;
+    letter-spacing: 0.26em;
+    color: var(--gold);
+    font-weight: 800;
+  }
+  .sidebar-brand::after {
+    content: 'AI MARKETING. YOUR WAY.';
+    display: block;
+    font-size: 0.55rem;
+    letter-spacing: 0.3em;
+    color: var(--gold-soft);
+    margin-top: 3px;
+  }
+}

@@ -42,22 +42,11 @@ export default function PodsPage({ session, subscription }) {
         </NavLink>
       </header>
 
-      {tier === 'free' && (
-        <article className="panel detail-card" style={{ borderColor: 'var(--gold)' }}>
-          <h4>Subscribe to create pods</h4>
-          <p className="subtle">
-            Free users cannot create pods. Choose a plan to get started.
-          </p>
-          <NavLink className="button button-primary" to="/pricing">
-            View Pricing
-          </NavLink>
-        </article>
-      )}
 
       <section className="pod-library-grid">
         {loading && <p className="subtle">Loading pods...</p>}
 
-        {!loading && pods.length === 0 && tier !== 'free' && (
+        {!loading && pods.length === 0 && (
           <article className="panel pod-library-empty">
             <h4>No pods yet</h4>
             <p className="subtle">
@@ -89,7 +78,7 @@ export default function PodsPage({ session, subscription }) {
           </NavLink>
         ))}
 
-        {!loading && tier !== 'free' && pods.length < maxPods && (
+        {!loading && pods.length < maxPods && (
           <NavLink className="pod-library-create" to="/pods/new">
             <span><Plus size={22} /></span>
             <strong>Create a new pod</strong>

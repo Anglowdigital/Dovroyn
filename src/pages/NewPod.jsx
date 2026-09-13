@@ -26,10 +26,6 @@ export default function NewPodPage({ session, subscription }) {
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (tier === 'free') {
-      setError('Please subscribe to a plan to create pods.');
-      return;
-    }
     if (!form.podName.trim()) {
       setError('Pod name is required.');
       return;
@@ -114,23 +110,6 @@ export default function NewPodPage({ session, subscription }) {
       setSaving(false);
     }
   };
-
-  if (tier === 'free') {
-    return (
-      <div className="page-stack">
-        <header className="section-header panel">
-          <div>
-            <p className="eyebrow">Create Pod</p>
-            <h3>Subscribe to create pods</h3>
-            <p className="subtle">Pod creation requires a paid subscription.</p>
-          </div>
-        </header>
-        <NavLink className="button button-primary" to="/pricing">
-          View Pricing
-        </NavLink>
-      </div>
-    );
-  }
 
   return (
     <div className="page-stack">

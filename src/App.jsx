@@ -1231,6 +1231,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
   const navigate = useNavigate();
   const [mode, setMode] = useState(defaultMode);
   const [name, setName] = useState('');
+  const [company, setCompany] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -1246,7 +1247,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
     setSubmitting(true); setError(''); setMessage('');
     const action = mode === 'login'
       ? supabase.auth.signInWithPassword({ email, password })
-      : supabase.auth.signUp({ email, password, options: { data: { full_name: name.trim() } } });
+      : supabase.auth.signUp({ email, password, options: { data: { full_name: name.trim(), company: company.trim() } } });
     const { error: authError } = await action;
     if (authError) { setError(authError.message); }
     else if (mode === 'signup') { setMessage('Check your inbox to confirm your email.'); navigate('/login', { replace: true }); }
@@ -1263,6 +1264,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
         {!supabaseConfigured && <div className="alert">Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to enable authentication.</div>}
         <form onSubmit={handleSubmit} className="stack">
           {mode === 'signup' && <label>Name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>}
+          {mode === 'signup' && <label>Company (optional)<input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Your business name" /></label>}
           <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
           <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required /></label>
           {error && <p className="form-error">{error}</p>}
@@ -1282,7 +1284,7 @@ function AppLayout({ user, subscription, onSignOut }) {
   return (
     <div className="app-layout">
       <aside className="sidebar panel">
-        <Wordmark />
+        <div className="sidebar-brand"><Wordmark /></div>
         <nav>
           {SIDEBAR_NAV_ITEMS.map((item) => (
             <NavLink key={item.to} to={item.to} className="nav-item">{item.label}</NavLink>
@@ -1292,9 +1294,10 @@ function AppLayout({ user, subscription, onSignOut }) {
         <button className="button button-ghost" type="button" onClick={onSignOut}>Sign out</button>
       </aside>
       <section className="content">
+        <button type="button" className="back-button" onClick={() => window.history.back()}>&larr; Back</button>
         <header className="content-header panel">
           <p className="eyebrow">Dovroyn — Luxury AI Marketing Pods</p>
-          <h2>{user?.email}</h2>
+          <h2>{user?.user_metadata?.full_name || user?.user_metadata?.company || user?.email}</h2>
         </header>
         <Outlet />
       </section>
@@ -1315,13 +1318,6 @@ function DashboardPage({ subscription }) {
         <NavLink className="button button-primary" to="/pods/new">Create Pod</NavLink>
       </header>
 
-      {subscription && subscription.tier === 'free' && (
-        <article className="panel detail-card" style={{ borderColor: 'var(--gold)' }}>
-          <h4>Upgrade to start creating pods</h4>
-          <p className="subtle">You are on the free tier. Subscribe to a plan to create and manage marketing pods.</p>
-          <NavLink className="button button-primary" to="/pricing">View Pricing</NavLink>
-        </article>
-      )}
 
       <section className="cards-grid cards-grid-wide">
         {DASHBOARD_PREVIEW_CARDS.map((card) => (
@@ -1689,6 +1685,7 @@ function TermsPage() {
 
 function ContactPage() {
   const [name, setName] = useState('');
+  const [company, setCompany] = useState('');
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
   const [status, setStatus] = useState('idle');
@@ -1766,8 +1763,69 @@ function ContactPage() {
 }
 
 /* ─── SETTINGS PAGE ─── */
+
+function TeamSection({ user, subscription }) {
+  const tier = subscription?.tier || 'free';
+  const seatLimit = PLAN_ENTITLEMENTS[tier]?.seats || 1;
+  const [members, setMembers] = useState([]);
+  const [email, setEmail] = useState('');
+  const [status, setStatus] = useState('');
+
+  const load = () => {
+    if (!supabaseConfigured || !supabase || !user) return;
+    supabase.from('workspace_members').select('id, member_email, role, created_at').eq('owner_id', user.id).order('created_at')
+      .then(({ data }) => setMembers(data || []));
+  };
+  useEffect(load, [user?.id]);
+
+  const invite = async (e) => {
+    e.preventDefault();
+    const clean = email.trim().toLowerCase();
+    if (!clean) return;
+    if (members.length + 1 >= seatLimit) {
+      setStatus(`Your plan includes ${seatLimit >= 999 ? 'unlimited' : seatLimit} seat${seatLimit > 1 ? 's' : ''}. Upgrade to add more people.`);
+      return;
+    }
+    const { error } = await supabase.from('workspace_members').insert({ owner_id: user.id, member_email: clean, role: 'member' });
+    if (error) setStatus('Team table not found yet — run the migration in Supabase SQL Editor (see the setup note).');
+    else { setEmail(''); setStatus('Team member added.'); load(); }
+  };
+  const removeMember = async (id) => {
+    await supabase.from('workspace_members').delete().eq('id', id).eq('owner_id', user.id);
+    load();
+  };
+  const used = members.length + 1;
+  const seatWord = seatLimit >= 999 ? 'unlimited seats' : `${seatLimit} seat${seatLimit > 1 ? 's' : ''}`;
+  return (
+    <section className="panel detail-card" style={{ marginTop: '1rem' }}>
+      <p className="eyebrow">Team</p>
+      <h4>Team seats</h4>
+      <p className="subtle" style={{ marginTop: '0.35rem' }}>Your plan includes {seatWord} ({used} used). The owner always holds one seat.</p>
+      {seatLimit > 1 ? (
+        <form onSubmit={invite} style={{ display: 'grid', gap: '0.6rem', maxWidth: '26rem', marginTop: '0.75rem' }}>
+          <label>Member email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="teammate@company.com" /></label>
+          <button className="button button-primary" type="submit" disabled={used >= seatLimit}>Add team member</button>
+        </form>
+      ) : (
+        <p className="subtle" style={{ marginTop: '0.75rem' }}>Upgrade to Growth or higher to invite team members.</p>
+      )}
+      {members.length > 0 && (
+        <div style={{ display: 'grid', gap: '0.4rem', marginTop: '0.75rem' }}>
+          {members.map((m) => (
+            <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+              <span>{m.member_email} <small className="subtle">({m.role})</small></span>
+              <button className="button button-ghost" type="button" onClick={() => removeMember(m.id)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {status && <p className="subtle" style={{ marginTop: '0.6rem' }}>{status}</p>}
+    </section>
+  );
+}
+
 function SettingsPage({ user, subscription }) {
-  const [settings, setSettings] = useState({ workspace_name: 'Dovroyn Pod Command Centre', theme: 'Editorial Ivory and Navy', timezone: 'UTC', email_notifications: true, weekly_digest: true });
+  const [settings, setSettings] = useState({ workspace_name: user?.user_metadata?.company || 'Dovroyn Pod Command Centre', timezone: 'UTC', email_notifications: true, weekly_digest: true });
   const [status, setStatus] = useState('');
 
   useEffect(() => {
@@ -1776,7 +1834,7 @@ function SettingsPage({ user, subscription }) {
     supabase.from('user_settings').select('*').eq('user_id', user.id).maybeSingle()
       .then(({ data, error }) => {
         if (ignore) return;
-        if (data) setSettings({ workspace_name: data.workspace_name || 'Dovroyn Pod Command Centre', theme: data.theme || 'Editorial Ivory and Navy', timezone: data.timezone || 'UTC', email_notifications: Boolean(data.email_notifications), weekly_digest: Boolean(data.weekly_digest) });
+        if (data) setSettings({ workspace_name: data.workspace_name || 'Dovroyn Pod Command Centre', timezone: data.timezone || 'UTC', email_notifications: Boolean(data.email_notifications), weekly_digest: Boolean(data.weekly_digest) });
       });
     return () => { ignore = true; };
   }, [user?.id]);
@@ -1789,18 +1847,12 @@ function SettingsPage({ user, subscription }) {
   };
 
   return (
-    <form className="card-form panel" onSubmit={saveSettings}>
+    <>
+      <form className="card-form panel" onSubmit={saveSettings}>
       <h3>Settings</h3>
       <label>Account<input value={user?.email || 'Not signed in'} readOnly /></label>
       <label>Subscription tier<input value={subscription?.tier || 'Free'} readOnly /></label>
       <label>Workspace name<input value={settings.workspace_name} onChange={(e) => setSettings((p) => ({ ...p, workspace_name: e.target.value }))} /></label>
-      <label>Theme
-        <select value={settings.theme} onChange={(e) => setSettings((p) => ({ ...p, theme: e.target.value }))}>
-          <option value="Editorial Ivory and Navy">Editorial Ivory and Navy</option>
-          <option value="Antique Gold Luxe">Antique Gold Luxe</option>
-          <option value="Soft Cream Contrast">Soft Cream Contrast</option>
-        </select>
-      </label>
       <label>Timezone
         <select value={settings.timezone} onChange={(e) => setSettings((p) => ({ ...p, timezone: e.target.value }))}>
           <option value="UTC">UTC</option>
@@ -1815,6 +1867,8 @@ function SettingsPage({ user, subscription }) {
       <button className="button button-primary" type="submit">Save settings</button>
       {status && <p className="subtle">{status}</p>}
     </form>
+      <TeamSection user={user} subscription={subscription} />
+    </>
   );
 }
 

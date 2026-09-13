@@ -20,8 +20,23 @@ const ANALYSIS_SCHEMA = {
       minItems: 2,
       maxItems: 6,
     },
+    brand_colours: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          hex: { type: 'string' },
+        },
+        required: ['name', 'hex'],
+        additionalProperties: false,
+      },
+      minItems: 3,
+      maxItems: 5,
+    },
+    geography: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 5 },
   },
-  required: ['summary', 'tone', 'audience', 'offer', 'opportunity', 'pillars', 'platforms'],
+  required: ['summary', 'tone', 'audience', 'offer', 'opportunity', 'pillars', 'platforms', 'brand_colours', 'geography'],
 };
 
 export default async function handler(req, res) {

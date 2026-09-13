@@ -509,3 +509,25 @@ kbd {
   border-bottom: 1px solid var(--gold-border);
 }
 .pod-demo-banner a { color: var(--navy); font-weight: 800; text-decoration: underline; }
+
+/* ─── Pod back link + brand colour swatches ─── */
+.pod-back-link {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--navy);
+  text-decoration: none;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--gold-border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.pod-back-link:hover { background: var(--gold-soft); }
+.pod-colour-swatches { display: flex; gap: 0.4rem; margin: 0.4rem 0; }
+.pod-colour-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--gold-border);
+  display: inline-block;
+}
+.pod-swatch-names { font-size: 0.68rem; color: var(--navy-65); font-weight: 600; }

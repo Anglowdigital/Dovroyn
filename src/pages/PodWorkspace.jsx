@@ -92,6 +92,13 @@ const INITIAL_ANALYSIS = {
   opportunity: 'Lead with hydration and barrier education, then retarget engaged visitors with the bundle.',
   pillars: ['Visible results', 'Simple rituals', 'Ingredient authority'],
   platforms: ['instagram', 'tiktok', 'facebook', 'email'],
+  brand_colours: [
+    { name: 'Soft Ivory', hex: '#F5EFE6' },
+    { name: 'Sage', hex: '#9CAF88' },
+    { name: 'Terracotta', hex: '#C67B5C' },
+    { name: 'Deep Navy', hex: '#1F2A44' },
+  ],
+  geography: ['Australia', 'New Zealand', 'USA'],
 };
 
 const CONTENT_SEED = {
@@ -631,6 +638,12 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
             <section className="pod-insight-grid">
               {[['Brand summary', analysis.summary], ['Tone', analysis.tone], ['Audience', analysis.audience], ['Offer', analysis.offer], ['Strongest opportunity', analysis.opportunity]].map(([label, value]) => <article key={label}><small>{label}</small><p>{value}</p></article>)}
             </section>
+            {Array.isArray(analysis.brand_colours) && analysis.brand_colours.length > 0 && (
+              <article className="pod-rich-card"><small>Brand colours</small><div className="pod-colour-swatches">{analysis.brand_colours.map((colour) => <span key={colour.name} className="pod-colour-swatch" style={{ background: colour.hex }} title={colour.name} />)}</div><p className="pod-swatch-names">{analysis.brand_colours.map((colour) => colour.name).join(' · ')}</p></article>
+            )}
+            {Array.isArray(analysis.geography) && analysis.geography.length > 0 && (
+              <article className="pod-rich-card"><small>Geography</small><div className="pod-chip-row">{analysis.geography.map((market) => <span key={market}>{market}</span>)}</div></article>
+            )}
             <article className="pod-rich-card"><small>Content pillars</small><div className="pod-chip-row">{analysis.pillars.map((pillar) => <span key={pillar}>{pillar}</span>)}</div></article>
             <div className="pod-action-row">
               <button className="button button-primary" type="button" onClick={approveDirection}><Check size={16} /> Approve direction</button>
@@ -733,7 +746,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
           <Link to="/signup">Create your own pod →</Link>
         </div>
       )}
-      <header className="pod-workspace-topbar">
+      <Link to="/pods" className="pod-back-link">&larr; Pods</Link><header className="pod-workspace-topbar">
         <div className="pod-workspace-title"><span className="pod-brand-orb"><Sparkles size={18} /></span><div><p className="eyebrow">{pod.brand_name || pod.pod_type}</p><h1>{pod.pod_name}</h1></div></div>
         <div className="pod-workspace-actions"><StatusPill tone={directionApproved ? 'green' : 'gold'}>{directionApproved ? 'Direction approved' : 'AI brain ready'}</StatusPill><button className="pod-command-trigger" type="button" onClick={() => setPaletteOpen(true)}><Command size={15} /> Commands <kbd>Ctrl K</kbd></button></div>
       </header>
