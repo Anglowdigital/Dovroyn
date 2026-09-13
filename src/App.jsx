@@ -1230,8 +1230,17 @@ function DemoPodPage() {
 function AuthPage({ session, defaultMode = 'login' }) {
   const navigate = useNavigate();
   const [mode, setMode] = useState(defaultMode);
+
+  useEffect(() => {
+    if (!supabaseConfigured || !supabase) return undefined;
+    const { data: recoverySub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') setMode('recovery');
+    });
+    return () => recoverySub.subscription.unsubscribe();
+  }, []);
   const [name, setName] = useState('');
   const [company, setCompany] = useState('');
+  const [resetMessage, setResetMessage] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -1243,6 +1252,15 @@ function AuthPage({ session, defaultMode = 'login' }) {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    if (mode === 'recovery') {
+      if (!supabaseConfigured) { setError('Missing Supabase environment variables.'); return; }
+      setSubmitting(true); setError('');
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) { setError(updateError.message); }
+      else { setResetMessage('Password updated — you are signed in.'); navigate('/dashboard', { replace: true }); }
+      setSubmitting(false);
+      return;
+    }
     if (!supabaseConfigured) { setError('Missing Supabase environment variables.'); return; }
     setSubmitting(true); setError(''); setMessage('');
     const action = mode === 'login'
@@ -1266,10 +1284,27 @@ function AuthPage({ session, defaultMode = 'login' }) {
           {mode === 'signup' && <label>Name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>}
           {mode === 'signup' && <label>Company (optional)<input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Your business name" /></label>}
           <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
-          <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required /></label>
+          <label>{mode === 'recovery' ? 'New password' : 'Password'}<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required /></label>
+          {mode === 'login' && (
+            <button
+              type="button"
+              style={{ background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'var(--gold)', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
+              onClick={async () => {
+                setResetMessage('');
+                if (!email.trim()) { setError('Enter your email address first, then tap Forgot password.'); return; }
+                if (!supabaseConfigured || !supabase) return;
+                setError('');
+                const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/login` });
+                setResetMessage(resetError ? resetError.message : 'Password reset link sent — check your inbox and spam folder.');
+              }}
+            >
+              Forgot password?
+            </button>
+          )}
           {error && <p className="form-error">{error}</p>}
+          {resetMessage && <p className="form-error" style={{ color: 'var(--navy)' }}>{resetMessage}</p>}
           {message && <p className="subtle">{message}</p>}
-          <button className="button button-primary" type="submit" disabled={submitting}>{submitting ? 'Working...' : (mode === 'login' ? 'Log in' : 'Create account')}</button>
+          <button className="button button-primary" type="submit" disabled={submitting}>{submitting ? 'Working...' : (mode === 'login' ? 'Log in' : mode === 'signup' ? 'Create account' : 'Set new password')}</button>
         </form>
         <button className="button button-link" type="button" onClick={() => { setError(''); setMessage(''); const next = mode === 'login' ? 'signup' : 'login'; setMode(next); navigate(`/${next}`); }}>
           {mode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Log in'}
