@@ -72,3 +72,4 @@ Worth 15 minutes? — Jae, Dovroyn"
 ## Later this week (already queued with your developer)
 - Stripe webhook → customers auto-activate on payment
 - Meta developer app → real Facebook/Instagram/Threads posting
+- [x] Stripe payment links added to Vercel env vars (rebuild triggered to bake them in)
