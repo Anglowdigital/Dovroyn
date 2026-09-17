@@ -72,7 +72,7 @@ import { supabase, supabaseConfigured } from './lib/supabaseClient';
 import Header from './components/Header';
 import BrandLogo from './components/BrandLogo';
 import Footer from './components/Footer';
-import TesterPodPreview from './components/TesterPodPreview';
+import { PLAN_ENTITLEMENTS } from './lib/plans.js';
 import AiPodAssistant from './components/AiPodAssistant';
 import PodsPage from './pages/Pods';
 import NewPodPage from './pages/NewPod';
@@ -428,6 +428,10 @@ const SIDEBAR_NAV_ITEMS = [
   { to: '/account', label: 'Account' },
   { to: '/pricing', label: 'Pricing' },
   { to: '/settings', label: 'Settings' },
+,
+  { label: 'Privacy', to: '/privacy' },
+  { label: 'Terms', to: '/terms' },
+  { label: 'Contact', to: '/contact' },
 ];
 
 /* ─── SHARED POD TABS COMPONENT ─── */
@@ -968,7 +972,7 @@ function LandingPage({ session }) {
         </div>
       </section>
 
-      <TesterPodPreview />
+      <PodWorkspace demo />
 
       {/* Social Proof Section */}
       <section className="social-proof-section">
