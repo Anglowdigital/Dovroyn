@@ -739,6 +739,13 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
 
   return (
     <section className="pod-workspace">
+      {!demo && (subscription?.tier || 'free') === 'free' && (
+        <div className="pod-demo-banner" role="note">
+          <Sparkles size={15} />
+          <span>Your pod is built and ready. Upgrade to start posting — plans from A$89/month.</span>
+          <Link to="/pricing">View plans →</Link>
+        </div>
+      )}
       {demo && (
         <div className="pod-demo-banner" role="note">
           <Sparkles size={15} />
