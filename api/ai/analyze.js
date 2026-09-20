@@ -1,7 +1,7 @@
 import { createSafetyIdentifier, extractOutputText, createOpenAIResponse } from '../_lib/openai.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit, requestIdentity } from '../_lib/rateLimit.js';
-import { finalizePodAnalysis, loadActiveSubscription, loadOwnedPod, verifySupabaseUser } from '../_lib/supabaseAuth.js';
+import { finalizePodAnalysis, loadOwnedPod, verifySupabaseUser } from '../_lib/supabaseAuth.js';
 import { fetchWebsiteText } from '../_lib/webSource.js';
 
 const ANALYSIS_SCHEMA = {
@@ -76,10 +76,6 @@ export default async function handler(req, res) {
       return sendJson(res, 409, { error: 'This pod has already been analysed and its source is locked.' });
     }
 
-    const subscription = await loadActiveSubscription(accessToken, user.id);
-    if (!subscription) {
-      return sendJson(res, 402, { error: 'An active paid subscription is required for AI generation.' });
-    }
 
     const cleanImages = Array.isArray(imageUrls)
       ? imageUrls.filter((url) => typeof url === 'string' && /^https:\/\//i.test(url)).slice(0, 5)
