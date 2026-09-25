@@ -214,6 +214,11 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
           audience: workspace.analysis.audience,
           offer: workspace.analysis.offer_direction,
           opportunity: workspace.analysis.campaign_angles,
+          evidence: workspace.analysis.evidence || [],
+          confidence: workspace.analysis.confidence == null ? null : Number(workspace.analysis.confidence),
+          source_captured_at: workspace.analysis.source_captured_at,
+          personal_data_detected: Boolean(workspace.analysis.personal_data_detected),
+          personal_data_categories: workspace.analysis.personal_data_categories || [],
           platforms: platformKeys.length ? platformKeys : INITIAL_ANALYSIS.platforms,
           pillars: pillars.length ? pillars : INITIAL_ANALYSIS.pillars,
         });
@@ -644,6 +649,8 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
             {Array.isArray(analysis.geography) && analysis.geography.length > 0 && (
               <article className="pod-rich-card"><small>Geography</small><div className="pod-chip-row">{analysis.geography.map((market) => <span key={market}>{market}</span>)}</div></article>
             )}
+            {analysis.confidence != null && <article className="pod-rich-card"><small>Evidence confidence</small><p>{Math.round(analysis.confidence * 100)}% · Sources captured {analysis.source_captured_at ? new Date(analysis.source_captured_at).toLocaleDateString() : 'during analysis'}</p>{analysis.personal_data_detected && <p className="subtle">Personal data was detected in the source and excluded from the written analysis.</p>}</article>}
+            {Array.isArray(analysis.evidence) && analysis.evidence.length > 0 && <article className="pod-rich-card"><small>Evidence</small><ul>{analysis.evidence.map((item, index) => <li key={`${item.source_reference}-${index}`}>{item.finding} <span className="subtle">({item.source_reference}, {Math.round(Number(item.confidence) * 100)}%)</span></li>)}</ul></article>}
             <article className="pod-rich-card"><small>Content pillars</small><div className="pod-chip-row">{analysis.pillars.map((pillar) => <span key={pillar}>{pillar}</span>)}</div></article>
             <div className="pod-action-row">
               <button className="button button-primary" type="button" onClick={approveDirection}><Check size={16} /> Approve direction</button>
