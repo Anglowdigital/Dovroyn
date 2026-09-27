@@ -91,7 +91,7 @@ export default async function handler(req, res) {
     const body = await readJsonBody(req);
     const accessToken = getBearerToken(req);
     if (!accessToken) return sendJson(res, 401, { error: 'Sign in again, then run analysis.' });
-    const { user } = await verifySupabaseUser(accessToken);
+    const user = await verifySupabaseUser(accessToken);
     if (!user) return sendJson(res, 401, { error: 'Sign in again, then run analysis.' });
 
     const { podId, imageUrls } = body || {};
