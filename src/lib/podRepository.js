@@ -99,6 +99,11 @@ export async function savePodAnalysis(podId, analysis) {
     campaign_angles: analysis.opportunity,
     social_recommendations: JSON.stringify(analysis.platforms || []),
     content_ideas: JSON.stringify(analysis.pillars || []),
+    evidence: analysis.evidence || [],
+    confidence: analysis.confidence,
+    source_captured_at: analysis.source_captured_at,
+    personal_data_detected: Boolean(analysis.personal_data_detected),
+    personal_data_categories: analysis.personal_data_categories || [],
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await requireSupabase().from('pod_analysis').upsert(row, { onConflict: 'pod_id' }).select().single();

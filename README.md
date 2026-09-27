@@ -45,9 +45,11 @@ Review and run the SQL files in order:
 
 1. `supabase-migration.sql`
 2. `supabase-pod-workspace-migration.sql`
+3. `supabase-pod-source-lock-migration.sql`
+4. `supabase/migrations/20260925000000_agent_safety_foundation.sql`
 
-The second migration adds the internal pod features, hardens ownership policies, creates a private `pod-assets` bucket, and separates encrypted social-provider credentials into a non-exposed schema. It is not applied automatically.
+The later migrations lock analysed sources and add evidence provenance, explicit research/draft/approve/execute action levels, human approval records, idempotency controls, and an append-only audit trail. They are not applied automatically.
 
 ## Release gate
 
-Do not deploy solely because the build passes. First validate Stripe links and webhooks, run both migrations in the intended Supabase project, configure server-only API variables, complete each social provider's OAuth approval, and perform the landing/pod button audit described in `DOVROYN_PRODUCT_SPEC.md`.
+Do not deploy solely because the build passes. First validate Stripe links and webhooks, run all migrations in the intended Supabase project, configure server-only API variables, complete each social provider's OAuth approval, and perform the landing/pod button audit described in `DOVROYN_PRODUCT_SPEC.md`.
