@@ -68,7 +68,7 @@ export default async function handler(req, res) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!webhookSecret || !secretKey) return sendJson(res, 500, { error: 'stripe_not_configured' });
 
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) return sendJson(res, 500, { error: 'supabase_admin_not_configured' });
 

@@ -1,6 +1,11 @@
 function getSupabaseServerConfig() {
-  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  // The VITE_ values are the ones the working client bundle is built with, so
+  // they are guaranteed to match the live project. Stale dashboard-only server
+  // vars (SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY) have repeatedly overridden
+  // them with wrong values in production, breaking token verification — so the
+  // client values win, and the server-only names remain as fallbacks.
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const publishableKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
   if (!url || !publishableKey) throw new Error('Supabase server authentication is not configured.');
   return { url: url.replace(/\/$/, ''), publishableKey };
 }
