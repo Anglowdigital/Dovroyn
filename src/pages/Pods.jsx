@@ -26,12 +26,13 @@ export default function PodsPage({ session, subscription }) {
 
   const tier = subscription?.tier || 'free';
   const maxPods = TIER_LIMITS[tier]?.maxPods || 0;
+  const activePodCount = pods.filter((pod) => pod.status !== 'archived').length;
 
   return (
     <div className="page-stack">
       <header className="section-header panel">
         <div>
-          <p className="eyebrow">Pods ({pods.length}/{maxPods})</p>
+          <p className="eyebrow">Pods ({activePodCount}/{maxPods})</p>
           <h3>All AI marketing pods</h3>
           <p className="subtle">
             Create a dedicated pod for each brand, product, offer, or campaign.

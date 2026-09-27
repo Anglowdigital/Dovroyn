@@ -72,7 +72,7 @@ import { supabase, supabaseConfigured } from './lib/supabaseClient';
 import Header from './components/Header';
 import BrandLogo from './components/BrandLogo';
 import Footer from './components/Footer';
-import { PLAN_ENTITLEMENTS } from './lib/plans.js';
+import { PLAN_ENTITLEMENTS, hasActivePaidAccess } from './lib/plans.js';
 import AiPodAssistant from './components/AiPodAssistant';
 import PodsPage from './pages/Pods';
 import NewPodPage from './pages/NewPod';
@@ -428,7 +428,6 @@ const SIDEBAR_NAV_ITEMS = [
   { to: '/account', label: 'Account' },
   { to: '/pricing', label: 'Pricing' },
   { to: '/settings', label: 'Settings' },
-,
   { label: 'Privacy', to: '/privacy' },
   { label: 'Terms', to: '/terms' },
   { label: 'Contact', to: '/contact' },
@@ -559,7 +558,7 @@ function PodTabsView({ pod }) {
             <p><strong>Main angle:</strong> Protect your skin barrier before winter strips it</p>
             <p><strong>Bonuses:</strong> Free travel-size cleanser with bundle</p>
             <p><strong>Urgency:</strong> Winter stock limited, seasonal bundle ends in 14 days</p>
-            <p><strong>Why act now:</strong> Prevention is easier than repair \u2014 start before the cold hits</p>
+            <p><strong>Why act now:</strong> Prevention is easier than repair — start before the cold hits</p>
             <p><strong>CTA:</strong> Get Your Winter Bundle</p>
           </div>
         );
@@ -571,7 +570,7 @@ function PodTabsView({ pod }) {
             <p><strong>Campaign message:</strong> Your skin barrier needs protection before winter, not after</p>
             <p><strong>Launch angle:</strong> Seasonal urgency + education</p>
             <p><strong>Content theme:</strong> Hydration science meets cosy winter ritual</p>
-            <p><strong>Funnel direction:</strong> Awareness reel \u2192 Education carousel \u2192 Bundle offer \u2192 Retarget</p>
+            <p><strong>Funnel direction:</strong> Awareness reel → Education carousel → Bundle offer → Retarget</p>
             <p><strong>Best channels:</strong> Instagram Reels, Meta Ads, Email</p>
             <p><strong>What to test first:</strong> Hydration hooks vs barrier repair hooks in ad creative</p>
           </div>
@@ -612,7 +611,7 @@ function PodTabsView({ pod }) {
             <ul className="simple-list compact-list">
               <li><strong>Pain-point:</strong> "Your skin barrier is breaking down and you might not even know"</li>
               <li><strong>Desire:</strong> "Wake up to plump, hydrated skin every morning"</li>
-              <li><strong>Before/after:</strong> "Week 1 vs Week 4 \u2014 same routine, visible glow"</li>
+              <li><strong>Before/after:</strong> "Week 1 vs Week 4 — same routine, visible glow"</li>
               <li><strong>Founder story:</strong> "I created this because my own skin was suffering"</li>
               <li><strong>Limited drop:</strong> "Winter bundle. 200 units. Once they sell, they sell."</li>
               <li><strong>Problem/solution:</strong> "Dry skin in winter? Your moisturiser is not enough."</li>
@@ -665,13 +664,13 @@ function PodTabsView({ pod }) {
             <p><strong>Target country:</strong> {podData.target_country}</p>
             <p><strong>Upcoming opportunities:</strong></p>
             <ul className="simple-list compact-list">
-              <li>Mother's Day (May) \u2014 Gift bundle campaign</li>
-              <li>EOFY Sales (June) \u2014 Clearance + new season launch</li>
-              <li>Father's Day (September) \u2014 Gift sets for him</li>
-              <li>Black Friday (November) \u2014 Biggest sale of the year</li>
-              <li>Christmas (December) \u2014 Gift sets and luxury packaging</li>
-              <li>New Year (January) \u2014 Fresh start / new routine angle</li>
-              <li>Easter (April) \u2014 Seasonal reset campaign</li>
+              <li>Mother's Day (May) — Gift bundle campaign</li>
+              <li>EOFY Sales (June) — Clearance + new season launch</li>
+              <li>Father's Day (September) — Gift sets for him</li>
+              <li>Black Friday (November) — Biggest sale of the year</li>
+              <li>Christmas (December) — Gift sets and luxury packaging</li>
+              <li>New Year (January) — Fresh start / new routine angle</li>
+              <li>Easter (April) — Seasonal reset campaign</li>
             </ul>
             <p className="subtle">AI will recommend content close to seasonal dates and factor holidays into calendar generation. Real holiday API integration coming soon.</p>
           </div>
@@ -722,8 +721,8 @@ function PodTabsView({ pod }) {
           <div className="pod-section-content">
             <h4>Ad Analysis</h4>
             <p><strong>What is running:</strong> 3 active ad sets across Meta and Instagram</p>
-            <p><strong>Best performing:</strong> Hydration reel hook \u2014 4.2% CTR</p>
-            <p><strong>Worst performing:</strong> Anti-ageing static \u2014 0.8% CTR</p>
+            <p><strong>Best performing:</strong> Hydration reel hook — 4.2% CTR</p>
+            <p><strong>Worst performing:</strong> Anti-ageing static — 0.8% CTR</p>
             <p><strong>Best hooks:</strong> "Your evening routine is missing one step", "3 signs your barrier is damaged"</p>
             <p><strong>What to test next:</strong> Founder story video, before/after carousel</p>
             <p><strong>Competitor observation:</strong> Luma Botanics using ingredient transparency with strong results</p>
@@ -830,17 +829,51 @@ function App() {
     };
   }, []);
 
-  // Load subscription status
+  // Load subscription status. Cancelled/past-due rows never grant paid access —
+  // those users see the free tier until billing recovers.
   useEffect(() => {
-    if (!supabaseConfigured || !session?.user?.id) return;
-    supabase
+    if (!supabaseConfigured || !session?.user?.id) return undefined;
+    let cancelled = false;
+    const timers = [];
+    const freeFallback = { tier: 'free', status: 'inactive', max_pods: 1, monthly_content_days: 0, weekly_posting_days: 0 };
+
+    const fetchSubscription = () => supabase
       .from('subscriptions')
       .select('*')
       .eq('user_id', session.user.id)
       .maybeSingle()
       .then(({ data }) => {
-        setSubscription(data || { tier: 'free', status: 'inactive', max_pods: 0, monthly_content_days: 0 });
+        if (cancelled) return false;
+        if (hasActivePaidAccess(data)) {
+          setSubscription(data);
+          return true;
+        }
+        setSubscription(freeFallback);
+        return false;
       });
+
+    // Customers returning from Stripe Checkout may land before the webhook
+    // writes their row — retry a few times with backoff before settling on free.
+    const scheduleRetries = async () => {
+      for (const delay of [5000, 15000, 30000]) {
+        await new Promise((resolve) => {
+          const timer = window.setTimeout(resolve, delay);
+          timers.push(timer);
+        });
+        if (cancelled) return;
+        const active = await fetchSubscription();
+        if (cancelled || active) return;
+      }
+    };
+
+    fetchSubscription().then((active) => {
+      if (!cancelled && !active) scheduleRetries();
+    });
+
+    return () => {
+      cancelled = true;
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
   }, [session?.user?.id]);
 
   if (bootstrapping) {
@@ -861,7 +894,7 @@ function App() {
         <Route path="/login" element={<AuthPage session={session} defaultMode="login" />} />
         <Route path="/signup" element={<AuthPage session={session} defaultMode="signup" />} />
         <Route path="/auth" element={<AuthPage session={session} defaultMode="login" />} />
-        <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/pricing" element={<PricingPage session={session} />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />
         <Route path="/contact" element={<ContactPage />} />
@@ -1171,6 +1204,8 @@ function LandingPage({ session }) {
                 <a className="button button-primary" href={STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`]}>Subscribe</a>
               ) : tier.name === 'Free' ? (
                 <NavLink className="button button-primary" to="/signup">Start Free</NavLink>
+              ) : session ? (
+                <p className="subtle">Checkout is being configured — please try again shortly.</p>
               ) : (
                 <NavLink className="button button-primary" to="/signup">Create account</NavLink>
               )}
@@ -1252,7 +1287,11 @@ function AuthPage({ session, defaultMode = 'login' }) {
   const [message, setMessage] = useState('');
 
   useEffect(() => { setMode(defaultMode); }, [defaultMode]);
-  useEffect(() => { if (session) navigate('/dashboard', { replace: true }); }, [navigate, session]);
+  // Never bounce a password-recovery session away from the reset form.
+  // The URL hash is the ground truth — the PASSWORD_RECOVERY event can fire
+  // before this component subscribes, so mode alone is not reliable on load.
+  const recovering = window.location.hash.includes('type=recovery');
+  useEffect(() => { if (session && mode !== 'recovery' && !recovering) navigate('/dashboard', { replace: true }); }, [navigate, session, mode, recovering]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1270,9 +1309,14 @@ function AuthPage({ session, defaultMode = 'login' }) {
     const action = mode === 'login'
       ? supabase.auth.signInWithPassword({ email, password })
       : supabase.auth.signUp({ email, password, options: { data: { full_name: name.trim(), company: company.trim() } } });
-    const { error: authError } = await action;
+    const { data, error: authError } = await action;
     if (authError) { setError(authError.message); }
-    else if (mode === 'signup') { setMessage('Check your inbox to confirm your email.'); navigate('/login', { replace: true }); }
+    else if (mode === 'signup') {
+      // Some projects return a session immediately — go straight to the app
+      // instead of racing two navigations through /login.
+      if (data?.session) navigate('/dashboard', { replace: true });
+      else { setMessage('Check your inbox to confirm your email.'); navigate('/login', { replace: true }); }
+    }
     else { navigate('/dashboard', { replace: true }); }
     setSubmitting(false);
   };
@@ -1405,7 +1449,7 @@ function PodDashboardPage({ session }) {
 }
 
 /* ─── PRICING PAGE ─── */
-function PricingPage() {
+function PricingPage({ session }) {
   const [billing, setBilling] = useState('monthly');
   return (
     <main className="landing-shell pricing-shell">
@@ -1454,6 +1498,8 @@ function PricingPage() {
               <a className="button button-primary" href={STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`]}>Subscribe</a>
             ) : tier.name === 'Free' ? (
               <NavLink className="button button-primary" to="/signup">Start Free</NavLink>
+            ) : session ? (
+              <p className="subtle">Checkout is being configured — please try again shortly.</p>
             ) : (
               <NavLink className="button button-primary" to="/signup">Create account</NavLink>
             )}

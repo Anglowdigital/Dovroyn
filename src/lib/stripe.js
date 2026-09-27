@@ -17,12 +17,15 @@ export function getCheckoutUrl(tierKey, billing = 'monthly') {
   return STRIPE_PRICING_LINKS[key] || null;
 }
 
-export function redirectToCheckout(tierKey, billing = 'monthly') {
+export function redirectToCheckout(tierKey, billing = 'monthly', { onUnavailable } = {}) {
   const url = getCheckoutUrl(tierKey, billing);
   if (url) {
     window.location.href = url;
+  } else if (onUnavailable) {
+    // Signed-in users see an inline notice instead of being bounced to signup.
+    onUnavailable();
   } else {
-    // Let the user create an account when a checkout link is not configured.
+    // Let logged-out visitors create an account when a checkout link is not configured.
     window.location.href = '/signup';
   }
 }

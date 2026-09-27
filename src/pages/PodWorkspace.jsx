@@ -37,6 +37,7 @@ import {
   savePodPrimarySource,
   savePodPreference,
   saveSocialPosts,
+  updateSocialPost,
   uploadPodAsset,
 } from '../lib/podRepository';
 import PodCommandPalette from '../components/pod/PodCommandPalette';
@@ -408,7 +409,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
           imageUrls: [...logoAssets, ...brandPhotos].map((asset) => asset.preview).filter((url) => /^https:\/\//i.test(url)),
         });
         nextAnalysis = result.analysis;
-        setPod((current) => ({ ...current, source_locked_at: result.sourceLockedAt || new Date().toISOString(), status: 'awaiting_direction' }));
+        setPod((current) => ({ ...current, source_locked_at: result.sourceLockedAt ?? new Date().toISOString(), status: 'awaiting_direction' }));
       }
       setAnalysis(nextAnalysis);
       setAnalysisState('ready');
@@ -468,7 +469,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
         const result = await requestSocialContent({
           accessToken: session.access_token,
           podId: pod.id,
-          platforms: analysis.platforms,
+          platforms: selectedPlatformKeys.length ? selectedPlatformKeys : analysis.platforms,
           contentDay: new Date().toISOString().slice(0, 10),
         });
         generated = result.posts.map((post, index) => ({ ...post, id: `${post.platformKey}-${Date.now()}-${index}`, status: 'Draft' }));
@@ -492,6 +493,19 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
     }
     setCalendarCreated(true);
     showNotice(`Calendar generated inside the current allowance of ${plan.monthlyContentDays} content days.`);
+  };
+
+  const savePostEdit = async (post) => {
+    if (demo) {
+      showNotice(`${post.platformName} draft saved in this pod.`);
+      return;
+    }
+    try {
+      await updateSocialPost(post.id, post.content);
+      showNotice(`${post.platformName} draft saved.`);
+    } catch (error) {
+      showNotice(error.message || 'The draft edit could not be saved.');
+    }
   };
 
   const askPodAi = async (event) => {
@@ -681,7 +695,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign, posted everywhere</h2><p className="subtle">The same approved campaign goes to every selected platform on the same day — with photos from the website gallery first, the asset folder second.</p></div><button className="button button-primary" type="button" onClick={generateContent}><Sparkles size={16} /> Generate content</button></header>
-            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => showNotice(`${post.platformName} draft saved in this pod.`)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Campaign placed on the next posting day for every selected platform.'); }}>Add to calendar</button></footer></article>)}</div>}
+            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Campaign marked for the next posting day — the calendar save is not live yet.'); }}>Add to calendar</button></footer></article>)}</div>}
           </div>
         );
       }
@@ -742,7 +756,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       {!demo && (subscription?.tier || 'free') === 'free' && (
         <div className="pod-demo-banner" role="note">
           <Sparkles size={15} />
-          <span>Your pod is built and ready. Upgrade to start posting — plans from A$89/month.</span>
+          <span>Your pod is built and ready. Upgrade to start posting — plans from $89/month.</span>
           <Link to="/pricing">View plans →</Link>
         </div>
       )}

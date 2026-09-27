@@ -76,8 +76,9 @@ export default function AiPodAssistant() {
     let answer;
     try {
       answer = await askLandingAssistant(cleanQuestion);
-    } catch {
-      answer = 'The live assistant is temporarily unavailable. Dovroyn can still show the pod demo while the server API is being configured.';
+    } catch (error) {
+      // The API returns specific { error } payloads (e.g. rate limits) — show them when present.
+      answer = error?.message || 'The live assistant is temporarily unavailable. Dovroyn can still show the pod demo while the server API is being configured.';
     }
     setMessages((currentMessages) => [
       ...currentMessages,

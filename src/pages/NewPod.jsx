@@ -81,16 +81,19 @@ export default function NewPodPage({ session, subscription }) {
         return;
       }
 
+      let preferencesSaved = true;
       if (form.sourceUrl.trim() || form.description.trim()) {
-        await supabase.from('pod_sources').insert({
+        const { error: sourceError } = await supabase.from('pod_sources').insert({
           pod_id: data.id,
           source_type: form.sourceType,
           source_url: form.sourceUrl.trim() || null,
           notes: form.description.trim() || null,
         });
+        if (sourceError) preferencesSaved = false;
       }
 
-      await supabase.from('budgets').insert({ pod_id: data.id });
+      const { error: budgetError } = await supabase.from('budgets').insert({ pod_id: data.id });
+      if (budgetError) preferencesSaved = false;
       try {
         await uploadPodAsset({ userId: session.user.id, podId: data.id, file: logoFile, assetRole: 'logo' });
         await Promise.all(photoFiles.map((file) => uploadPodAsset({
@@ -102,6 +105,13 @@ export default function NewPodPage({ session, subscription }) {
       } catch (uploadError) {
         setError(`The pod was created, but its images did not finish uploading: ${uploadError.message}`);
         navigate(`/pods/${data.id}`);
+        return;
+      }
+      if (!preferencesSaved) {
+        // Non-blocking: the pod exists, but warn before moving on.
+        setError('Your pod was created, but its source/budget preferences were not saved. Taking you to your pod...');
+        setSaving(false);
+        window.setTimeout(() => navigate(`/pods/${data.id}`), 2500);
         return;
       }
       navigate(`/pods/${data.id}`);

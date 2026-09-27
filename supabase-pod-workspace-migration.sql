@@ -399,17 +399,17 @@ BEGIN
     RAISE EXCEPTION 'Pod owner must match the authenticated user';
   END IF;
 
+  -- The free tier allows 1 pod; an active paid subscription sets its tier limit.
   SELECT CASE subscription.tier
-    WHEN 'starter' THEN 1 WHEN 'growth' THEN 3 WHEN 'pro' THEN 7 WHEN 'scale' THEN 12 ELSE 0
+    WHEN 'starter' THEN 1 WHEN 'growth' THEN 3 WHEN 'pro' THEN 7 WHEN 'scale' THEN 12 ELSE 1
   END INTO plan_limit
   FROM public.subscriptions subscription
   WHERE subscription.user_id = NEW.user_id
     AND subscription.status IN ('active', 'trialing')
     AND subscription.current_period_end > now();
 
-  IF COALESCE(plan_limit, 0) = 0 THEN
-    RAISE EXCEPTION 'An active paid subscription is required to create a pod';
-  END IF;
+  -- Free users (no active subscription row) still get their 1 free pod.
+  plan_limit := COALESCE(plan_limit, 1);
 
   SELECT count(*) INTO active_count FROM public.pods pod
   WHERE pod.user_id = NEW.user_id AND pod.status <> 'archived';

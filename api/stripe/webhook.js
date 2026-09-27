@@ -3,11 +3,18 @@ import { createClient } from '@supabase/supabase-js';
 import { sendJson } from '../_lib/http.js';
 
 const TIER_LIMITS = {
-  starter: { maxPods: 1, monthlyContentDays: 10 },
-  growth: { maxPods: 3, monthlyContentDays: 20 },
-  pro: { maxPods: 7, monthlyContentDays: 30 },
-  scale: { maxPods: 12, monthlyContentDays: 30 },
+  starter: { maxPods: 1, monthlyContentDays: 10, weeklyPostingDays: 2 },
+  growth: { maxPods: 3, monthlyContentDays: 20, weeklyPostingDays: 3 },
+  pro: { maxPods: 7, monthlyContentDays: 30, weeklyPostingDays: 6 },
+  scale: { maxPods: 12, monthlyContentDays: 30, weeklyPostingDays: 7 },
 };
+
+// Stripe sends 'canceled'; the DB CHECK constraint only accepts 'cancelled'.
+function normalizeSubscriptionStatus(status) {
+  if (status === 'canceled') return 'cancelled';
+  if (status === 'incomplete' || status === 'incomplete_expired') return 'inactive';
+  return status;
+}
 
 function resolveTier(name) {
   const n = String(name || '').toLowerCase();
@@ -27,19 +34,25 @@ function readRawBody(req) {
   });
 }
 
-async function upsertSubscription(admin, userId, tier, status, periodEnd) {
+async function upsertSubscription(admin, userId, tier, status, periodEnd, periodStart) {
   const limits = TIER_LIMITS[tier] || TIER_LIMITS.starter;
   const active = status === 'active' || status === 'trialing';
+  const now = new Date().toISOString();
   const row = {
     user_id: userId,
     tier,
     status: active ? 'active' : status,
     max_pods: active ? limits.maxPods : 0,
     monthly_content_days: active ? limits.monthlyContentDays : 0,
+    weekly_posting_days: limits.weeklyPostingDays,
+    subscription_started_at: now,
     current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
+    current_period_start: periodStart ? new Date(periodStart * 1000).toISOString() : null,
   };
-  const { data: existing } = await admin.from('subscriptions').select('user_id').eq('user_id', userId).maybeSingle();
+  const { data: existing } = await admin.from('subscriptions').select('user_id,subscription_started_at').eq('user_id', userId).maybeSingle();
   if (existing) {
+    // Preserve the original subscription start; only backfill when missing.
+    if (existing.subscription_started_at) delete row.subscription_started_at;
     const { error } = await admin.from('subscriptions').update(row).eq('user_id', userId);
     if (error) throw error;
   } else {
@@ -82,7 +95,14 @@ export default async function handler(req, res) {
       const { data: userData } = await admin.auth.admin.getUserByEmail(email);
       if (!userData?.user) return sendJson(res, 200, { received: true, ignored: 'user_not_found' });
       const subscription = await stripe.subscriptions.retrieve(String(session.subscription));
-      await upsertSubscription(admin, userData.user.id, tier, subscription.status, subscription.current_period_end);
+      await upsertSubscription(
+        admin,
+        userData.user.id,
+        tier,
+        normalizeSubscriptionStatus(subscription.status),
+        subscription.current_period_end,
+        subscription.current_period_start,
+      );
       return sendJson(res, 200, { received: true, tier, user: userData.user.id });
     }
 
@@ -99,8 +119,8 @@ export default async function handler(req, res) {
       if (!tier || !email) return sendJson(res, 200, { received: true, ignored: 'unresolved' });
       const { data: userData } = await admin.auth.admin.getUserByEmail(email);
       if (!userData?.user) return sendJson(res, 200, { received: true, ignored: 'user_not_found' });
-      const status = event.type === 'customer.subscription.deleted' ? 'canceled' : subscription.status;
-      await upsertSubscription(admin, userData.user.id, tier, status, subscription.current_period_end);
+      const status = normalizeSubscriptionStatus(event.type === 'customer.subscription.deleted' ? 'canceled' : subscription.status);
+      await upsertSubscription(admin, userData.user.id, tier, status, subscription.current_period_end, subscription.current_period_start);
       return sendJson(res, 200, { received: true, tier, status });
     }
 

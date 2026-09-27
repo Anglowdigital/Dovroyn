@@ -130,6 +130,16 @@ export async function saveSocialPosts(podId, posts) {
   return data || [];
 }
 
+export async function updateSocialPost(postId, body) {
+  const { data, error } = await requireSupabase().from('social_posts')
+    .update({ body, updated_at: new Date().toISOString() })
+    .eq('id', postId)
+    .select()
+    .single();
+  throwIfError(error);
+  return data;
+}
+
 export async function uploadPodAsset({ userId, podId, file, assetRole = 'campaign_asset' }) {
   const client = requireSupabase();
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
@@ -153,7 +163,8 @@ export async function uploadPodAsset({ userId, podId, file, assetRole = 'campaig
 }
 
 export async function getAssetPreview(storagePath) {
-  const { data, error } = await requireSupabase().storage.from('pod-assets').createSignedUrl(storagePath, 15 * 60);
+  // 2 hours — previews live in workspace state long past the old 15-minute window.
+  const { data, error } = await requireSupabase().storage.from('pod-assets').createSignedUrl(storagePath, 7200);
   throwIfError(error);
   return data.signedUrl;
 }

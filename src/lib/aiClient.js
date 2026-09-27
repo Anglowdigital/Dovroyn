@@ -1,4 +1,11 @@
 async function readApiResponse(response) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    // A 200 with a non-JSON body (e.g. a proxy error page) must not render as an empty bubble.
+    const text = (await response.text().catch(() => '')).trim();
+    const detail = text && text.length <= 200 && !text.includes('<') ? text : '';
+    throw new Error(detail || `AI request failed (${response.status}).`);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || 'AI request failed.');
   return payload;

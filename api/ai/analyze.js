@@ -104,7 +104,9 @@ export default async function handler(req, res) {
     });
     const analysis = JSON.parse(extractOutputText(response));
     const result = await finalizePodAnalysis(accessToken, podId, analysis);
-    return sendJson(res, 200, { ok: true, analysis, result });
+    // The RPC returns a bare TIMESTAMPTZ string; tolerate an object-shaped result too.
+    const sourceLockedAt = typeof result === 'string' ? result : result?.sourceLockedAt;
+    return sendJson(res, 200, { ok: true, analysis, sourceLockedAt });
   } catch (err) {
     if (err && err.code === 'missing_api_key') {
       return sendJson(res, 500, { error: 'AI analysis is not configured yet. The site owner needs to add OPENAI_API_KEY.' });

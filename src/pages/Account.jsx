@@ -76,7 +76,7 @@ function TierBadge({ tier }) {
   );
 }
 
-function UpgradeOptions({ currentTier }) {
+function UpgradeOptions({ currentTier, onCheckoutUnavailable }) {
   const tiers = [
     { key: 'starter', ...TIER_INFO.starter },
     { key: 'growth',  ...TIER_INFO.growth },
@@ -112,7 +112,7 @@ function UpgradeOptions({ currentTier }) {
             <button
               className="button button-primary"
               type="button"
-              onClick={() => redirectToCheckout(t.key, 'monthly')}
+              onClick={() => redirectToCheckout(t.key, 'monthly', { onUnavailable: onCheckoutUnavailable })}
             >
               Upgrade to {t.label}
             </button>
@@ -169,10 +169,15 @@ function ProfileSection({ user }) {
 export default function AccountPage({ session, subscription }) {
   const user = session?.user;
   const tier = subscription?.tier || 'free';
+  const [checkoutNotice, setCheckoutNotice] = useState('');
 
   const handleSignOut = async () => {
     if (!supabaseConfigured || !supabase) return;
     await supabase.auth.signOut();
+  };
+
+  const handleCheckoutUnavailable = () => {
+    setCheckoutNotice('Checkout is being configured — please try again shortly.');
   };
 
   return (
@@ -195,7 +200,8 @@ export default function AccountPage({ session, subscription }) {
       <TierBadge tier={tier} />
 
       {/* Upgrade options */}
-      <UpgradeOptions currentTier={tier} />
+      <UpgradeOptions currentTier={tier} onCheckoutUnavailable={handleCheckoutUnavailable} />
+      {checkoutNotice && <p className="form-error" style={{ padding: '0.5rem' }}>{checkoutNotice}</p>}
 
       {/* Billing note */}
       {tier !== 'free' && (
