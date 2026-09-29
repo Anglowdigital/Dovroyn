@@ -1,6 +1,12 @@
+import { isPodDirectionApprovalCurrent } from '../../src/lib/podDirection.js';
+
 export const ACTION_LEVELS = Object.freeze(['research', 'draft', 'approve', 'execute']);
 
 const EXTERNAL_ACTIONS = new Set(['publish_post', 'schedule_post', 'launch_ad', 'change_ad_spend', 'connect_account']);
+
+export function hasApprovedPodDirection(pod, preferences = []) {
+  return isPodDirectionApprovalCurrent(pod, preferences);
+}
 
 export function evaluateAgentAction(request = {}) {
   const level = String(request.level || 'research');

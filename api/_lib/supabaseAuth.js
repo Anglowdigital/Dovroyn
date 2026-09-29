@@ -91,10 +91,18 @@ export async function loadPodAiContext(accessToken, podId) {
   const [analysis, sources, preferences, messages] = await Promise.all([
     loadPodAnalysis(accessToken, podId),
     loadRows(accessToken, `/rest/v1/pod_sources?pod_id=eq.${encodedPodId}&select=source_type,source_url,notes,created_at&order=created_at.asc&limit=12`),
-    loadRows(accessToken, `/rest/v1/pod_preferences?pod_id=eq.${encodedPodId}&active=eq.true&select=preference_type,preference_value,created_at&order=created_at.asc&limit=20`),
+    loadRows(accessToken, `/rest/v1/pod_preferences?pod_id=eq.${encodedPodId}&active=eq.true&select=preference_type,preference_value,created_at&order=created_at.desc&limit=20`),
     loadRows(accessToken, `/rest/v1/pod_ai_messages?pod_id=eq.${encodedPodId}&select=role,content,created_at&order=created_at.desc&limit=12`),
   ]);
-  return { analysis, sources, preferences, messages: messages.reverse() };
+  // Fetch the latest bounded history, then present older preferences before newer overrides.
+  return { analysis, sources, preferences: preferences.reverse(), messages: messages.reverse() };
+}
+
+export async function loadLatestPodDirectionPreference(accessToken, podId) {
+  const response = await supabaseFetch(`/rest/v1/pod_preferences?pod_id=eq.${encodeURIComponent(podId)}&active=eq.true&preference_type=eq.brand_direction&select=preference_type,preference_value,active,created_at&order=created_at.desc&limit=1`, accessToken);
+  if (!response.ok) throw new Error('The approved pod direction could not be verified.');
+  const rows = await response.json();
+  return Array.isArray(rows) ? (rows[0] || null) : null;
 }
 
 export async function savePodAiTurn(accessToken, podId, question, answer) {

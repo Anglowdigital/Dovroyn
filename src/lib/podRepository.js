@@ -1,4 +1,5 @@
 import { supabase, supabaseConfigured } from './supabaseClient';
+import { persistPodDirectionApproval, persistPodDirectionOverride } from './podDirection.js';
 
 function requireSupabase() {
   if (!supabaseConfigured || !supabase) throw new Error('Supabase is not configured.');
@@ -25,19 +26,22 @@ export async function loadPodWorkspace(podId) {
     return result.data || [];
   };
   const [preferences, messages, posts, connections, campaigns, assets] = await Promise.all([
-    optionalQuery(client.from('pod_preferences').select('*').eq('pod_id', podId).eq('active', true).order('created_at')),
+    client.from('pod_preferences').select('*').eq('pod_id', podId).eq('active', true).order('created_at'),
     optionalQuery(client.from('pod_ai_messages').select('id,role,content,created_at').eq('pod_id', podId).order('created_at', { ascending: true }).limit(30)),
     optionalQuery(client.from('social_posts').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
     optionalQuery(client.from('social_connections').select('*').eq('pod_id', podId)),
     optionalQuery(client.from('campaigns').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
     optionalQuery(client.from('pod_assets').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
   ]);
+  // Direction review must not silently fall back to old analysis if saved
+  // overrides cannot be read.
+  throwIfError(preferences.error);
 
   return {
     pod: pod.data,
     sources: sources.data || [],
     analysis: analysis.data || null,
-    preferences,
+    preferences: preferences.data || [],
     messages,
     posts,
     connections,
@@ -120,6 +124,14 @@ export async function savePodPreference(podId, preferenceType, value) {
   }).select().single();
   throwIfError(error);
   return data;
+}
+
+export async function approvePodDirection(podId, analysis) {
+  return persistPodDirectionApproval(requireSupabase(), podId, analysis);
+}
+
+export async function savePodDirectionOverride(podId, value) {
+  return persistPodDirectionOverride(requireSupabase(), podId, value);
 }
 
 export async function saveSocialPosts(podId, posts) {

@@ -1,3 +1,7 @@
+const MAX_CONTEXT_CHARACTERS = 24000;
+const MAX_PREFERENCE_CHARACTERS = 8000;
+const PREFERENCE_HEADING = 'User corrections and preferences:';
+
 function cleanText(value, maxLength = 3000) {
   if (value == null) return '';
   const text = typeof value === 'string' ? value : JSON.stringify(value);
@@ -16,11 +20,21 @@ export function buildPodAiContext({ pod, analysis, sources = [], preferences = [
     cleanText(source.source_url, 1000),
     cleanText(source.notes, 2500),
   ].filter(Boolean).join(' | '));
-  const preferenceLines = preferences.slice(0, 20).map((preference, index) => [
+  const preferenceCandidates = preferences.slice(-20).map((preference, index) => [
     `Preference ${index + 1}`,
     cleanText(preference.preference_type, 100),
     cleanText(preference.preference_value, 1200),
   ].filter(Boolean).join(' | '));
+  const preferenceLines = [];
+  let preferenceCharacters = PREFERENCE_HEADING.length;
+  // Reserve whole newest entries, then restore chronological presentation.
+  for (let index = preferenceCandidates.length - 1; index >= 0; index -= 1) {
+    const line = preferenceCandidates[index];
+    if (preferenceCharacters + line.length + 1 > MAX_PREFERENCE_CHARACTERS) break;
+    preferenceLines.push(line);
+    preferenceCharacters += line.length + 1;
+  }
+  preferenceLines.reverse();
 
   return [
     `Pod ID: ${cleanText(pod?.id, 100)}`,
@@ -35,7 +49,7 @@ export function buildPodAiContext({ pod, analysis, sources = [], preferences = [
     `Audience: ${cleanText(analysis?.audience, 1500) || 'Not supplied'}`,
     `Offer: ${cleanText(analysis?.offer_direction, 1500) || 'Not supplied'}`,
     `Campaign angles: ${cleanText(analysis?.campaign_angles, 2000) || 'Not supplied'}`,
+    preferenceLines.length ? `${PREFERENCE_HEADING}\n${preferenceLines.join('\n')}` : `${PREFERENCE_HEADING} none saved`,
     sourceLines.length ? `Pod sources:\n${sourceLines.join('\n')}` : 'Pod sources: none saved',
-    preferenceLines.length ? `User corrections and preferences:\n${preferenceLines.join('\n')}` : 'User corrections and preferences: none saved',
-  ].join('\n').slice(0, 24000);
+  ].join('\n').slice(0, MAX_CONTEXT_CHARACTERS);
 }

@@ -6,7 +6,7 @@ Dovroyn is a React + Vite application for private AI marketing pods, with:
 - Login and signup with Supabase Auth
 - A lean outer pod library and a rich workspace inside each pod
 - Website/photo intake, AI direction approval and overrides, assets, social content, calendars, campaigns, analytics, collaborations, coming-soon pages, and budget/ad review
-- Server-side OpenAI Responses API routes for the public assistant and authenticated pod analysis
+- Server-side OpenAI Responses API routes for the public assistant, private pod chat, authenticated pod analysis, and approval-gated content generation
 - Dovroyn's responsive cream, navy, and gold interface with charts, modals, motion, and a command palette
 - Supabase Auth, private storage, row-level ownership policies, and pod persistence
 - Four recurring Stripe subscription tiers with monthly allowance windows
@@ -21,7 +21,7 @@ Dovroyn is a React + Vite application for private AI marketing pods, with:
    ```bash
    cp .env.example .env
    ```
-3. Add the required browser and server values listed in `.env.example`. Keep `OPENAI_API_KEY` server-only and never prefix it with `VITE_`.
+3. Add the required browser and server values listed in `.env.example`. Keep `OPENAI_API_KEY` server-only and never prefix it with `VITE_`. Dovroyn defaults its four AI workloads to `gpt-6-astra`; `OPENAI_MODEL` changes all four and the workload-specific variables override one route when required.
 4. Run locally:
    ```bash
    npm run dev
