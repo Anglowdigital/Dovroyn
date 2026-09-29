@@ -1,8 +1,9 @@
-import { createSafetyIdentifier, extractOutputText, createOpenAIResponse } from '../_lib/openai.js';
+import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, resolveOpenAIModel } from '../_lib/openai.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit } from '../_lib/rateLimit.js';
 import {
   loadActiveSubscription,
+  loadLatestPodDirectionPreference,
   loadOwnedPod,
   loadPodAnalysis,
   releaseContentDay,
@@ -11,6 +12,8 @@ import {
 } from '../_lib/supabaseAuth.js';
 import { formatPlatformPost } from '../../src/lib/podEngine.js';
 import { getPlatform } from '../../src/lib/platforms.js';
+import { MARKETING_TRUTH_RULES } from '../_lib/marketingTruth.js';
+import { hasApprovedPodDirection } from '../_lib/agentSafety.js';
 
 const ALLOWED_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'youtube_shorts', 'linkedin', 'x', 'threads', 'pinterest', 'reddit', 'whatsapp', 'telegram', 'discord', 'email', 'google_business', 'google_ads', 'meta_ads', 'blog'];
 
@@ -69,14 +72,18 @@ export default async function handler(req, res) {
       : new Date().toISOString().slice(0, 10);
     if (!podId) return sendJson(res, 400, { error: 'A pod ID is required.' });
 
-    const [pod, subscription, analysis] = await Promise.all([
+    const [pod, subscription, analysis, latestDirection] = await Promise.all([
       loadOwnedPod(accessToken, podId),
       loadActiveSubscription(accessToken, user.id),
       loadPodAnalysis(accessToken, podId),
+      loadLatestPodDirectionPreference(accessToken, podId),
     ]);
     if (!pod) return sendJson(res, 404, { error: 'Pod not found.' });
     if (!subscription) return sendJson(res, 402, { error: 'An active paid subscription is required for AI generation.' });
     if (!analysis) return sendJson(res, 409, { error: 'Approve and save the pod analysis before generating content.' });
+    if (!hasApprovedPodDirection(pod, latestDirection ? [latestDirection] : [])) {
+      return sendJson(res, 409, { error: 'Approve the pod direction before generating content.' });
+    }
 
     const requestedPlatforms = (Array.isArray(body.platforms) ? body.platforms : parseStoredList(analysis.social_recommendations))
       .filter((key) => ALLOWED_PLATFORMS.includes(key))
@@ -96,7 +103,7 @@ export default async function handler(req, res) {
       return `${key}: ${platform?.rules?.contentStyle}; hashtag style ${platform?.rules?.hashtagStyle}.`;
     }).join('\n');
     const response = await createOpenAIResponse({
-      model: process.env.OPENAI_CONTENT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6-terra',
+      model: resolveOpenAIModel('OPENAI_CONTENT_MODEL'),
       safety_identifier: createSafetyIdentifier(user.id),
       reasoning: { effort: 'low' },
       instructions: [
@@ -105,6 +112,7 @@ export default async function handler(req, res) {
         'Create exactly one distinct draft for every requested platform and no unrequested platforms.',
         'Make each draft native to that platform rather than copying the same caption.',
         'Return useful plain keywords without # symbols; Dovroyn will enforce each platform hashtag rule after generation.',
+        MARKETING_TRUTH_RULES,
         platformGuidance,
       ].join('\n'),
       input: [
@@ -119,7 +127,7 @@ export default async function handler(req, res) {
         `Additional user direction: ${String(body.direction || '').slice(0, 1500) || 'None'}`,
       ].join('\n'),
       text: { verbosity: 'low', format: { type: 'json_schema', name: 'dovroyn_platform_content', strict: true, schema: CONTENT_SCHEMA } },
-      max_output_tokens: 2200,
+      max_output_tokens: 8000,
     });
 
     const generated = JSON.parse(extractOutputText(response)).posts;

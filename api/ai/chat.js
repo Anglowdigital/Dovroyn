@@ -1,6 +1,7 @@
-import { createSafetyIdentifier, extractOutputText, createOpenAIResponse } from '../_lib/openai.js';
+import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, resolveOpenAIModel } from '../_lib/openai.js';
 import { readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit, requestIdentity } from '../_lib/rateLimit.js';
+import { MARKETING_TRUTH_RULES } from '../_lib/marketingTruth.js';
 
 const MAX_QUESTION_LENGTH = 800;
 
@@ -41,13 +42,13 @@ export default async function handler(req, res) {
     }
 
     const response = await createOpenAIResponse({
-      model: process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6-terra',
+      model: resolveOpenAIModel('OPENAI_CHAT_MODEL'),
       safety_identifier: createSafetyIdentifier(`landing:${requestIdentity(req)}`),
       reasoning: { effort: 'low' },
-      instructions: buildPublicAssistantInstructions({ demoPod: demoPod === true }),
+      instructions: [buildPublicAssistantInstructions({ demoPod: demoPod === true }), MARKETING_TRUTH_RULES].join('\n\n'),
       input: cleanQuestion,
       text: { verbosity: 'low' },
-      max_output_tokens: 500,
+      max_output_tokens: 8000,
     });
 
     return sendJson(res, 200, { answer: extractOutputText(response) });

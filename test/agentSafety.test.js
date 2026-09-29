@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateAgentAction } from '../api/_lib/agentSafety.js';
+import { evaluateAgentAction, hasApprovedPodDirection } from '../api/_lib/agentSafety.js';
 import { buildAnalysisProvenance } from '../api/_lib/analysisEvidence.js';
 
 test('research has no external effect', () => {
@@ -9,6 +9,21 @@ test('research has no external effect', () => {
 
 test('drafting has no external effect', () => {
   assert.deepEqual(evaluateAgentAction({ level: 'draft' }), { allowed: true, level: 'draft', externalEffect: false });
+});
+
+test('content drafting requires a server-confirmed approved pod direction', () => {
+  assert.equal(hasApprovedPodDirection({ status: 'direction_locked' }), true);
+  assert.equal(hasApprovedPodDirection({ status: 'active' }), true);
+  const latest = [{
+    active: true,
+    preference_type: 'brand_direction',
+    preference_value: { value: 'New direction' },
+    created_at: '2026-09-30T01:00:00.000Z',
+  }];
+  assert.equal(hasApprovedPodDirection({ status: 'direction_locked', accepted_tone: 'Old direction' }, latest), false);
+  assert.equal(hasApprovedPodDirection({ status: 'direction_locked', accepted_tone: 'New direction' }, latest), true);
+  assert.equal(hasApprovedPodDirection({ status: 'awaiting_direction' }), false);
+  assert.equal(hasApprovedPodDirection(null), false);
 });
 
 test('unknown action levels fail closed', () => {

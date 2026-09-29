@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   Activity,
@@ -25,17 +25,19 @@ import {
   Upload,
   Users,
 } from 'lucide-react';
-import { supabase, supabaseConfigured } from '../lib/supabaseClient';
+import { supabaseConfigured } from '../lib/supabaseClient';
+import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
 import { formatPlatformPost } from '../lib/podEngine';
 import { getPlan } from '../lib/plans';
 import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askDemoPodAssistant, askPodAssistant, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import {
+  approvePodDirection,
   getAssetPreview,
   loadPodWorkspace,
+  savePodDirectionOverride,
   savePodPrimarySource,
-  savePodPreference,
   saveSocialPosts,
   updateSocialPost,
   uploadPodAsset,
@@ -168,6 +170,10 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   const [aiQuestion, setAiQuestion] = useState('');
   const [aiSending, setAiSending] = useState(false);
   const [directionApproved, setDirectionApproved] = useState(false);
+  const [directionMutation, setDirectionMutation] = useState('');
+  const [directionSaveFailed, setDirectionSaveFailed] = useState(false);
+  const [contentGenerating, setContentGenerating] = useState(false);
+  const directionOperation = useRef('');
   const [overrideText, setOverrideText] = useState('');
   const [sources, setSources] = useState([]);
   const [sourceType, setSourceType] = useState(demo ? 'website' : 'website');
@@ -203,13 +209,13 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       setSourceUrl(workspace.pod?.source_url || '');
       setSources(workspace.sources || []);
       setAiMessages(workspace.messages || []);
-      setDirectionApproved(['direction_locked', 'active'].includes(workspace.pod?.status));
+      setDirectionApproved(isPodDirectionApprovalCurrent(workspace.pod, workspace.preferences));
       if (workspace.analysis) {
         let platformKeys = [];
         let pillars = [];
         try { platformKeys = JSON.parse(workspace.analysis.social_recommendations || '[]'); } catch { platformKeys = []; }
         try { pillars = JSON.parse(workspace.analysis.content_ideas || '[]'); } catch { pillars = []; }
-        setAnalysis({
+        setAnalysis(restorePodDirection({
           summary: workspace.analysis.brand_summary,
           tone: workspace.analysis.tone,
           audience: workspace.analysis.audience,
@@ -222,7 +228,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
           personal_data_categories: workspace.analysis.personal_data_categories || [],
           platforms: platformKeys.length ? platformKeys : INITIAL_ANALYSIS.platforms,
           pillars: pillars.length ? pillars : INITIAL_ANALYSIS.pillars,
-        });
+        }, workspace.preferences));
         setAnalysisState('ready');
       } else {
         setActiveTab('sources');
@@ -427,32 +433,55 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   };
 
   const approveDirection = async () => {
-    setDirectionApproved(true);
-    setModal(null);
-    if (!demo && supabaseConfigured && pod?.id) {
-      await supabase.from('pods').update({
-        status: 'direction_locked',
-        accepted_tone: analysis?.tone,
-        accepted_strategy: analysis?.opportunity,
-        updated_at: new Date().toISOString(),
-      }).eq('id', pod.id);
+    if (directionOperation.current || directionSaveFailed || !analysis) return;
+    directionOperation.current = 'approving';
+    setDirectionMutation('approving');
+    setDirectionApproved(false);
+    try {
+      if (!demo) {
+        const savedPod = await approvePodDirection(pod?.id, analysis);
+        setPod(savedPod);
+      }
+      setDirectionApproved(true);
+      setModal(null);
+      showNotice('Brand direction approved. Content generation is unlocked.');
+    } catch (error) {
+      showNotice(error.message || 'Direction approval could not be saved. Please try again.');
+    } finally {
+      directionOperation.current = '';
+      setDirectionMutation('');
     }
-    showNotice('Brand direction approved. Content generation is unlocked.');
   };
 
   const saveOverride = async () => {
-    if (!overrideText.trim()) return;
-    setAnalysis((current) => ({ ...current, tone: overrideText.trim(), userDirection: overrideText.trim() }));
+    const direction = overrideText.trim();
+    if (!direction || directionOperation.current) return;
+    directionOperation.current = 'override';
+    setDirectionMutation('override');
     setDirectionApproved(false);
-    setOverrideText('');
-    setModal(null);
-    if (!demo && pod?.id) {
-      try { await savePodPreference(pod.id, 'brand_direction', overrideText.trim()); } catch { showNotice('Override applied in this session; the workspace migration is needed to save it.'); return; }
+    try {
+      if (!demo) {
+        const { pod: savedPod } = await savePodDirectionOverride(pod?.id, direction);
+        setPod(savedPod);
+      }
+      setAnalysis((current) => ({ ...current, tone: direction, userDirection: direction }));
+      setDirectionSaveFailed(false);
+      setOverrideText('');
+      setModal(null);
+      showNotice('Override saved. Review the updated direction before approving it.');
+    } catch {
+      // If the response is uncertain, keep content generation locked until the
+      // user retries or reloads the server-confirmed pod state.
+      setDirectionSaveFailed(true);
+      showNotice('Direction save could not be confirmed. Retry saving or reload before approving.');
+    } finally {
+      directionOperation.current = '';
+      setDirectionMutation('');
     }
-    showNotice('Override saved. The pod has readjusted its direction for review.');
   };
 
   const generateContent = async () => {
+    if (directionOperation.current || directionSaveFailed) return;
     if (!analysis) {
       setModal({ type: 'analysis-first' });
       return;
@@ -461,6 +490,8 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       setModal({ type: 'approval-first' });
       return;
     }
+    directionOperation.current = 'generating';
+    setContentGenerating(true);
     try {
       let generated;
       if (demo) {
@@ -488,6 +519,9 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       showNotice(`${generated.length} platform-specific drafts generated.`);
     } catch (error) {
       showNotice(error.message || 'Content generation could not run.');
+    } finally {
+      directionOperation.current = '';
+      setContentGenerating(false);
     }
   };
 
@@ -667,8 +701,8 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
             {Array.isArray(analysis.evidence) && analysis.evidence.length > 0 && <article className="pod-rich-card"><small>Evidence</small><ul>{analysis.evidence.map((item, index) => <li key={`${item.source_reference}-${index}`}>{item.finding} <span className="subtle">({item.source_reference}, {Math.round(Number(item.confidence) * 100)}%)</span></li>)}</ul></article>}
             <article className="pod-rich-card"><small>Content pillars</small><div className="pod-chip-row">{analysis.pillars.map((pillar) => <span key={pillar}>{pillar}</span>)}</div></article>
             <div className="pod-action-row">
-              <button className="button button-primary" type="button" onClick={approveDirection}><Check size={16} /> Approve direction</button>
-              <button className="button button-ghost" type="button" onClick={() => setModal({ type: 'override' })}><Settings2 size={16} /> Override AI choice</button>
+              <button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={approveDirection}><Check size={16} /> {directionMutation === 'approving' ? 'Saving approval…' : 'Approve direction'}</button>
+              <button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal({ type: 'override' })}><Settings2 size={16} /> Override AI choice</button>
             </div>
           </div>
         );
@@ -701,7 +735,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
         const contentPhoto = [...brandPhotos, ...assets.filter((asset) => asset.assetRole === 'campaign_asset')][0] || null;
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign, posted everywhere</h2><p className="subtle">The same approved campaign goes to every selected platform on the same day — with photos from the website gallery first, the asset folder second.</p></div><button className="button button-primary" type="button" onClick={generateContent}><Sparkles size={16} /> Generate content</button></header>
+            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign, posted everywhere</h2><p className="subtle">The same approved campaign goes to every selected platform on the same day — with photos from the website gallery first, the asset folder second.</p></div><button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={generateContent}><Sparkles size={16} /> {contentGenerating ? 'Generating…' : 'Generate content'}</button></header>
             {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Campaign marked for the next posting day — the calendar save is not live yet.'); }}>Add to calendar</button></footer></article>)}</div>}
           </div>
         );
@@ -784,7 +818,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       </div>
       {notice && <div className="pod-toast" role="status"><Check size={16} />{notice}</div>}
       <PodCommandPalette open={paletteOpen} commands={commands} onClose={() => setPaletteOpen(false)} />
-      <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => setModal(null)}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim()} onClick={saveOverride}>Save and readjust</button><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Cancel</button></div></PodModal>
+      <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => { if (!directionOperation.current) setModal(null); }}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} disabled={Boolean(directionMutation) || contentGenerating} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim() || Boolean(directionMutation) || contentGenerating} onClick={saveOverride}>{directionMutation === 'override' ? 'Saving direction…' : 'Save and readjust'}</button><button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal(null)}>Cancel</button></div></PodModal>
       <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in needs the provider app ID, permissions, redirect URL, token encryption, and platform approval before this button can safely open OAuth.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
       <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, one logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
       <PodModal open={modal?.type === 'analysis-first'} title="Run the analysis first" description="Content must come from this pod's website, photos, and approved direction." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Go to AI direction</button></PodModal>

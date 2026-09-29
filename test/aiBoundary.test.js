@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildPublicAssistantInstructions } from '../api/ai/chat.js';
-import { createSafetyIdentifier } from '../api/_lib/openai.js';
+import { createSafetyIdentifier, DEFAULT_OPENAI_MODEL, extractOutputText, resolveOpenAIModel } from '../api/_lib/openai.js';
 import { buildPodAiContext } from '../api/_lib/podContext.js';
 import { extractReadableText, validatePublicWebsiteUrl } from '../api/_lib/webSource.js';
+import { MARKETING_TRUTH_RULES } from '../api/_lib/marketingTruth.js';
+import '../api/ai/analyze.js';
+import '../api/ai/content.js';
+import '../api/ai/pod-chat.js';
 
 test('OpenAI safety identifiers are stable without exposing the Supabase user id', () => {
   const userId = '6ad64dc2-79a7-4ed0-8e28-980ca5da29a0';
@@ -15,6 +19,34 @@ test('OpenAI safety identifiers are stable without exposing the Supabase user id
   assert.ok(first.length <= 64);
   assert.doesNotMatch(first, new RegExp(userId));
   assert.notEqual(first, createSafetyIdentifier('another-user'));
+});
+
+test('all Dovroyn AI workloads default to GPT-6 Astra with explicit override precedence', () => {
+  assert.equal(DEFAULT_OPENAI_MODEL, 'gpt-6-astra');
+  assert.equal(resolveOpenAIModel('OPENAI_ANALYSIS_MODEL', {}), 'gpt-6-astra');
+  assert.equal(resolveOpenAIModel('OPENAI_ANALYSIS_MODEL', { OPENAI_MODEL: 'gpt-6-sol' }), 'gpt-6-sol');
+  assert.equal(resolveOpenAIModel('OPENAI_ANALYSIS_MODEL', {
+    OPENAI_MODEL: 'gpt-6-sol',
+    OPENAI_ANALYSIS_MODEL: 'gpt-6-astra',
+  }), 'gpt-6-astra');
+});
+
+test('completed Responses output is accepted while partial and refusal output fail closed', () => {
+  assert.equal(extractOutputText({
+    status: 'completed',
+    output: [{ type: 'message', status: 'completed', content: [{ type: 'output_text', text: 'Ready' }] }],
+  }), 'Ready');
+  assert.throws(() => extractOutputText({ status: 'incomplete', output_text: 'Partial' }), /did not complete/);
+  assert.throws(() => extractOutputText({
+    status: 'completed',
+    output_text: 'Unsafe shortcut',
+    output: [{ type: 'message', status: 'completed', content: [{ type: 'refusal', refusal: 'No' }] }],
+  }), /declined/);
+});
+
+test('shared marketing rules prohibit fabricated proof and unconfirmed external actions', () => {
+  assert.match(MARKETING_TRUTH_RULES, /Never invent.*testimonials/i);
+  assert.match(MARKETING_TRUTH_RULES, /Do not claim Dovroyn has connected, published, scheduled, measured, spent, or changed anything/i);
 });
 
 test('demo pod AI is instructed to answer directly with specific advertising platforms', () => {
@@ -44,6 +76,22 @@ test('pod AI context is stateless and isolated between pods', () => {
   assert.match(first, /Winter launch/);
   assert.match(second, /Gidgee & Co/);
   assert.doesNotMatch(second, /Aurora|Winter launch/);
+});
+
+test('pod context reserves space for the newest corrections before large source material', () => {
+  const preferences = Array.from({ length: 21 }, (_, index) => ({
+    preference_type: 'brand_direction',
+    preference_value: { value: `${index === 20 ? 'LATEST-DIRECTION' : `direction-${index}`} ${'x'.repeat(1100)}` },
+  }));
+  const context = buildPodAiContext({
+    pod: { id: 'pod-a', pod_name: 'Aurora' },
+    analysis: { brand_summary: 'y'.repeat(2500), campaign_angles: 'z'.repeat(2000) },
+    sources: Array.from({ length: 12 }, (_, index) => ({ source_type: 'website', notes: `source-${index} ${'s'.repeat(2500)}` })),
+    preferences,
+  });
+
+  assert.match(context, /LATEST-DIRECTION/);
+  assert.ok(context.length <= 24000);
 });
 
 test('website analysis blocks local and private network targets', async () => {

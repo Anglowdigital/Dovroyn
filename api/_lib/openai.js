@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
+export const DEFAULT_OPENAI_MODEL = 'gpt-6-astra';
+
+export function resolveOpenAIModel(workloadVariable, env = process.env) {
+  const workloadModel = String(env?.[workloadVariable] || '').trim();
+  const sharedModel = String(env?.OPENAI_MODEL || '').trim();
+  return workloadModel || sharedModel || DEFAULT_OPENAI_MODEL;
+}
 
 export function createSafetyIdentifier(userId) {
   const digest = createHash('sha256').update(String(userId || 'anonymous')).digest('hex').slice(0, 48);
@@ -43,11 +50,27 @@ export async function createOpenAIResponse(body) {
 }
 
 export function extractOutputText(response) {
-  if (typeof response?.output_text === 'string') return response.output_text;
-  for (const item of response?.output || []) {
-    for (const content of item?.content || []) {
-      if (typeof content?.text === 'string') return content.text;
+  if (response?.error) throw new Error('The model response failed.');
+  if (response?.status != null && response.status !== 'completed') {
+    throw new Error('The model response did not complete.');
+  }
+
+  const textParts = [];
+  for (const item of Array.isArray(response?.output) ? response.output : []) {
+    if (item?.type != null && item.type !== 'message') continue;
+    if (item?.status != null && item.status !== 'completed') {
+      throw new Error('The model message did not complete.');
+    }
+    for (const content of Array.isArray(item?.content) ? item.content : []) {
+      if (content?.type === 'refusal') throw new Error('The model declined the request.');
+      if ((content?.type == null || content.type === 'output_text') && typeof content?.text === 'string') {
+        textParts.push(content.text);
+      }
     }
   }
+
+  // Inspect every message for refusals and partial output before using the shortcut.
+  const text = typeof response?.output_text === 'string' ? response.output_text : textParts.join('');
+  if (text.trim()) return text;
   throw new Error('The model returned no text output.');
 }
