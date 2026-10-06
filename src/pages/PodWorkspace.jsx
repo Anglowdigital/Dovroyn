@@ -291,6 +291,9 @@ function LivePodWorkspace({ session, subscription }) {
   const [budgetDecision, setBudgetDecision] = useState('pending');
   const [operationalMutation, setOperationalMutation] = useState('');
   const operationalOperation = useRef('');
+  const operationalLifecycle = useRef(null);
+  const currentPodId = useRef(podId);
+  currentPodId.current = podId;
   const hasPlatformSelection = useRef(false);
   const [modal, setModal] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -307,9 +310,14 @@ function LivePodWorkspace({ session, subscription }) {
   const budgetCurrency = targetCountry === 'AU' ? 'AUD' : '';
 
   useEffect(() => {
+    const lifecycle = { podId, active: true };
+    operationalLifecycle.current = lifecycle;
+    operationalOperation.current = '';
+    setOperationalMutation('');
+    setNotice('');
     if (!supabaseConfigured || !podId) {
       setLoading(false);
-      return;
+      return () => { lifecycle.active = false; };
     }
 
     let mounted = true;
@@ -334,7 +342,7 @@ function LivePodWorkspace({ session, subscription }) {
       setHolidayPreference(operational.holidayPreference);
       setObservancesEnabled(operational.holidayPreference?.include_religious_observances === true);
       setBudgetDecision(operational.budgetDecision);
-      setBudgetRecommendation(workspace.adAnalysis?.[0]?.recommendation || 'Review how your planned budget is allocated before authorising any provider spend.');
+      setBudgetRecommendation(operational.budgetRecommendation || 'Review how your planned budget is allocated before authorising any provider spend.');
       if (workspace.analysis) {
         let platformKeys = [];
         let pillars = [];
@@ -388,7 +396,7 @@ function LivePodWorkspace({ session, subscription }) {
     }).catch((error) => {
       if (mounted) { setLoadError(error.message || 'The Pod state could not be loaded.'); setPod(null); setLoading(false); }
     });
-    return () => { mounted = false; };
+    return () => { mounted = false; lifecycle.active = false; };
   }, [podId]);
 
   useEffect(() => {
@@ -415,12 +423,12 @@ function LivePodWorkspace({ session, subscription }) {
       ? selectedPlatformKeys.filter((key) => key !== platformKey)
       : [...selectedPlatformKeys, platformKey];
     setSelectedPlatformKeys(next);
-    await saveOperational('platforms', async () => {
+    await saveOperational('platforms', async (isCurrent) => {
       try {
         await savePlatformSelection(pod.id, next);
-        hasPlatformSelection.current = true;
+        if (isCurrent()) hasPlatformSelection.current = true;
       } catch (error) {
-        setSelectedPlatformKeys(previous);
+        if (isCurrent()) setSelectedPlatformKeys(previous);
         throw error;
       }
     });
@@ -439,14 +447,25 @@ function LivePodWorkspace({ session, subscription }) {
 
   const saveOperational = async (operation, save) => {
     if (operationalOperation.current) return;
-    operationalOperation.current = operation;
+    const lifecycle = operationalLifecycle.current;
+    const originPodId = pod?.id;
+    const isCurrent = () => lifecycle?.active && operationalLifecycle.current === lifecycle
+      && currentPodId.current === originPodId && lifecycle.podId === originPodId;
+    if (!isCurrent()) return;
+    const token = { operation, lifecycle };
+    operationalOperation.current = token;
     setOperationalMutation(operation);
-    try { await save(); }
-    catch (error) { showNotice(error.message || 'This Pod change could not be saved.'); }
-    finally { operationalOperation.current = ''; setOperationalMutation(''); }
+    try { await save(isCurrent); }
+    catch (error) { if (isCurrent()) showNotice(error.message || 'This Pod change could not be saved.'); }
+    finally {
+      if (isCurrent() && operationalOperation.current === token) {
+        operationalOperation.current = '';
+        setOperationalMutation('');
+      }
+    }
   };
 
-  const saveObservances = (enabled) => saveOperational('observances', async () => {
+  const saveObservances = (enabled) => saveOperational('observances', async (isCurrent) => {
     const saved = await saveHolidayPreference(pod.id, {
       country_code: targetCountry,
       region_code: holidayPreference?.region_code || null,
@@ -454,31 +473,35 @@ function LivePodWorkspace({ session, subscription }) {
       include_religious_observances: enabled === true,
       selected_observances: holidayPreference?.selected_observances || [],
     });
+    if (!isCurrent()) return;
     setHolidayPreference(saved);
     setObservancesEnabled(saved.include_religious_observances === true);
     showNotice('Observance preference saved. No religion or observance was guessed.');
   });
 
-  const decideCampaign = (status) => saveOperational('campaign', async () => {
+  const decideCampaign = (status) => saveOperational('campaign', async (isCurrent) => {
     const saved = await saveCampaignDecision(pod.id, {
       campaignId: campaign?.id, name: campaign?.name || `${pod.pod_name} campaign`, status,
       objective: campaign?.objective || analysis?.offer || null,
       brief: campaign?.brief || { strategy: analysis?.opportunity || '', platforms: selectedPlatformKeys },
     });
+    if (!isCurrent()) return;
     setCampaign(saved);
     showNotice(status === 'approved' ? 'Campaign approval saved. Publishing still requires connected accounts.' : 'Campaign returned to draft and saved.');
   });
 
-  const saveBudget = () => saveOperational('budget', async () => {
+  const saveBudget = () => saveOperational('budget', async (isCurrent) => {
     if (!plannedBudgetInput.trim()) throw new Error('Enter a planned monthly budget.');
     const saved = await saveBudgetPlan(pod.id, { plannedBudget: Number(plannedBudgetInput), notes: budgetNotes });
+    if (!isCurrent()) return;
     setBudget(saved);
     setPlannedBudgetInput(String(saved.planned_budget));
     showNotice('Monthly budget plan saved. No provider spend was changed.');
   });
 
-  const decideBudget = (decision) => saveOperational('budget-decision', async () => {
+  const decideBudget = (decision) => saveOperational('budget-decision', async (isCurrent) => {
     await savePreferenceDecision(pod.id, 'budget_recommendation_decision', { decision, scope: 'plan_only' });
+    if (!isCurrent()) return;
     setBudgetDecision(decision);
     showNotice(`Recommendation ${decision} for the plan only. No provider spend was changed.`);
   });
@@ -697,11 +720,12 @@ function LivePodWorkspace({ session, subscription }) {
       setModal({ type: 'content-first' });
       return;
     }
-    await saveOperational('calendar', async () => {
+    await saveOperational('calendar', async (isCurrent) => {
       const items = buildCalendarItems({ month: calendarMonth, posts, platformKeys: selectedPlatformKeys,
         weeklyPostingDays: plan.weeklyPostingDays, monthlyContentDays: plan.monthlyContentDays });
       if (!items.length) throw new Error('No calendar days are available. Check your plan allowance and selected platform drafts.');
       const saved = await saveCalendarItems(pod.id, items);
+      if (!isCurrent()) return;
       setCalendarItems((current) => [...current.filter((item) => !item.scheduled_date.startsWith(calendarMonth)), ...saved]);
       showNotice('Calendar drafts saved for this month. Nothing was approved or published.');
     });

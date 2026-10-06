@@ -51,6 +51,16 @@ function database(seed = {}, { fail, empty, wait, failMessage } = {}) {
         });
       }
       if (empty === `${table}:${method}`) result = [];
+      if (method === 'GET' && parsed.searchParams.has('order')) {
+        const order = parsed.searchParams.get('order').split(',').map((part) => part.split('.'));
+        result.sort((a, b) => {
+          for (const [key, direction] of order) {
+            const compared = String(a[key] || '').localeCompare(String(b[key] || ''));
+            if (compared) return direction === 'desc' ? -compared : compared;
+          }
+          return 0;
+        });
+      }
       const singular = new Headers(options.headers).get('accept')?.includes('object');
       return new Response(JSON.stringify(singular ? result[0] || null : result), {
         status: 200, headers: { 'Content-Type': 'application/json' },
@@ -216,6 +226,8 @@ test('failing operational collection is identified rather than silently restored
 async function workspaceHarness(workspace, services = {}) {
   const slots = [];
   const effects = [];
+  const cleanups = new Map();
+  let currentPodId = 'one';
   let cursor = 0;
   let tree;
   const h = (type, props, ...children) => typeof type === 'function'
@@ -224,7 +236,7 @@ async function workspaceHarness(workspace, services = {}) {
     useState(initial) { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial; return [slots[index], (value) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }]; },
     useRef(initial) { const index = cursor++; return slots[index] ||= { current: initial }; },
     useMemo(fn) { cursor++; return fn(); },
-    useEffect(fn, deps) { const index = cursor++; if (!slots[index] || deps.some((dep, i) => dep !== slots[index][i])) { slots[index] = deps; effects.push(fn); } },
+    useEffect(fn, deps) { const index = cursor++; if (!slots[index] || deps.some((dep, i) => dep !== slots[index][i])) { slots[index] = deps; effects.push(() => { cleanups.get(index)?.(); cleanups.set(index, fn()); }); } },
   };
   const repository = {
     loadPodWorkspace: async () => workspace,
@@ -233,7 +245,7 @@ async function workspaceHarness(workspace, services = {}) {
     ...services,
   };
   const modules = {
-    react: hooks, 'react-router-dom': { Link: ({ children }) => h('a', {}, children), useParams: () => ({ podId: 'one' }) },
+    react: hooks, 'react-router-dom': { Link: ({ children }) => h('a', {}, children), useParams: () => ({ podId: currentPodId }) },
     'lucide-react': new Proxy({}, { get: () => () => null }),
     '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
@@ -253,7 +265,12 @@ async function workspaceHarness(workspace, services = {}) {
   const text = (node = tree) => typeof node === 'object' ? (node.children || []).map(text).join(' ') : String(node);
   const button = (label) => nodes().find((node) => node.type === 'button' && text(node).trim() === label);
   await flush();
-  return { render, flush, nodes, text, button, async tab(label) { button(label).props.onClick(); await flush(); } };
+  return { render, flush, nodes, text, button,
+    async navigate(podId) { currentPodId = podId; await flush(); },
+    unmount() { for (const cleanup of cleanups.values()) cleanup?.(); cleanups.clear(); },
+    snapshot() { return structuredClone(slots); },
+    async tab(label) { button(label).props.onClick(); await flush(); },
+  };
 }
 
 function savedWorkspace(extra = {}) {
@@ -376,4 +393,142 @@ test('repository returns all operational collections with Pod scoping and names 
   assert.equal(db.tables.budgets[0].planned_budget, 30);
   const failed = database({ pods: [{ id: 'one' }] }, { fail: 'pod_preferences:GET', failMessage: 'permission denied' });
   await assert.rejects(repositoryHarness(failed.client).loadPodWorkspace('one'), /pod_preferences/);
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+const mutationCases = [
+  { name: 'budget', tab: 'Budget & ads', service: 'saveBudgetPlan', start: (ui) => ui.button('Save budget plan').props.onClick(), result: { planned_budget: 900 } },
+  { name: 'campaign', tab: 'Campaigns', service: 'saveCampaignDecision', start: (ui) => ui.button('Approve campaign').props.onClick(), result: { id: 'campaign-a', name: 'Pod A campaign', status: 'approved' } },
+  { name: 'calendar', tab: 'Calendar', service: 'saveCalendarItems', start: (ui) => ui.button('Generate calendar').props.onClick(), result: [{ scheduled_date: new Date().toISOString().slice(0, 7) + '-05', platform: 'instagram', caption: 'Pod A calendar', status: 'draft' }] },
+  { name: 'holiday', tab: 'Calendar', service: 'saveHolidayPreference', start: (ui) => ui.nodes().find((node) => node.type === 'input' && node.props.type === 'checkbox').props.onChange({ target: { checked: true } }), result: { country_code: 'AU', include_religious_observances: true } },
+  { name: 'budget decision', tab: 'Budget & ads', service: 'savePreferenceDecision', start: (ui) => ui.button('Approve recommendation').props.onClick(), result: {} },
+  { name: 'platform selection', tab: 'Social accounts', service: 'savePlatformSelection', start: (ui) => ui.nodes().find((node) => node.type === 'label' && ui.text(node).includes('Instagram')).children.find((node) => node.type === 'input').props.onChange(), result: {} },
+];
+
+for (const mutation of mutationCases) {
+  test(`pending ${mutation.name} save cannot mutate another Pod after navigation`, async () => {
+    const pending = deferred();
+    const calls = [];
+    const podA = savedWorkspace({ budgets: [{ planned_budget: 100 }], posts: [{ id: 'post-a', platform: 'instagram', body: 'Pod A calendar', status: 'draft' }] });
+    const podB = savedWorkspace({ pod: { id: 'two', pod_name: 'Pod B', target_country: 'Australia', status: 'direction_locked' }, budgets: [{ planned_budget: 200 }], preferences: [{ active: true, preference_type: 'platform_selection', preference_value: { platforms: ['email'] } }] });
+    const ui = await workspaceHarness(podA, {
+      loadPodWorkspace: async (id) => id === 'one' ? podA : podB,
+      [mutation.service]: (...args) => { calls.push(args); return pending.promise; },
+    });
+    await ui.tab(mutation.tab);
+    const operation = mutation.start(ui);
+    assert.equal(calls[0][0], 'one');
+    await ui.navigate('two');
+    const before = ui.text();
+    pending.resolve(mutation.result);
+    await operation;
+    await ui.flush();
+    assert.equal(ui.text(), before, 'Pod A completion changed Pod B render output');
+    assert.match(ui.text(), /Pod B/);
+    assert.ok(ui.nodes().filter((node) => node.type === 'button').every((node) => !node.props.disabled), 'Pod B inherited the pending lock');
+  });
+  test(`pending ${mutation.name} save cannot mutate hook state after unmount`, async () => {
+    const pending = deferred();
+    const podA = savedWorkspace({ budgets: [{ planned_budget: 100 }], posts: [{ id: 'post-a', platform: 'instagram', body: 'Pod A calendar', status: 'draft' }] });
+    const ui = await workspaceHarness(podA, { [mutation.service]: () => pending.promise });
+    await ui.tab(mutation.tab);
+    const operation = mutation.start(ui);
+    ui.unmount();
+    const snapshot = ui.snapshot();
+    pending.resolve(mutation.result);
+    await operation;
+    assert.deepEqual(ui.snapshot(), snapshot, 'unmounted completion changed hook state');
+  });
+}
+
+test('failed pending platform save cannot roll back another Pod or show its error after navigation', async () => {
+  const pending = deferred();
+  const podA = savedWorkspace();
+  const podB = savedWorkspace({ pod: { id: 'two', pod_name: 'Pod B', target_country: 'Australia' }, preferences: [{ active: true, preference_type: 'platform_selection', preference_value: { platforms: ['email'] } }] });
+  const ui = await workspaceHarness(podA, { loadPodWorkspace: async (id) => id === 'one' ? podA : podB, savePlatformSelection: () => pending.promise });
+  await ui.tab('Social accounts');
+  const operation = mutationCases.at(-1).start(ui);
+  await ui.navigate('two');
+  const before = ui.text();
+  pending.reject(new Error('Pod A denied'));
+  await operation;
+  await ui.flush();
+  assert.equal(ui.text(), before);
+  const email = ui.nodes().find((node) => node.type === 'label' && ui.text(node).includes('Email'));
+  assert.equal(email.children.find((node) => node.type === 'input').props.checked, true);
+});
+
+test('old budget completion cannot affect a fresh lifecycle of the same Pod or mutate state after unmount', async () => {
+  const pending = deferred();
+  const podA = savedWorkspace({ budgets: [{ planned_budget: 100 }] });
+  const podB = savedWorkspace({ pod: { id: 'two', pod_name: 'Pod B' } });
+  const ui = await workspaceHarness(podA, { loadPodWorkspace: async (id) => id === 'one' ? podA : podB, saveBudgetPlan: () => pending.promise });
+  await ui.tab('Budget & ads');
+  const operation = ui.button('Save budget plan').props.onClick();
+  await ui.navigate('two');
+  await ui.navigate('one');
+  const before = ui.text();
+  pending.resolve({ planned_budget: 900 });
+  await operation;
+  await ui.flush();
+  assert.equal(ui.text(), before);
+  const second = deferred();
+  const unmounted = await workspaceHarness(podA, { saveBudgetPlan: () => second.promise });
+  await unmounted.tab('Budget & ads');
+  const unmountedOperation = unmounted.button('Save budget plan').props.onClick();
+  unmounted.unmount();
+  const snapshot = unmounted.snapshot();
+  second.resolve({ planned_budget: 999 });
+  await unmountedOperation;
+  assert.deepEqual(unmounted.snapshot(), snapshot, 'unmounted completion changed hook state');
+});
+
+test('newest budget recommendation is restored from unsorted multiple analyses and rendered', async () => {
+  const adAnalysis = [
+    { id: 'old', pod_id: 'one', created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z', recommendation: 'Old recommendation' },
+    { id: 'new', pod_id: 'one', created_at: '2026-10-06T00:00:00Z', updated_at: '2026-10-07T00:00:00Z', recommendation: 'Newest recommendation' },
+    { id: 'other', pod_id: 'two', created_at: '2026-10-08T00:00:00Z', recommendation: 'Other Pod recommendation' },
+  ];
+  const workspace = savedWorkspace({ adAnalysis });
+  assert.equal(state.restoreOperationalState(workspace).budgetRecommendation, 'Newest recommendation');
+  const ui = await workspaceHarness(workspace);
+  await ui.tab('Budget & ads');
+  assert.match(ui.text(), /Newest recommendation/);
+  assert.doesNotMatch(ui.text(), /Old recommendation|Other Pod recommendation/);
+  const db = database({ ad_analysis: adAnalysis });
+  const loaded = await state.loadOperationalCollections(db.client, 'one');
+  assert.equal(loaded.adAnalysis[0].id, 'new');
+});
+
+test('old Pod completion cannot unlock a new Pod save already in flight', async () => {
+  const first = deferred();
+  const second = deferred();
+  const calls = [];
+  const podA = savedWorkspace({ budgets: [{ planned_budget: 100 }] });
+  const podB = savedWorkspace({ pod: { id: 'two', pod_name: 'Pod B', target_country: 'Australia' }, budgets: [{ planned_budget: 200 }] });
+  const ui = await workspaceHarness(podA, {
+    loadPodWorkspace: async (id) => id === 'one' ? podA : podB,
+    saveBudgetPlan: (id) => { calls.push(id); return id === 'one' ? first.promise : second.promise; },
+  });
+  await ui.tab('Budget & ads');
+  const firstOperation = ui.button('Save budget plan').props.onClick();
+  await ui.navigate('two');
+  const secondOperation = ui.button('Save budget plan').props.onClick();
+  assert.deepEqual(calls, ['one', 'two']);
+  first.resolve({ planned_budget: 900 });
+  await firstOperation;
+  await ui.flush();
+  assert.equal(ui.button('Save budget plan').props.disabled, true);
+  assert.match(ui.text(), /AUD 200.00/);
+  second.resolve({ planned_budget: 250 });
+  await secondOperation;
+  await ui.flush();
+  assert.equal(ui.button('Save budget plan').props.disabled, false);
+  assert.match(ui.text(), /AUD 250.00/);
 });

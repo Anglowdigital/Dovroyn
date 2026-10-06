@@ -138,7 +138,10 @@ export async function loadOperationalCollections(client, podId) {
   const id = requirePodId(podId);
   const tables = { calendarItems: 'calendar_items', campaigns: 'campaigns', budgets: 'budgets', holidayPreferences: 'holiday_preferences', adAnalysis: 'ad_analysis' };
   return Object.fromEntries(await Promise.all(Object.entries(tables).map(async ([key, table]) => {
-    const { data, error } = await client.from(table).select('*').eq('pod_id', id);
+    let query = client.from(table).select('*').eq('pod_id', id);
+    if (table === 'ad_analysis') query = query.order('updated_at', { ascending: false })
+      .order('created_at', { ascending: false }).order('id', { ascending: false });
+    const { data, error } = await query;
     if (error) throw new Error(`${table}: ${error.message || 'collection could not be loaded'}`, { cause: error });
     return [key, data || []];
   })));
@@ -152,10 +155,15 @@ export function restoreOperationalState(workspace) {
   const selection = preference('platform_selection');
   const decision = preference('budget_recommendation_decision')?.preference_value?.decision;
   const budget = newest(workspace.budgets);
+  const latestAdAnalysis = [...(workspace.adAnalysis || [])].filter(own).sort((a, b) =>
+    String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''))
+    || String(b.created_at || '').localeCompare(String(a.created_at || ''))
+    || String(b.id || '').localeCompare(String(a.id || '')))[0];
   return {
     platformKeys: selection && Array.isArray(selection.preference_value?.platforms) ? platformSelection(selection.preference_value.platforms) : null,
     calendarItems: [...(workspace.calendarItems || [])].filter(own).sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date)),
     campaign: newest(workspace.campaigns), budget: budget ? { ...budget, planned_budget: Number(budget.planned_budget) || 0 } : null,
     holidayPreference: newest(workspace.holidayPreferences), budgetDecision: ['approved', 'rejected'].includes(decision) ? decision : 'pending',
+    budgetRecommendation: latestAdAnalysis?.recommendation || '',
   };
 }
