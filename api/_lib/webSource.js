@@ -83,6 +83,12 @@ function decodeHtmlEntities(value) {
   });
 }
 
+function stripInertContent(html) {
+  return String(html || '')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
+    .replace(/<(script|style|noscript|template|svg|textarea|iframe|object|xmp)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ');
+}
+
 function cleanInlineText(value, maxLength = 1000) {
   return decodeHtmlEntities(String(value || ''))
     .replace(/<[^>]+>/g, ' ')
@@ -139,9 +145,7 @@ function discoverDocumentLinks(html, baseUrl) {
 }
 
 function extractDocumentMetadata(html, finalUrl) {
-  const documentHtml = String(html || '')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|template|svg)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+  const documentHtml = stripInertContent(html);
   const titleMatch = documentHtml.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
   const h1Match = documentHtml.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
   return {
@@ -188,9 +192,7 @@ async function readBoundedResponse(response, maxBytes) {
 }
 
 export function extractReadableText(html) {
-  return decodeHtmlEntities(String(html || ''))
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|template|svg)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+  return decodeHtmlEntities(stripInertContent(html))
     .replace(/<br\s*\/?\s*>/gi, '\n')
     .replace(/<\/(p|div|section|article|main|header|footer|li|h[1-6])>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
@@ -204,6 +206,7 @@ export function extractReadableText(html) {
 export async function fetchWebsiteText(rawUrl, options = {}) {
   const validateUrl = options.validateUrl || validatePublicWebsiteUrl;
   const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const redirectPolicy = typeof options.redirectPolicy === 'function' ? options.redirectPolicy : null;
   const maxPageBytes = Math.min(MAX_PAGE_BYTES, Math.max(1, Number(options.maxPageBytes) || MAX_PAGE_BYTES));
   const maxReadableChars = Math.min(MAX_READABLE_CHARS, Math.max(1, Number(options.maxReadableChars) || MAX_READABLE_CHARS));
   const maxRedirects = Math.min(MAX_REDIRECTS, Math.max(0, Number.isInteger(options.maxRedirects) ? options.maxRedirects : MAX_REDIRECTS));
@@ -222,7 +225,11 @@ export async function fetchWebsiteText(rawUrl, options = {}) {
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get('location');
         if (!location || redirectCount === maxRedirects) throw Object.assign(new Error('The website redirected too many times.'), { status: 422 });
-        currentUrl = await validateUrl(new URL(location, currentUrl).toString());
+        const redirectUrl = await validateUrl(new URL(location, currentUrl).toString());
+        if (redirectPolicy && !await redirectPolicy(redirectUrl, currentUrl)) {
+          throw Object.assign(new Error('That website redirected outside the allowed crawl area.'), { status: 422 });
+        }
+        currentUrl = redirectUrl;
         continue;
       }
       if (!response.ok) throw Object.assign(new Error('Dovroyn could not read that website.'), { status: 422 });

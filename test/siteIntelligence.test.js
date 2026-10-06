@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fetchWebsiteText } from '../api/_lib/webSource.js';
 
 async function loadFetcher() {
   const module = await import('../api/_lib/siteIntelligence.js').catch(() => ({}));
@@ -94,6 +95,55 @@ test('crawl origin follows the final root URL rather than the submitted origin',
   ]);
 });
 
+for (const [description, redirectLocation] of [
+  ['off-origin', 'https://outside.example/admin'],
+  ['blocked same-origin', '/admin'],
+]) {
+  test(`child ${description} redirects are rejected before the destination is requested`, async () => {
+    const fetchWebsiteIntelligence = await loadFetcher();
+    const requestedUrls = [];
+    const fetchImpl = async (rawUrl) => {
+      const url = new URL(String(rawUrl)).toString();
+      requestedUrls.push(url);
+      if (url === 'https://start.example/') {
+        return new Response('', { status: 302, headers: { location: 'https://brand.example/' } });
+      }
+      if (url === 'https://brand.example/') {
+        return new Response('<main>Brand home</main><a href="/products">Products</a>', {
+          headers: { 'content-type': 'text/html' },
+        });
+      }
+      if (url === 'https://brand.example/products') {
+        return new Response('', { status: 302, headers: { location: redirectLocation } });
+      }
+      return new Response('<main>Forbidden destination</main>', {
+        headers: { 'content-type': 'text/html' },
+      });
+    };
+    const validateUrl = async (url) => new URL(String(url));
+    const fetchPage = (url, pageOptions = {}) => fetchWebsiteText(url, {
+      ...pageOptions,
+      validateUrl,
+      fetchImpl,
+    });
+
+    const intelligence = await fetchWebsiteIntelligence('https://start.example', {
+      validateUrl,
+      fetchPage,
+    });
+
+    const forbiddenUrl = new URL(redirectLocation, 'https://brand.example/products').toString();
+    assert.equal(intelligence.rootUrl, 'https://brand.example/');
+    assert.deepEqual(intelligence.pages.map((page) => page.url), ['https://brand.example/']);
+    assert.equal(requestedUrls.includes(forbiddenUrl), false, `${forbiddenUrl} must never be requested`);
+    assert.deepEqual(requestedUrls, [
+      'https://start.example/',
+      'https://brand.example/',
+      'https://brand.example/products',
+    ]);
+  });
+}
+
 test('unreadable or privately resolved child pages are skipped without gaps in labels', async () => {
   const fetchWebsiteIntelligence = await loadFetcher();
   const intelligence = await fetchWebsiteIntelligence('https://brand.example', {
@@ -136,6 +186,35 @@ test('encoded administrative routes are excluded from returned crawl pages', asy
   });
 
   assert.deepEqual(intelligence.pages.map((page) => page.url), ['https://brand.example/', 'https://brand.example/about']);
+});
+
+test('legal and administrative route disguises are rejected before any child request', async () => {
+  const fetchWebsiteIntelligence = await loadFetcher();
+  const requestedUrls = [];
+  const disguisedRoutes = ['/privacy.html', '/terms-and-conditions', '/admin;session=x', '/%2561dmin'];
+  const intelligence = await fetchWebsiteIntelligence('https://brand.example', {
+    validateUrl: async (url) => new URL(String(url)),
+    fetchPage: async (rawUrl) => {
+      const url = new URL(String(rawUrl)).toString();
+      requestedUrls.push(url);
+      if (url === 'https://brand.example/') {
+        return {
+          url,
+          text: 'Home',
+          links: disguisedRoutes,
+          title: '',
+          description: '',
+          canonicalUrl: '',
+          h1: '',
+        };
+      }
+      return { url, text: 'Forbidden route', links: [], title: '', description: '', canonicalUrl: '', h1: '' };
+    },
+    maxPages: 5,
+  });
+
+  assert.deepEqual(intelligence.pages.map((page) => page.url), ['https://brand.example/']);
+  assert.deepEqual(requestedUrls, ['https://brand.example/']);
 });
 
 test('crawl attempts stay bounded when discovered pages are unreadable', async () => {

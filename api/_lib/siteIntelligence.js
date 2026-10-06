@@ -4,13 +4,40 @@ const MAX_PAGES = 5;
 const MAX_TOTAL_READABLE_CHARS = 40_000;
 const MAX_CANDIDATES = 40;
 const MAX_CRAWL_ATTEMPTS = 12;
-const BLOCKED_ROUTE = /(^|\/)(?:auth|login|log-in|signin|sign-in|signup|sign-up|account|accounts|cart|basket|checkout|admin|wp-admin|privacy|privacy-policy|terms|terms-of-service|legal)(?:\/|$)/i;
+const BLOCKED_ROUTE_SEGMENT = /^(?:auth|login|log-in|signin|sign-in|signup|sign-up|account|accounts|cart|basket|checkout|admin(?:istration|istrator)?|admin[-_](?:login|panel)|wp[-_]admin|privacy(?:[-_](?:notice|policy|statement))?|terms(?:[-_](?:and[-_])?conditions|[-_]of[-_](?:service|use))?|legal(?:[-_](?:notice|privacy|terms))?)$/i;
 const BINARY_EXTENSION = /\.(?:7z|avi|avif|bmp|csv|docx?|exe|gif|gz|ico|jpe?g|json|m4a|mov|mp3|mp4|mpeg|pdf|png|pptx?|rar|rss|svg|tar|tiff?|webm|webp|xlsx?|xml|zip)$/i;
+const ROUTE_DOCUMENT_EXTENSION = /(?:\.(?:html?|php\d*|aspx?|jsp))+$/i;
 const USEFUL_PATHS = ['product', 'service', 'shop', 'about', 'pricing', 'collection', 'blog'];
 
 function boundedInteger(value, fallback, ceiling) {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? Math.min(number, ceiling) : fallback;
+}
+
+function decodePathRepeatedly(pathname) {
+  let decoded = String(pathname || '');
+  for (let pass = 0; pass < 8; pass += 1) {
+    let next;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return null;
+    }
+    if (next === decoded) return decoded;
+    decoded = next;
+  }
+  return null;
+}
+
+function containsBlockedRoute(pathname) {
+  const decodedPath = decodePathRepeatedly(pathname);
+  if (decodedPath === null) return true;
+  return decodedPath
+    .replace(/\/{2,}/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => segment.split(';', 1)[0].replace(ROUTE_DOCUMENT_EXTENSION, ''))
+    .some((segment) => BLOCKED_ROUTE_SEGMENT.test(segment));
 }
 
 function normalizeCandidate(rawUrl, baseUrl, rootOrigin) {
@@ -25,13 +52,8 @@ function normalizeCandidate(rawUrl, baseUrl, rootOrigin) {
   url.search = '';
   url.pathname = url.pathname.replace(/\/{2,}/g, '/');
   if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
-  let decodedPath;
-  try {
-    decodedPath = decodeURIComponent(url.pathname);
-  } catch {
-    return null;
-  }
-  if (BLOCKED_ROUTE.test(decodedPath) || BINARY_EXTENSION.test(decodedPath)) return null;
+  const decodedPath = decodePathRepeatedly(url.pathname);
+  if (decodedPath === null || containsBlockedRoute(url.pathname) || BINARY_EXTENSION.test(decodedPath)) return null;
   return url;
 }
 
@@ -114,7 +136,9 @@ export async function fetchWebsiteIntelligence(rawUrl, options = {}) {
     try {
       const validatedCandidate = await validateUrl(candidateKey);
       if (validatedCandidate.origin !== rootOrigin) continue;
-      const result = await fetchPage(validatedCandidate.toString());
+      const result = await fetchPage(validatedCandidate.toString(), {
+        redirectPolicy: (redirectUrl) => Boolean(normalizeCandidate(redirectUrl, redirectUrl, rootOrigin)),
+      });
       const finalUrl = await validateUrl(result?.url || validatedCandidate.toString());
       const normalizedFinal = normalizeCandidate(finalUrl, finalUrl, rootOrigin);
       if (!normalizedFinal || returnedUrls.has(normalizedFinal.toString())) continue;

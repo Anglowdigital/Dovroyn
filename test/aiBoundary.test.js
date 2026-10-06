@@ -183,6 +183,23 @@ test('website page fetch returns deterministic metadata and same-document links 
   }
 });
 
+test('textarea and unterminated raw-text elements cannot contribute links or readable evidence', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(`
+    <html><body><p>Visible evidence.</p>
+      <textarea><a href="/textarea-hidden">Textarea evidence</a></textarea>
+      <script>const payload = '<a href="/script-hidden">Script evidence</a>';
+    </body></html>
+  `, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  try {
+    const page = await webSource.fetchWebsiteText('https://8.8.8.8');
+    assert.equal(page.text, 'Visible evidence.');
+    assert.deepEqual(page.links, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('website page fetch rejects a streamed body once it exceeds one megabyte', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(new ReadableStream({
