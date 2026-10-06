@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { transformWithOxc } from 'vite';
+import * as lifecycle from '../src/lib/podLifecycle.js';
 import { createClient } from '@supabase/supabase-js';
 import * as direction from '../src/lib/podDirection.js';
 import * as state from '../src/lib/podState.js';
@@ -85,7 +86,7 @@ test('unknown prototype-named preference types never create learning events', ()
 function repository(client) {
   const source = readFileSync(new URL('../src/lib/podRepository.js', import.meta.url), 'utf8').replace(/import\s+{[\s\S]*?}\s+from\s+'[^']+';/g, '').replace(/export /g, '');
   const bindings = { supabase: client, supabaseConfigured: true, ...direction, ...state, ...learning };
-  return new Function(...Object.keys(bindings), `${source}; return { loadPodWorkspace };`)(...Object.values(bindings));
+  return new Function(...Object.keys(bindings), `${source}; return { loadPodWorkspace, restorePodAnalysisSnapshot };`)(...Object.values(bindings));
 }
 test('repository reports a failed social_posts read and restores newest saved competitor/learning snapshots', async () => {
   let failPosts = true;
@@ -118,9 +119,10 @@ async function uiHarness(first, { request, load = async () => first, demoMode = 
   const modules = {
     react: hooks, 'react-router-dom': { Link: ({ children }) => h('a', {}, children), useParams: () => ({ podId }) }, 'lucide-react': new Proxy({}, { get: () => () => null }),
     '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction, '../lib/podState': state, '../lib/podLearning': learning,
+    '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup, '../lib/demoPod': demo,
     '../lib/aiClient': { requestCompetitorSnapshot: async (...args) => { requests++; return request(...args); } },
-    '../lib/podRepository': { loadPodWorkspace: load }, '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
+    '../lib/podRepository': { ...repository({}), loadPodWorkspace: load }, '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let source = readFileSync(new URL('../src/pages/PodWorkspace.jsx', import.meta.url), 'utf8');
   source = source.replace(/import\s+({[\s\S]*?}|[\w]+)\s+from\s+'([^']+)';/g, (_, names, name) => names.startsWith('{') ? `const ${names} = modules[${JSON.stringify(name)}];` : `const ${names} = modules[${JSON.stringify(name)}].default;`).replace(/import\s+'[^']+';/g, '').replace('export default function PodWorkspace', 'function PodWorkspace');

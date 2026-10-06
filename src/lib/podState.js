@@ -149,10 +149,23 @@ export async function loadOperationalCollections(client, podId) {
 
 export function restoreOperationalState(workspace) {
   const podId = workspace.pod?.id;
-  const own = (row) => !podId || !row.pod_id || row.pod_id === podId;
-  const newest = (rows) => [...(rows || [])].filter(own).sort((a, b) => String(b.created_at || b.updated_at || '').localeCompare(String(a.created_at || a.updated_at || '')))[0] || null;
-  const preference = (type) => newest((workspace.preferences || []).filter((row) => row.active !== false && row.preference_type === type));
-  const selection = preference('platform_selection');
+  const own = (row) => row && typeof row === 'object' && !Array.isArray(row) && (!podId || !row.pod_id || row.pod_id === podId);
+  const newestFirst = (rows) => (Array.isArray(rows) ? [...rows] : []).filter(own).sort((a, b) => String(b.created_at || b.updated_at || '').localeCompare(String(a.created_at || a.updated_at || '')));
+  const newest = (rows) => newestFirst(rows)[0] || null;
+  const preferences = (type) => newestFirst(workspace.preferences).filter((row) => row.active !== false && row.preference_type === type);
+  const preference = (type) => preferences(type)[0];
+  const selections = preferences('platform_selection');
+  const platformKeys = selections.map((row) => {
+    let value = row.preference_value;
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value); } catch { return null; }
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'value')) value = value.value;
+    const keys = value?.platforms;
+    // Writer validation is strict; restoration instead skips bad saved rows.
+    if (!Array.isArray(keys) || keys.some((key) => typeof key !== 'string' || !key.trim())) return null;
+    return platformSelection(keys);
+  }).find((keys) => keys !== null);
   const decision = preference('budget_recommendation_decision')?.preference_value?.decision;
   const budget = newest(workspace.budgets);
   const latestAdAnalysis = [...(workspace.adAnalysis || [])].filter(own).sort((a, b) =>
@@ -160,7 +173,7 @@ export function restoreOperationalState(workspace) {
     || String(b.created_at || '').localeCompare(String(a.created_at || ''))
     || String(b.id || '').localeCompare(String(a.id || '')))[0];
   return {
-    platformKeys: selection && Array.isArray(selection.preference_value?.platforms) ? platformSelection(selection.preference_value.platforms) : null,
+    platformKeys: platformKeys ?? (selections.length ? [] : null),
     calendarItems: [...(workspace.calendarItems || [])].filter(own).sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date)),
     campaign: newest(workspace.campaigns), budget: budget ? { ...budget, planned_budget: Number(budget.planned_budget) || 0 } : null,
     holidayPreference: newest(workspace.holidayPreferences), budgetDecision: ['approved', 'rejected'].includes(decision) ? decision : 'pending',

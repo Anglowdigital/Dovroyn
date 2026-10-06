@@ -19,20 +19,28 @@ function structuredPreferenceValue(value) {
   return value !== null && typeof value === 'object' ? value : { value };
 }
 
-export function selectWebsiteIntelligenceSnapshot(preferences = []) {
+export function selectWebsiteIntelligenceSnapshot(preferences = [], podId) {
   return (Array.isArray(preferences) ? preferences : [])
     .map((preference, index) => ({ preference, index }))
-    .filter(({ preference }) => preference?.preference_type === 'website_intelligence')
+    .filter(({ preference }) => preference?.preference_type === 'website_intelligence'
+      && preference.active !== false && (!podId || preference.pod_id === podId))
     .sort((left, right) => {
       const leftTime = Date.parse(left.preference.created_at || '') || 0;
       const rightTime = Date.parse(right.preference.created_at || '') || 0;
       return rightTime - leftTime || right.index - left.index;
     })
     .map(({ preference }) => {
-      const value = preference.preference_value;
-      if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-      if (value.value && typeof value.value === 'object' && !Array.isArray(value.value)) return value.value;
-      return value;
+      let value = preference.preference_value;
+      if (typeof value === 'string') {
+        try { value = JSON.parse(value); } catch { return null; }
+      }
+      if (!isRecord(value)) return null;
+      if (Object.hasOwn(value, 'value')) value = value.value;
+      if (!isRecord(value)) return null;
+      const fields = WEBSITE_INTELLIGENCE_FIELDS.filter((field) => Object.hasOwn(value, field));
+      // A broken newer snapshot must not hide a valid older observation.
+      if (!fields.length || fields.some((field) => !validIntelligenceField(field, value[field]))) return null;
+      return Object.fromEntries(fields.map((field) => [field, value[field]]));
     })
     .find(Boolean) || null;
 }
@@ -42,36 +50,66 @@ const WEBSITE_INTELLIGENCE_FIELDS = [
   'weak_pages', 'seo_opportunities', 'content_opportunities', 'audience_fit',
 ];
 
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringList(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function validIntelligenceField(field, value) {
+  if (['visual_style', 'audience_fit'].includes(field)) return typeof value === 'string';
+  if (field === 'brand_colours') return Array.isArray(value) && value.every((item) => isRecord(item)
+    && typeof item.name === 'string' && typeof item.hex === 'string' && /^#(?:[a-f\d]{3}|[a-f\d]{6}|[a-f\d]{8})$/i.test(item.hex));
+  if (['best_landing_pages', 'weak_pages'].includes(field)) {
+    const detail = field === 'best_landing_pages' ? 'reason' : 'issue';
+    return Array.isArray(value) && value.every((item) => isRecord(item)
+      && typeof item.source_reference === 'string' && typeof item[detail] === 'string');
+  }
+  return stringList(value);
+}
+
 function parseStoredList(value) {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) return value.filter((item) => typeof item === 'string');
+  if (typeof value !== 'string') return [];
   try {
     const parsed = JSON.parse(value || '[]');
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
   } catch {
     return [];
   }
 }
 
 export function restorePodAnalysisSnapshot(canonicalAnalysis, websiteIntelligence) {
-  if (!canonicalAnalysis) return null;
+  if (!isRecord(canonicalAnalysis)) return null;
   const rich = {};
-  if (websiteIntelligence && typeof websiteIntelligence === 'object') {
+  if (isRecord(websiteIntelligence)) {
     WEBSITE_INTELLIGENCE_FIELDS.forEach((field) => {
-      if (websiteIntelligence[field] !== undefined) rich[field] = websiteIntelligence[field];
+      if (validIntelligenceField(field, websiteIntelligence[field])) rich[field] = websiteIntelligence[field];
     });
   }
+  const text = (value) => typeof value === 'string' ? value : '';
+  const confidence = ['number', 'string'].includes(typeof canonicalAnalysis.confidence) && canonicalAnalysis.confidence !== ''
+    ? Number(canonicalAnalysis.confidence) : null;
+  const evidence = (Array.isArray(canonicalAnalysis.evidence) ? canonicalAnalysis.evidence : [])
+    .filter((item) => isRecord(item) && typeof item.source_reference === 'string' && typeof item.finding === 'string')
+    .map((item) => ({ source_reference: item.source_reference, finding: item.finding,
+      ...(typeof item.source_type === 'string' ? { source_type: item.source_type } : {}),
+      ...(typeof item.confidence === 'number' && Number.isFinite(item.confidence) && item.confidence >= 0 && item.confidence <= 1 ? { confidence: item.confidence } : {}),
+    }));
   return {
     ...rich,
-    summary: canonicalAnalysis.brand_summary,
-    tone: canonicalAnalysis.tone,
-    audience: canonicalAnalysis.audience,
-    offer: canonicalAnalysis.offer_direction,
-    opportunity: canonicalAnalysis.campaign_angles,
-    evidence: canonicalAnalysis.evidence || [],
-    confidence: canonicalAnalysis.confidence == null ? null : Number(canonicalAnalysis.confidence),
-    source_captured_at: canonicalAnalysis.source_captured_at,
-    personal_data_detected: Boolean(canonicalAnalysis.personal_data_detected),
-    personal_data_categories: canonicalAnalysis.personal_data_categories || [],
+    summary: text(canonicalAnalysis.brand_summary),
+    tone: text(canonicalAnalysis.tone),
+    audience: text(canonicalAnalysis.audience),
+    offer: text(canonicalAnalysis.offer_direction),
+    opportunity: text(canonicalAnalysis.campaign_angles),
+    evidence,
+    confidence: Number.isFinite(confidence) && confidence >= 0 && confidence <= 1 ? confidence : null,
+    source_captured_at: typeof canonicalAnalysis.source_captured_at === 'string' && Number.isFinite(Date.parse(canonicalAnalysis.source_captured_at)) ? canonicalAnalysis.source_captured_at : undefined,
+    personal_data_detected: canonicalAnalysis.personal_data_detected === true,
+    personal_data_categories: parseStoredList(canonicalAnalysis.personal_data_categories),
     platforms: parseStoredList(canonicalAnalysis.social_recommendations),
     pillars: parseStoredList(canonicalAnalysis.content_ideas),
   };
@@ -104,7 +142,7 @@ export async function loadPodWorkspace(podId) {
   // overrides cannot be read.
   if (preferences.error) throw new Error(`pod_preferences: ${preferences.error.message || 'collection could not be loaded'}`, { cause: preferences.error });
   if (posts.error) throw new Error(`social_posts: ${posts.error.message || 'saved content history could not be loaded'}`, { cause: posts.error });
-  const websiteIntelligence = selectWebsiteIntelligenceSnapshot(preferences.data);
+  const websiteIntelligence = selectWebsiteIntelligenceSnapshot(preferences.data, podId);
 
   const workspace = {
     pod: pod.data,

@@ -28,6 +28,7 @@ import {
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
 import { buildCalendarItems, restoreOperationalState } from '../lib/podState';
+import { capturePodAction, isPodActionPending, startPodLifecycle } from '../lib/podLifecycle';
 import { normalizePodCompetitorSnapshot, normalizePodLearning, selectPodCompetitorSnapshot } from '../lib/podLearning';
 import { getPlan } from '../lib/plans';
 import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
@@ -38,6 +39,7 @@ import {
   approvePodDirection,
   getAssetPreview,
   loadPodWorkspace,
+  restorePodAnalysisSnapshot,
   savePlatformSelection,
   saveCalendarItems,
   saveCampaignDecision,
@@ -282,7 +284,6 @@ function LivePodWorkspace({ session, subscription }) {
   const [directionMutation, setDirectionMutation] = useState('');
   const [directionSaveFailed, setDirectionSaveFailed] = useState(false);
   const [contentGenerating, setContentGenerating] = useState(false);
-  const directionOperation = useRef('');
   const [overrideText, setOverrideText] = useState('');
   const [sources, setSources] = useState([]);
   const [sourceType, setSourceType] = useState('website');
@@ -309,11 +310,8 @@ function LivePodWorkspace({ session, subscription }) {
   const [competitorBusy, setCompetitorBusy] = useState(false);
   const [competitorError, setCompetitorError] = useState('');
   const [learningEvents, setLearningEvents] = useState([]);
-  const competitorOperation = useRef(null);
-  const operationalOperation = useRef('');
-  const operationalLifecycle = useRef(null);
-  const currentPodId = useRef(podId);
-  currentPodId.current = podId;
+  const podLifecycle = useRef({ current: null, podId });
+  podLifecycle.current.podId = podId;
   const hasPlatformSelection = useRef(false);
   const [modal, setModal] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -328,12 +326,45 @@ function LivePodWorkspace({ session, subscription }) {
   const campaignState = campaign?.status ? campaign.status[0].toUpperCase() + campaign.status.slice(1) : 'Draft';
   const targetCountry = pod?.target_country === 'Australia' ? 'AU' : String(pod?.target_country || '').trim().toUpperCase();
   const budgetCurrency = targetCountry === 'AU' ? 'AUD' : '';
+  const renderedLifecycle = podLifecycle.current.current;
+  const beginAction = (group) => renderedLifecycle === podLifecycle.current.current
+    ? capturePodAction(podLifecycle.current, pod?.id, group) : null;
+  const actionPending = (group) => isPodActionPending(podLifecycle.current, group);
 
   useEffect(() => {
-    const lifecycle = { podId, active: true };
-    operationalLifecycle.current = lifecycle;
-    operationalOperation.current = '';
-    competitorOperation.current = null;
+    const lifecycle = startPodLifecycle(podLifecycle.current, podId);
+    const loadAction = capturePodAction(podLifecycle.current, podId);
+    hasPlatformSelection.current = false;
+    setPod(null);
+    setLoadError('');
+    setActiveTab('overview');
+    setAnalysis(null);
+    setAnalysisState('idle');
+    setAiMessages([]);
+    setAiQuestion('');
+    setAiSending(false);
+    setDirectionApproved(false);
+    setDirectionMutation('');
+    setDirectionSaveFailed(false);
+    setContentGenerating(false);
+    setOverrideText('');
+    setSources([]);
+    setSourceType('website');
+    setSourceUrl('');
+    setAssets([]);
+    setSelectedPlatformKeys([]);
+    setPosts([]);
+    setCalendarItems([]);
+    setCampaign(null);
+    setObservancesEnabled(false);
+    setHolidayPreference(null);
+    setBudget(null);
+    setPlannedBudgetInput('');
+    setBudgetNotes('');
+    setBudgetRecommendation('');
+    setBudgetDecision('pending');
+    setModal(null);
+    setPaletteOpen(false);
     setCompetitorBusy(false);
     setCompetitorError('');
     setCompetitorUrls(['', '', '']);
@@ -346,11 +377,10 @@ function LivePodWorkspace({ session, subscription }) {
       return () => { lifecycle.active = false; };
     }
 
-    let mounted = true;
     setLoading(true);
     setLoadError('');
     loadPodWorkspace(podId).then(async (workspace) => {
-      if (!mounted) return;
+      if (!loadAction?.isCurrent()) return;
       setPod(workspace.pod || null);
       setSourceType(workspace.pod?.source_type || (workspace.pod?.source_url ? 'website' : 'photos'));
       setSourceUrl(workspace.pod?.source_url || '');
@@ -374,25 +404,8 @@ function LivePodWorkspace({ session, subscription }) {
       setBudgetDecision(operational.budgetDecision);
       setBudgetRecommendation(operational.budgetRecommendation || 'Review how your planned budget is allocated before authorising any provider spend.');
       if (workspace.analysis) {
-        let platformKeys = [];
-        let pillars = [];
-        try { platformKeys = JSON.parse(workspace.analysis.social_recommendations || '[]'); } catch { platformKeys = []; }
-        try { pillars = JSON.parse(workspace.analysis.content_ideas || '[]'); } catch { pillars = []; }
-        const restoredAnalysis = workspace.restoredAnalysis || {
-          summary: workspace.analysis.brand_summary,
-          tone: workspace.analysis.tone,
-          audience: workspace.analysis.audience,
-          offer: workspace.analysis.offer_direction,
-          opportunity: workspace.analysis.campaign_angles,
-          evidence: workspace.analysis.evidence || [],
-          confidence: workspace.analysis.confidence == null ? null : Number(workspace.analysis.confidence),
-          source_captured_at: workspace.analysis.source_captured_at,
-          personal_data_detected: Boolean(workspace.analysis.personal_data_detected),
-          personal_data_categories: workspace.analysis.personal_data_categories || [],
-          platforms: platformKeys,
-          pillars,
-        };
-        platformKeys = Array.isArray(restoredAnalysis.platforms) ? restoredAnalysis.platforms : [];
+        const restoredAnalysis = restorePodAnalysisSnapshot(workspace.analysis, workspace.websiteIntelligence || workspace.restoredAnalysis);
+        const platformKeys = restoredAnalysis.platforms;
         const restoredPillars = Array.isArray(restoredAnalysis.pillars) ? restoredAnalysis.pillars : [];
         if (!hasPlatformSelection.current) setSelectedPlatformKeys(platformKeys.length ? platformKeys : INITIAL_ANALYSIS.platforms);
         setAnalysis(restorePodDirection({
@@ -404,8 +417,7 @@ function LivePodWorkspace({ session, subscription }) {
       } else {
         setActiveTab('sources');
       }
-      if (workspace.posts.length) {
-        setPosts(workspace.posts.map((post) => {
+      setPosts((workspace.posts || []).map((post) => {
           const platform = getPlatform(post.platform);
           return {
             id: post.id,
@@ -417,9 +429,7 @@ function LivePodWorkspace({ session, subscription }) {
             status: post.status,
           };
         }));
-      }
-      if (workspace.assets.length) {
-        const persistedAssets = await Promise.all(workspace.assets.map(async (asset) => ({
+      const persistedAssets = await Promise.all((workspace.assets || []).map(async (asset) => ({
           id: asset.id,
           name: asset.file_name,
           size: asset.file_size,
@@ -427,13 +437,13 @@ function LivePodWorkspace({ session, subscription }) {
           storagePath: asset.storage_path,
           assetRole: asset.asset_role || 'campaign_asset',
         })));
-        if (mounted) setAssets(persistedAssets);
-      }
+      if (!loadAction.isCurrent()) return;
+      setAssets(persistedAssets);
       setLoading(false);
     }).catch((error) => {
-      if (mounted) { setLoadError(error.message || 'The Pod state could not be loaded.'); setPod(null); setLoading(false); }
+      if (loadAction?.isCurrent()) { setLoadError(error.message || 'The Pod state could not be loaded.'); setPod(null); setLoading(false); }
     });
-    return () => { mounted = false; lifecycle.active = false; };
+    return () => { lifecycle.active = false; };
   }, [podId]);
 
   useEffect(() => {
@@ -449,18 +459,19 @@ function LivePodWorkspace({ session, subscription }) {
 
   useEffect(() => {
     if (!notice) return undefined;
-    const timer = window.setTimeout(() => setNotice(''), 3200);
+    const action = capturePodAction(podLifecycle.current, podId);
+    const timer = window.setTimeout(() => { if (action?.isCurrent()) setNotice(''); }, 3200);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
   const togglePlatform = async (platformKey) => {
-    if (operationalOperation.current) return;
+    if (!beginAction() || actionPending('operational')) return;
     const previous = selectedPlatformKeys;
     const next = selectedPlatformKeys.includes(platformKey)
       ? selectedPlatformKeys.filter((key) => key !== platformKey)
       : [...selectedPlatformKeys, platformKey];
-    setSelectedPlatformKeys(next);
     await saveOperational('platforms', async (isCurrent) => {
+      setSelectedPlatformKeys(next);
       try {
         await savePlatformSelection(pod.id, next);
         if (isCurrent()) hasPlatformSelection.current = true;
@@ -472,61 +483,53 @@ function LivePodWorkspace({ session, subscription }) {
   };
 
   const allTabs = useMemo(() => TAB_GROUPS.flatMap((group) => group.items), []);
-  const commands = useMemo(() => [
+  const deferPodAction = (action) => {
+    const origin = beginAction();
+    if (origin) window.setTimeout(() => { if (origin.isCurrent()) action(); }, 0);
+  };
+  // These inexpensive callbacks must see the loaded Pod, lifecycle and current inputs.
+  const commands = [
     ...allTabs.map(([key, label]) => ({ group: 'Open tab', label, action: () => setActiveTab(key) })),
-    { group: 'Pod action', label: analysis ? 'Review AI analysis' : 'Run AI analysis', action: () => { if (analysis) setActiveTab('direction'); else { setActiveTab('sources'); window.setTimeout(() => runAnalysis(), 0); } } },
+    { group: 'Pod action', label: analysis ? 'Review AI analysis' : 'Run AI analysis', action: () => { if (analysis) setActiveTab('direction'); else { setActiveTab('sources'); deferPodAction(runAnalysis); } } },
     { group: 'Pod action', label: 'Ask this pod AI', action: () => setActiveTab('assistant') },
     { group: 'Pod action', label: sourceLocked ? 'View locked brand source' : 'Set primary source and photos', action: () => setActiveTab('sources') },
-    { group: 'Pod action', label: 'Generate social content', action: () => { setActiveTab('content'); window.setTimeout(() => generateContent(), 0); } },
-  ], [allTabs, analysis, directionApproved, sourceLocked]);
+    { group: 'Pod action', label: 'Generate social content', action: () => { setActiveTab('content'); deferPodAction(generateContent); } },
+  ];
 
   const showNotice = (message) => setNotice(message);
+  const saveLocalDraft = (message) => {
+    if (!beginAction()) return;
+    setModal(null);
+    showNotice(message);
+  };
 
   const saveOperational = async (operation, save) => {
-    if (operationalOperation.current) return;
-    const lifecycle = operationalLifecycle.current;
-    const originPodId = pod?.id;
-    const isCurrent = () => lifecycle?.active && operationalLifecycle.current === lifecycle
-      && currentPodId.current === originPodId && lifecycle.podId === originPodId;
-    if (!isCurrent()) return;
-    const token = { operation, lifecycle };
-    operationalOperation.current = token;
+    const action = beginAction('operational');
+    if (!action) return;
     setOperationalMutation(operation);
-    try { await save(isCurrent); }
-    catch (error) { if (isCurrent()) showNotice(error.message || 'This Pod change could not be saved.'); }
+    try { await save(action.isCurrent); }
+    catch (error) { if (action.isCurrent()) showNotice(error.message || 'This Pod change could not be saved.'); }
     finally {
-      if (isCurrent() && operationalOperation.current === token) {
-        operationalOperation.current = '';
-        setOperationalMutation('');
-      }
+      if (action.finish()) setOperationalMutation('');
     }
   };
 
   const checkCompetitors = async () => {
-    if (competitorOperation.current) return;
-    const lifecycle = operationalLifecycle.current;
-    const originPodId = pod?.id;
-    const isCurrent = () => lifecycle?.active && operationalLifecycle.current === lifecycle
-      && currentPodId.current === originPodId && lifecycle.podId === originPodId;
-    if (!isCurrent()) return;
-    const operation = { lifecycle };
-    competitorOperation.current = operation;
+    const action = beginAction('competitors');
+    if (!action) return;
     setCompetitorBusy(true);
     setCompetitorError('');
     try {
-      const result = await requestCompetitorSnapshot({ accessToken: session?.access_token, podId: originPodId, urls: competitorUrls.map((url) => url.trim()).filter(Boolean) });
-      if (!isCurrent()) return;
+      const result = await requestCompetitorSnapshot({ accessToken: session?.access_token, podId: action.podId, urls: competitorUrls.map((url) => url.trim()).filter(Boolean) });
+      if (!action.isCurrent()) return;
       if (result?.ok !== true || result.saved !== true || !result.snapshot) throw new Error('The competitor snapshot save was not confirmed.');
       setCompetitorSnapshot(result.snapshot);
-      const refreshed = await loadPodWorkspace(originPodId);
-      if (isCurrent()) setLearningEvents(refreshed.learningEvents || normalizePodLearning(refreshed));
+      const refreshed = await loadPodWorkspace(action.podId);
+      if (action.isCurrent()) setLearningEvents(refreshed.learningEvents || normalizePodLearning(refreshed));
     } catch (error) {
-      if (isCurrent()) setCompetitorError(error.message || 'The public competitor snapshot could not be checked.');
+      if (action.isCurrent()) setCompetitorError(error.message || 'The public competitor snapshot could not be checked.');
     } finally {
-      if (isCurrent() && competitorOperation.current === operation) {
-        competitorOperation.current = null;
-        setCompetitorBusy(false);
-      }
+      if (action.finish()) setCompetitorBusy(false);
     }
   };
 
@@ -578,6 +581,7 @@ function LivePodWorkspace({ session, subscription }) {
 
   const savePrimarySource = async (event) => {
     event.preventDefault();
+    if (!beginAction()) return;
     if (sourceLocked) {
       showNotice('This pod source is locked. Create another pod for a different source.');
       return;
@@ -586,9 +590,11 @@ function LivePodWorkspace({ session, subscription }) {
       showNotice('Add the one primary URL for this pod.');
       return;
     }
-    if (!pod?.id) return;
+    const action = beginAction('source');
+    if (!action) return;
     try {
-      const savedPod = await savePodPrimarySource(pod.id, { sourceType, sourceUrl });
+      const savedPod = await savePodPrimarySource(action.podId, { sourceType, sourceUrl });
+      if (!action.isCurrent()) return;
       setPod(savedPod);
       setSources((current) => [
         ...current.filter((source) => !['website', 'social', 'shopify'].includes(source.source_type)),
@@ -596,11 +602,15 @@ function LivePodWorkspace({ session, subscription }) {
       ]);
       showNotice('Primary source saved. It will lock after analysis.');
     } catch (error) {
-      showNotice(error.message || 'The primary source could not be saved.');
+      if (action.isCurrent()) showNotice(error.message || 'The primary source could not be saved.');
+    } finally {
+      action.finish();
     }
   };
 
   const addAssets = async (event, assetRole) => {
+    const action = beginAction();
+    if (!action) return;
     if (sourceLocked && ['logo', 'brand_photo'].includes(assetRole)) {
       showNotice('Brand-analysis images are locked for this pod.');
       event.target.value = '';
@@ -636,7 +646,8 @@ function LivePodWorkspace({ session, subscription }) {
     if (pod?.id && session?.user?.id) {
       try {
         const savedAssets = await Promise.all(files.map(async (file) => {
-          const saved = await uploadPodAsset({ userId: session.user.id, podId: pod.id, file, assetRole });
+          const saved = await uploadPodAsset({ userId: session.user.id, podId: action.podId, file, assetRole });
+          if (!action.isCurrent()) return null;
           return {
             id: saved.id,
             name: saved.file_name,
@@ -646,18 +657,22 @@ function LivePodWorkspace({ session, subscription }) {
             assetRole: saved.asset_role,
           };
         }));
+        if (!action.isCurrent()) return;
         const replacements = new Map(nextAssets.map((asset, index) => [asset.id, savedAssets[index]]));
         setAssets((current) => current.map((asset) => replacements.get(asset.id) || asset));
         showNotice(`${savedAssets.length} asset${savedAssets.length === 1 ? '' : 's'} saved to private pod storage.`);
       } catch (error) {
+        if (!action.isCurrent()) return;
         setAssets((current) => current.filter((asset) => !nextAssets.some((optimistic) => optimistic.id === asset.id)));
-        nextAssets.forEach((asset) => URL.revokeObjectURL(asset.preview));
         showNotice(error.message || 'The private image upload could not be saved.');
+      } finally {
+        nextAssets.forEach((asset) => URL.revokeObjectURL(asset.preview));
       }
     }
   };
 
   const runAnalysis = async () => {
+    if (!beginAction()) return;
     if (sourceLocked) {
       setActiveTab('direction');
       showNotice('This pod has already been analysed. Use an override to adjust its direction.');
@@ -673,62 +688,73 @@ function LivePodWorkspace({ session, subscription }) {
       setModal({ type: 'missing-source', message: setupError });
       return;
     }
+    const action = beginAction('source');
+    if (!action) return;
     setAnalysisState('running');
     setDirectionApproved(false);
     try {
       const accessToken = session?.access_token;
       if (!accessToken) throw new Error('Sign in again before running analysis.');
-      const savedPod = sourceLocked ? pod : await savePodPrimarySource(pod.id, { sourceType, sourceUrl });
+      const savedPod = sourceLocked ? pod : await savePodPrimarySource(action.podId, { sourceType, sourceUrl });
+      if (!action.isCurrent()) return;
       setPod(savedPod);
       const result = await requestPodAnalysis({
         accessToken,
-        podId: pod.id,
+        podId: action.podId,
         notes: sources.map((source) => source.notes).filter(Boolean).join('\n').slice(0, 4000),
         imageUrls: [...logoAssets, ...brandPhotos].map((asset) => asset.preview).filter((url) => /^https:\/\//i.test(url)),
       });
+      if (!action.isCurrent()) return;
       const nextAnalysis = result.analysis;
       setPod((current) => ({ ...current, source_locked_at: result.sourceLockedAt ?? new Date().toISOString(), status: 'awaiting_direction' }));
       setAnalysis(nextAnalysis);
       if (!hasPlatformSelection.current) setSelectedPlatformKeys(nextAnalysis.platforms || []);
       setAnalysisState('ready');
       setActiveTab('direction');
-      const snapshotSaved = await saveWebsiteIntelligenceSnapshot(pod.id, nextAnalysis);
+      const snapshotSaved = await saveWebsiteIntelligenceSnapshot(action.podId, nextAnalysis);
+      if (!action.isCurrent()) return;
       showNotice(snapshotSaved
         ? 'Analysis ready for your approval.'
         : 'Analysis is saved and this source is locked, but the rich intelligence snapshot could not be saved. Reload before approving if you need to confirm every detail.');
     } catch (error) {
+      if (!action.isCurrent()) return;
       setAnalysisState('idle');
       showNotice(error.message || 'AI analysis could not run. Check the server configuration.');
+    } finally {
+      action.finish();
     }
   };
 
   const approveDirection = async () => {
-    if (directionOperation.current || directionSaveFailed || !analysis) return;
-    directionOperation.current = 'approving';
+    if (directionSaveFailed || !analysis) return;
+    const action = beginAction('direction');
+    if (!action) return;
     setDirectionMutation('approving');
     setDirectionApproved(false);
     try {
-      const savedPod = await approvePodDirection(pod?.id, analysis);
+      const savedPod = await approvePodDirection(action.podId, analysis);
+      if (!action.isCurrent()) return;
       setPod(savedPod);
       setDirectionApproved(true);
       setModal(null);
       showNotice('Brand direction approved. Content generation is unlocked.');
     } catch (error) {
-      showNotice(error.message || 'Direction approval could not be saved. Please try again.');
+      if (action.isCurrent()) showNotice(error.message || 'Direction approval could not be saved. Please try again.');
     } finally {
-      directionOperation.current = '';
-      setDirectionMutation('');
+      if (action.finish()) setDirectionMutation('');
     }
   };
 
   const saveOverride = async () => {
     const direction = overrideText.trim();
-    if (!direction || directionOperation.current) return;
-    directionOperation.current = 'override';
+    if (!direction) return;
+    const action = beginAction('direction');
+    if (!action) return;
     setDirectionMutation('override');
     setDirectionApproved(false);
     try {
-      const { pod: savedPod } = await savePodDirectionOverride(pod?.id, direction);
+      const { pod: savedPod } = await savePodDirectionOverride(action.podId, direction);
+      if (!action.isCurrent()) return;
       setPod(savedPod);
       setAnalysis((current) => ({ ...current, tone: direction, userDirection: direction }));
       setDirectionSaveFailed(false);
@@ -736,18 +762,18 @@ function LivePodWorkspace({ session, subscription }) {
       setModal(null);
       showNotice('Override saved. Review the updated direction before approving it.');
     } catch {
+      if (!action.isCurrent()) return;
       // If the response is uncertain, keep content generation locked until the
       // user retries or reloads the server-confirmed pod state.
       setDirectionSaveFailed(true);
       showNotice('Direction save could not be confirmed. Retry saving or reload before approving.');
     } finally {
-      directionOperation.current = '';
-      setDirectionMutation('');
+      if (action.finish()) setDirectionMutation('');
     }
   };
 
   const generateContent = async () => {
-    if (directionOperation.current || directionSaveFailed) return;
+    if (!beginAction() || actionPending('direction') || directionSaveFailed) return;
     if (!analysis) {
       setModal({ type: 'analysis-first' });
       return;
@@ -760,34 +786,36 @@ function LivePodWorkspace({ session, subscription }) {
       showNotice('Select at least one planning platform before generating content.');
       return;
     }
-    directionOperation.current = 'generating';
+    const action = beginAction('direction');
+    if (!action) return;
     setContentGenerating(true);
     try {
       if (!session?.access_token) throw new Error('Sign in again before generating content.');
       const result = await requestSocialContent({
         accessToken: session.access_token,
-        podId: pod.id,
+        podId: action.podId,
         platforms: selectedPlatformKeys,
         contentDay: new Date().toISOString().slice(0, 10),
       });
+      if (!action.isCurrent()) return;
       const generated = result.posts.map((post, index) => ({ ...post, id: `${post.platformKey}-${Date.now()}-${index}`, status: 'Draft' }));
       setPosts(generated);
       if (pod?.id) {
-        const saved = await saveSocialPosts(pod.id, generated);
+        const saved = await saveSocialPosts(action.podId, generated);
+        if (!action.isCurrent()) return;
         setPosts((current) => current.map((post, index) => ({ ...post, id: saved[index]?.id || post.id })));
       }
       setActiveTab('content');
       showNotice(`${generated.length} platform-specific drafts generated.`);
     } catch (error) {
-      showNotice(error.message || 'Content generation could not run.');
+      if (action.isCurrent()) showNotice(error.message || 'Content generation could not run.');
     } finally {
-      directionOperation.current = '';
-      setContentGenerating(false);
+      if (action.finish()) setContentGenerating(false);
     }
   };
 
   const createCalendar = async () => {
-    if (operationalOperation.current) return;
+    if (!beginAction() || actionPending('operational')) return;
     if (monthItems.length) { showNotice('This month already has a saved calendar. No duplicates were created.'); return; }
     if (!posts.length) {
       setModal({ type: 'content-first' });
@@ -805,11 +833,16 @@ function LivePodWorkspace({ session, subscription }) {
   };
 
   const savePostEdit = async (post) => {
+    const action = beginAction(`draft:${post.id}`);
+    if (!action) return;
     try {
       await updateSocialPost(post.id, post.content);
+      if (!action.isCurrent()) return;
       showNotice(`${post.platformName} draft saved.`);
     } catch (error) {
-      showNotice(error.message || 'The draft edit could not be saved.');
+      if (action.isCurrent()) showNotice(error.message || 'The draft edit could not be saved.');
+    } finally {
+      action.finish();
     }
   };
 
@@ -817,25 +850,28 @@ function LivePodWorkspace({ session, subscription }) {
     event.preventDefault();
     const question = aiQuestion.trim();
     if (!question || aiSending) return;
+    const action = beginAction('chat');
+    if (!action) return;
     const userMessage = { id: crypto.randomUUID(), role: 'user', content: question };
     setAiMessages((current) => [...current, userMessage]);
     setAiQuestion('');
     setAiSending(true);
     try {
       if (!session?.access_token) throw new Error('Sign in again before using this pod AI.');
-      const result = await askPodAssistant({ accessToken: session.access_token, podId: pod.id, question });
+      const result = await askPodAssistant({ accessToken: session.access_token, podId: action.podId, question });
+      if (!action.isCurrent()) return;
       const answer = result.answer;
       const memorySaved = result.memorySaved;
       setAiMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: answer }]);
       if (!memorySaved) showNotice('The answer is visible, but pod memory needs the workspace migration before it can be saved.');
     } catch (error) {
-      showNotice(error.message || 'This pod AI could not answer right now.');
+      if (action.isCurrent()) showNotice(error.message || 'This pod AI could not answer right now.');
     } finally {
-      setAiSending(false);
+      if (action.finish()) setAiSending(false);
     }
   };
 
-  if (loading) return <div className="pod-workspace-loading">Opening this pod…</div>;
+  if (loading || (pod && pod.id !== podId)) return <div className="pod-workspace-loading">Opening this pod…</div>;
   if (!pod) return <EmptyState icon={BriefcaseBusiness} title={loadError ? 'Pod could not be loaded' : 'Pod not found'} body={loadError || 'This pod is unavailable or does not belong to the signed-in account.'} />;
 
   const renderPanel = () => {
@@ -1104,14 +1140,14 @@ function LivePodWorkspace({ session, subscription }) {
       </div>
       {notice && <div className="pod-toast" role="status"><Check size={16} />{notice}</div>}
       <PodCommandPalette open={paletteOpen} commands={commands} onClose={() => setPaletteOpen(false)} />
-      <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => { if (!directionOperation.current) setModal(null); }}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} disabled={Boolean(directionMutation) || contentGenerating} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim() || Boolean(directionMutation) || contentGenerating} onClick={saveOverride}>{directionMutation === 'override' ? 'Saving direction…' : 'Save and readjust'}</button><button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal(null)}>Cancel</button></div></PodModal>
+      <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => { if (!actionPending('direction')) setModal(null); }}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} disabled={Boolean(directionMutation) || contentGenerating} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim() || Boolean(directionMutation) || contentGenerating} onClick={saveOverride}>{directionMutation === 'override' ? 'Saving direction…' : 'Save and readjust'}</button><button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal(null)}>Cancel</button></div></PodModal>
       <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in needs the provider app ID, permissions, redirect URL, token encryption, and platform approval before this button can safely open OAuth.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
       <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, one logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
       <PodModal open={modal?.type === 'analysis-first'} title="Run the analysis first" description="Content must come from this pod's website, photos, and approved direction." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Go to AI direction</button></PodModal>
       <PodModal open={modal?.type === 'approval-first'} title="Approve the direction first" description="This prevents the AI from filling the pod with content based on a direction you do not want." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Review direction</button></PodModal>
       <PodModal open={modal?.type === 'content-first'} title="Generate content first" description="The calendar schedules approved platform-specific drafts." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('content'); }}>Open social content</button></PodModal>
-      <PodModal open={modal?.type === 'invite'} title="Invite a collaborator" description="Invitations will be sent only after private pod-membership policies and email delivery are enabled." onClose={() => setModal(null)}><label className="pod-modal-field">Email address<input type="email" placeholder="collaborator@example.com" /></label><button className="button button-primary" type="button" onClick={() => { setModal(null); showNotice('Invite saved as pending setup; no email was sent.'); }}>Save pending invite</button></PodModal>
-      <PodModal open={modal?.type === 'launch'} title="Coming-soon draft created" description="The page stays private until publishing infrastructure and its address are configured." onClose={() => setModal(null)}><div className="pod-provider-message"><Mail /><div><strong>Draft ready inside this pod</strong><p>The page uses the approved brand direction and stores email captures separately from marketing content.</p></div></div><button className="button button-primary" type="button" onClick={() => { setModal(null); showNotice('Coming-soon page draft saved.'); }}>Save page draft</button></PodModal>
+      <PodModal open={modal?.type === 'invite'} title="Invite a collaborator" description="Invitations will be sent only after private pod-membership policies and email delivery are enabled." onClose={() => setModal(null)}><label className="pod-modal-field">Email address<input type="email" placeholder="collaborator@example.com" /></label><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Invite saved as pending setup; no email was sent.')}>Save pending invite</button></PodModal>
+      <PodModal open={modal?.type === 'launch'} title="Coming-soon draft created" description="The page stays private until publishing infrastructure and its address are configured." onClose={() => setModal(null)}><div className="pod-provider-message"><Mail /><div><strong>Draft ready inside this pod</strong><p>The page uses the approved brand direction and stores email captures separately from marketing content.</p></div></div><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Coming-soon page draft saved.')}>Save page draft</button></PodModal>
     </section>
   );
 }
