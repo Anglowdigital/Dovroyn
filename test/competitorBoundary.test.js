@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as auth from '../api/_lib/supabaseAuth.js';
 import { buildPodAiContext } from '../api/_lib/podContext.js';
 import { requestCompetitorSnapshot } from '../src/lib/aiClient.js';
+import { mockWebsiteRequest } from './fixtures/mockWebsiteRequest.js';
 
 const route = await import('../api/ai/competitors.js').catch(() => ({}));
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
@@ -17,6 +18,7 @@ function snapshot(urls = ['https://8.8.8.8/']) {
   };
 }
 async function exercise(options = {}) {
+  const restoreWebsiteRequest = mockWebsiteRequest();
   assert.equal(typeof route.default, 'function', 'authenticated competitor handler is missing');
   const originalFetch = globalThis.fetch;
   const variables = ['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'OPENAI_API_KEY', 'OPENAI_ANALYSIS_MODEL'];
@@ -49,6 +51,7 @@ async function exercise(options = {}) {
     await route.default({ method: options.method || 'POST', headers: { ...(options.noAuth ? {} : { authorization: 'Bearer own-token' }), 'x-forwarded-for': options.ip || `test-competitors-${++identity}` }, body: options.body ?? { podId: 'one', urls: ['https://8.8.8.8'] } }, response);
     return { ...result, calls, provider: calls.filter((call) => call.target.includes('api.openai.com')), saves: calls.filter((call) => call.method === 'POST' && call.target.includes('/pod_preferences')) };
   } finally {
+    restoreWebsiteRequest();
     globalThis.fetch = originalFetch;
     variables.forEach((key, index) => originalEnv[index] === undefined ? delete process.env[key] : process.env[key] = originalEnv[index]);
   }

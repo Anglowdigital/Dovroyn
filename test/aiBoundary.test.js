@@ -161,7 +161,7 @@ test('website page fetch returns deterministic metadata and same-document links 
     </body></html>
   `, { headers: { 'content-type': 'text/html; charset=utf-8' } });
   try {
-    const page = await webSource.fetchWebsiteText('https://8.8.8.8');
+    const page = await webSource.fetchWebsiteText('https://8.8.8.8', { fetchImpl: globalThis.fetch });
     assert.deepEqual({
       url: page.url,
       title: page.title,
@@ -192,7 +192,7 @@ test('textarea and unterminated raw-text elements cannot contribute links or rea
     </body></html>
   `, { headers: { 'content-type': 'text/html; charset=utf-8' } });
   try {
-    const page = await webSource.fetchWebsiteText('https://8.8.8.8');
+    const page = await webSource.fetchWebsiteText('https://8.8.8.8', { fetchImpl: globalThis.fetch });
     assert.equal(page.text, 'Visible evidence.');
     assert.deepEqual(page.links, []);
   } finally {
@@ -210,7 +210,7 @@ test('website page fetch rejects a streamed body once it exceeds one megabyte', 
     },
   }), { headers: { 'content-type': 'text/plain' } });
   try {
-    await assert.rejects(() => webSource.fetchWebsiteText('https://8.8.4.4'), /too large/i);
+    await assert.rejects(() => webSource.fetchWebsiteText('https://8.8.4.4', { fetchImpl: globalThis.fetch }), /too large/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -223,7 +223,7 @@ test('website page fetch revalidates and rejects a private redirect target', asy
     headers: { location: 'http://127.0.0.1/private' },
   });
   try {
-    await assert.rejects(() => webSource.fetchWebsiteText('https://1.1.1.1'), /public website/i);
+    await assert.rejects(() => webSource.fetchWebsiteText('https://1.1.1.1', { fetchImpl: globalThis.fetch }), /public website/i);
   } finally {
     globalThis.fetch = originalFetch;
   }

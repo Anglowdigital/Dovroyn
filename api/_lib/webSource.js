@@ -1,10 +1,16 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { Readable, pipeline } from 'node:stream';
+import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
+import { X509Certificate } from 'node:crypto';
 
 const MAX_PAGE_BYTES = 1_000_000;
 const MAX_READABLE_CHARS = 14_000;
 const MAX_REDIRECTS = 3;
 const REQUEST_TIMEOUT_MS = 8_000;
+const validatedTargets = new WeakMap();
 
 function unsafeIpv4(address) {
   const parts = address.split('.').map(Number);
@@ -23,13 +29,20 @@ function unsafeIpv4(address) {
 }
 
 function unsafeIpv6(address) {
-  const value = address.toLowerCase().split('%')[0];
-  if (value === '::' || value === '::1' || value.startsWith('fc') || value.startsWith('fd') || value.startsWith('fe8') || value.startsWith('fe9') || value.startsWith('fea') || value.startsWith('feb') || value.startsWith('2001:db8:')) return true;
-  const mapped = value.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  return mapped ? unsafeIpv4(mapped[1]) : false;
+  // URL parsing canonicalizes expanded and dotted IPv4-mapped IPv6 alike.
+  const value = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  const mapped = value.match(/^::ffff:([0-9a-f]+):([0-9a-f]+)$/);
+  if (mapped) {
+    const high = Number.parseInt(mapped[1], 16);
+    const low = Number.parseInt(mapped[2], 16);
+    return unsafeIpv4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+  }
+  // Only global unicast space is eligible; exclude documentation addresses too.
+  return !/^[23]/.test(value) || value.startsWith('2001:db8:');
 }
 
 function isUnsafeAddress(address) {
+  if (typeof address !== 'string') return true;
   const version = isIP(address);
   return version === 4 ? unsafeIpv4(address) : version === 6 ? unsafeIpv6(address) : true;
 }
@@ -50,13 +63,14 @@ export async function validatePublicWebsiteUrl(rawUrl) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw publicWebsiteError();
   if (url.port && !['80', '443'].includes(url.port)) throw publicWebsiteError();
 
-  const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal')) throw publicWebsiteError();
 
+  let addresses;
   if (isIP(hostname)) {
     if (isUnsafeAddress(hostname)) throw publicWebsiteError();
+    addresses = [{ address: hostname, family: isIP(hostname) }];
   } else {
-    let addresses;
     try {
       addresses = await lookup(hostname, { all: true, verbatim: true });
     } catch {
@@ -64,9 +78,99 @@ export async function validatePublicWebsiteUrl(rawUrl) {
       error.status = 422;
       throw error;
     }
-    if (!addresses.length || addresses.some(({ address }) => isUnsafeAddress(address))) throw publicWebsiteError();
+    if (!Array.isArray(addresses) || !addresses.length || addresses.some((entry) => isUnsafeAddress(entry?.address))) throw publicWebsiteError();
   }
+  validatedTargets.set(url, {
+    href: url.toString(),
+    hostname,
+    addresses: addresses.map(({ address }) => ({ address, family: isIP(address) })),
+  });
   return url;
+}
+
+function fetchPinnedWebsite(url, { signal, headers }) {
+  const target = validatedTargets.get(url);
+  if (!target || target.href !== url.toString() || !target.addresses.length) throw publicWebsiteError();
+
+  return new Promise((resolve, reject) => {
+    const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
+      // A fresh connection per hop cannot reuse a socket validated for another DNS answer.
+      agent: false,
+      signal,
+      headers: { ...headers, Host: url.host, 'Accept-Encoding': 'identity' },
+      ...(url.protocol === 'https:' ? {
+        servername: isIP(target.hostname) ? '' : target.hostname,
+        rejectUnauthorized: true,
+        // Native IPv6 certificate matching is inconsistent across Node versions.
+        // Match the original literal against IP SANs without relaxing CA checks.
+        ...(isIP(target.hostname) === 6 ? {
+          checkServerIdentity(_hostname, certificate) {
+            try {
+              if (new X509Certificate(certificate.raw).checkIP(target.hostname)) return undefined;
+            } catch {
+              // Missing or malformed certificate identity must fail closed.
+            }
+            return new Error('The website certificate does not match its IP address.');
+          },
+        } : {}),
+      } : {}),
+      lookup(hostname, options, callback) {
+        if (hostname.toLowerCase().replace(/\.$/, '') !== target.hostname) {
+          callback(publicWebsiteError());
+          return;
+        }
+        const family = typeof options === 'number' ? options : options.family;
+        const addresses = target.addresses.filter((entry) => !family || entry.family === family);
+        if (!addresses.length) callback(publicWebsiteError());
+        else if (options.all) callback(null, addresses);
+        else callback(null, addresses[0].address, addresses[0].family);
+      },
+    }, (response) => {
+      const encoding = String(response.headers['content-encoding'] || '').trim().toLowerCase();
+      const decompress = encoding === 'gzip' ? createGunzip : encoding === 'deflate' ? createInflate : encoding === 'br' ? createBrotliDecompress : null;
+      if (encoding && encoding !== 'identity' && !decompress) {
+        response.destroy();
+        reject(Object.assign(new Error('That URL is not a readable website page.'), { status: 422 }));
+        return;
+      }
+      const stream = decompress ? decompress() : response;
+      const body = Readable.toWeb(stream);
+      if (decompress) pipeline(response, stream, (error) => { if (error) stream.destroy(error); });
+      resolve({
+        url: url.toString(),
+        status: response.statusCode,
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        headers: {
+          get(name) {
+            const value = response.headers[String(name).toLowerCase()];
+            return Array.isArray(value) ? value.join(', ') : value ?? null;
+          },
+        },
+        body,
+      });
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function withAbort(operation, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const removeListener = () => signal.removeEventListener('abort', abort);
+    const abort = () => { removeListener(); reject(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve().then(() => {
+      signal.throwIfAborted();
+      return operation();
+    }).then((value) => {
+      removeListener();
+      resolve(value);
+    }, (error) => {
+      removeListener();
+      reject(error);
+    });
+  });
 }
 
 function decodeHtmlEntities(value) {
@@ -205,31 +309,46 @@ export function extractReadableText(html) {
 
 export async function fetchWebsiteText(rawUrl, options = {}) {
   const validateUrl = options.validateUrl || validatePublicWebsiteUrl;
-  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  // Explicit injection is a trusted test seam, never a request-controlled option.
+  const fetchImpl = options.fetchImpl || fetchPinnedWebsite;
   const redirectPolicy = typeof options.redirectPolicy === 'function' ? options.redirectPolicy : null;
   const maxPageBytes = Math.min(MAX_PAGE_BYTES, Math.max(1, Number(options.maxPageBytes) || MAX_PAGE_BYTES));
   const maxReadableChars = Math.min(MAX_READABLE_CHARS, Math.max(1, Number(options.maxReadableChars) || MAX_READABLE_CHARS));
   const maxRedirects = Math.min(MAX_REDIRECTS, Math.max(0, Number.isInteger(options.maxRedirects) ? options.maxRedirects : MAX_REDIRECTS));
   const timeoutMs = Math.min(REQUEST_TIMEOUT_MS, Math.max(1, Number(options.timeoutMs) || REQUEST_TIMEOUT_MS));
-  let currentUrl = await validateUrl(rawUrl);
+  let nextRawUrl = rawUrl;
+  let previousUrl = null;
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const abortFromCaller = () => controller.abort(options.signal.reason);
+    if (options.signal?.aborted) abortFromCaller();
+    else options.signal?.addEventListener('abort', abortFromCaller, { once: true });
     try {
-      const response = await fetchImpl(currentUrl, {
+      const currentUrl = await withAbort(() => validateUrl(nextRawUrl), controller.signal);
+      if (previousUrl && redirectPolicy && !await withAbort(() => redirectPolicy(currentUrl, previousUrl), controller.signal)) {
+        throw Object.assign(new Error('That website redirected outside the allowed crawl area.'), { status: 422 });
+      }
+      const response = await withAbort(() => fetchImpl(currentUrl, {
         redirect: 'manual',
         signal: controller.signal,
         headers: { 'User-Agent': 'DovroynWebsiteAnalyzer/1.0' },
-      });
+      }), controller.signal);
+      if (response.url) {
+        const responseUrl = new URL(response.url);
+        const requestedUrl = new URL(currentUrl);
+        responseUrl.hash = '';
+        requestedUrl.hash = '';
+        if (responseUrl.href !== requestedUrl.href) {
+          throw Object.assign(new Error('That website returned an unexpected final target.'), { status: 422 });
+        }
+      }
 
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get('location');
         if (!location || redirectCount === maxRedirects) throw Object.assign(new Error('The website redirected too many times.'), { status: 422 });
-        const redirectUrl = await validateUrl(new URL(location, currentUrl).toString());
-        if (redirectPolicy && !await redirectPolicy(redirectUrl, currentUrl)) {
-          throw Object.assign(new Error('That website redirected outside the allowed crawl area.'), { status: 422 });
-        }
-        currentUrl = redirectUrl;
+        nextRawUrl = new URL(location, currentUrl).toString();
+        previousUrl = currentUrl;
         continue;
       }
       if (!response.ok) throw Object.assign(new Error('Dovroyn could not read that website.'), { status: 422 });
@@ -254,6 +373,8 @@ export async function fetchWebsiteText(rawUrl, options = {}) {
       if (error?.status) throw error;
       throw Object.assign(new Error('Dovroyn could not read that website.'), { status: 422 });
     } finally {
+      controller.abort();
+      options.signal?.removeEventListener('abort', abortFromCaller);
       clearTimeout(timeout);
     }
   }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import analyzeHandler from '../api/ai/analyze.js';
+import { mockWebsiteRequest } from './fixtures/mockWebsiteRequest.js';
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -119,7 +120,8 @@ test('photos-only analysis advertises and accepts image evidence labels without 
   }
 });
 
-test('website analysis supplies bounded labelled pages and user notes to the rich dynamic schema', async () => {
+test('website analysis supplies bounded labelled pages and user notes to the rich dynamic schema', async (t) => {
+  t.after(mockWebsiteRequest());
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.VITE_SUPABASE_URL;
   const originalKey = process.env.VITE_SUPABASE_ANON_KEY;
@@ -222,7 +224,8 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
   }
 });
 
-test('analysis rejects invented landing-page provenance before canonical persistence', async () => {
+test('analysis rejects invented landing-page provenance before canonical persistence', async (t) => {
+  t.after(mockWebsiteRequest());
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.VITE_SUPABASE_URL;
   const originalKey = process.env.VITE_SUPABASE_ANON_KEY;
