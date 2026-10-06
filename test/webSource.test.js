@@ -10,6 +10,44 @@ import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
 import { fetchWebsiteText, validatePublicWebsiteUrl } from '../api/_lib/webSource.js';
 import { key, cert } from './fixtures/webSourceTls.js';
 
+function writeChunkedBody(response, body, encoding, finish = true) {
+  response.writeHead(200, {
+    'content-type': 'text/plain', 'transfer-encoding': 'chunked',
+    ...(encoding ? { 'content-encoding': encoding } : {}),
+  });
+  let offset = 0;
+  const writeNext = () => {
+    if (response.destroyed) return;
+    const end = Math.min(offset + 65_537, body.byteLength);
+    response.write(body.subarray(offset, end));
+    offset = end;
+    if (offset < body.byteLength) setImmediate(writeNext);
+    else if (finish) response.end();
+  };
+  writeNext();
+}
+
+function responseClosed(response) {
+  return Promise.all([
+    new Promise((resolve) => response.once('close', resolve)),
+    new Promise((resolve) => response.socket.once('close', resolve)),
+  ]);
+}
+
+async function assertClosedWithin(closed) {
+  let timer;
+  try {
+    await Promise.race([
+      closed,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('The response and socket did not close')), 1_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function mockDns(t, resolveAddresses) {
   const lookups = [];
   t.mock.method(dns.promises, 'lookup', async (hostname, options) => {
@@ -324,6 +362,91 @@ test('compressed website text is decoded with the same bounded readable semantic
   await localWire(t, (_request, response) => response.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' }).end(gzipSync('Public compressed evidence')));
   assert.equal((await fetchWebsiteText('http://public-wire.test')).text, 'Public compressed evidence');
 });
+
+test('chunked gzip empty members cannot bypass the encoded one-megabyte ceiling', async (t) => {
+  mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
+  const encoded = Buffer.concat([
+    ...Array(55_000).fill(gzipSync('')),
+    gzipSync('Public wire evidence'),
+  ]);
+  assert.equal(encoded.byteLength, 1_100_040);
+  let closed;
+  await localWire(t, (_request, response) => {
+    closed = responseClosed(response);
+    response.writeHead(200, {
+      'content-type': 'text/plain', 'content-encoding': 'gzip', 'transfer-encoding': 'chunked',
+    });
+    response.write(encoded.subarray(0, 500_003));
+    response.end(encoded.subarray(500_003));
+  });
+  await assert.rejects(() => fetchWebsiteText('http://public-wire.test'), /too large/i);
+  await assertClosedWithin(closed);
+});
+
+for (const [encoding, compress] of [['gzip', gzipSync], ['deflate', deflateSync], ['br', brotliCompressSync]]) {
+  for (const byteLength of [1_000_000, 1_000_001]) {
+    test(`${encoding} encoded ${byteLength} bytes are ${byteLength === 1_000_000 ? 'accepted' : 'rejected'} across HTTP chunks`, async (t) => {
+      mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
+      const content = compress('Public wire evidence');
+      // Node's decoders accept zero padding; decoded content stays only 20 bytes.
+      const encoded = Buffer.concat([content, Buffer.alloc(byteLength - content.byteLength)]);
+      let closed;
+      await localWire(t, (_request, response) => {
+        closed = responseClosed(response);
+        // Over-limit responses deliberately never end: the cap must close them.
+        writeChunkedBody(response, encoded, encoding, byteLength === 1_000_000);
+      });
+      const pending = fetchWebsiteText('http://public-wire.test', { timeoutMs: 1_500 });
+      if (byteLength === 1_000_000) assert.equal((await pending).text, 'Public wire evidence');
+      else await assert.rejects(() => pending, /too large/i);
+      await assertClosedWithin(closed);
+    });
+
+    test(`${encoding} decoded ${byteLength} bytes are ${byteLength === 1_000_000 ? 'accepted' : 'rejected'} without an encoded limit breach`, async (t) => {
+      mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
+      const encoded = compress(Buffer.alloc(byteLength, 65));
+      assert.ok(encoded.byteLength < 1_000_000);
+      let closed;
+      await localWire(t, (_request, response) => {
+        closed = responseClosed(response);
+        writeChunkedBody(response, encoded, encoding, byteLength === 1_000_000);
+      });
+      const pending = fetchWebsiteText('http://public-wire.test', { timeoutMs: 1_500 });
+      if (byteLength === 1_000_000) assert.equal((await pending).text, 'A'.repeat(14_000));
+      else await assert.rejects(() => pending, /too large/i);
+      await assertClosedWithin(closed);
+    });
+  }
+
+  test(`${encoding} encoded bytes respect a caller's lower page limit`, async (t) => {
+    mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
+    const encoded = compress('Public wire evidence');
+    assert.ok(encoded.byteLength > 20, 'this fixture isolates the encoded limit from the smaller decoded content');
+    const closed = [];
+    await localWire(t, (_request, response) => {
+      closed.push(responseClosed(response));
+      writeChunkedBody(response, encoded, encoding);
+    });
+    assert.equal((await fetchWebsiteText('http://public-wire.test', { maxPageBytes: encoded.byteLength })).text, 'Public wire evidence');
+    await assert.rejects(() => fetchWebsiteText('http://public-wire.test', { maxPageBytes: encoded.byteLength - 1 }), /too large/i);
+    await assertClosedWithin(Promise.all(closed));
+  });
+}
+
+for (const byteLength of [1_000_000, 1_000_001]) {
+  test(`uncompressed ${byteLength} bytes are ${byteLength === 1_000_000 ? 'accepted' : 'rejected'} across HTTP chunks`, async (t) => {
+    mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
+    let closed;
+    await localWire(t, (_request, response) => {
+      closed = responseClosed(response);
+      writeChunkedBody(response, Buffer.alloc(byteLength, 65), '', byteLength === 1_000_000);
+    });
+    const pending = fetchWebsiteText('http://public-wire.test', { timeoutMs: 1_500 });
+    if (byteLength === 1_000_000) assert.equal((await pending).text, 'A'.repeat(14_000));
+    else await assert.rejects(() => pending, /too large/i);
+    await assertClosedWithin(closed);
+  });
+}
 
 test('the one-megabyte ceiling also applies to decompressed website bytes', async (t) => {
   mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);

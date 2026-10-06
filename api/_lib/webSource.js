@@ -2,7 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { Readable, pipeline } from 'node:stream';
+import { Readable, Transform, pipeline } from 'node:stream';
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 import { X509Certificate } from 'node:crypto';
 
@@ -88,7 +88,7 @@ export async function validatePublicWebsiteUrl(rawUrl) {
   return url;
 }
 
-function fetchPinnedWebsite(url, { signal, headers }) {
+function fetchPinnedWebsite(url, { signal, headers, maxPageBytes = MAX_PAGE_BYTES }) {
   const target = validatedTargets.get(url);
   if (!target || target.href !== url.toString() || !target.addresses.length) throw publicWebsiteError();
 
@@ -133,9 +133,21 @@ function fetchPinnedWebsite(url, { signal, headers }) {
         reject(Object.assign(new Error('That URL is not a readable website page.'), { status: 422 }));
         return;
       }
-      const stream = decompress ? decompress() : response;
+      let encodedBytes = 0;
+      const boundedWire = new Transform({
+        transform(chunk, _encoding, callback) {
+          encodedBytes += chunk.byteLength;
+          if (encodedBytes > maxPageBytes) callback(pageTooLargeError());
+          else callback(null, chunk);
+        },
+      });
+      const stream = decompress ? decompress() : boundedWire;
       const body = Readable.toWeb(stream);
-      if (decompress) pipeline(response, stream, (error) => { if (error) stream.destroy(error); });
+      // Bound encoded bytes before decompression; pipeline tears down the response
+      // and socket on this cap or cancellation at the separate decoded-byte cap.
+      pipeline(decompress ? [response, boundedWire, stream] : [response, boundedWire], (error) => {
+        if (error) stream.destroy(error);
+      });
       resolve({
         url: url.toString(),
         status: response.statusCode,
@@ -332,6 +344,7 @@ export async function fetchWebsiteText(rawUrl, options = {}) {
       const response = await withAbort(() => fetchImpl(currentUrl, {
         redirect: 'manual',
         signal: controller.signal,
+        maxPageBytes,
         headers: { 'User-Agent': 'DovroynWebsiteAnalyzer/1.0' },
       }), controller.signal);
       if (response.url) {
