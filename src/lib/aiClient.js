@@ -11,26 +11,6 @@ async function readApiResponse(response) {
   return payload;
 }
 
-export async function askLandingAssistant(question) {
-  const response = await fetch('/api/ai/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
-  });
-  const payload = await readApiResponse(response);
-  return payload.answer;
-}
-
-export async function askDemoPodAssistant(question) {
-  const response = await fetch('/api/ai/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, demoPod: true }),
-  });
-  const payload = await readApiResponse(response);
-  return payload.answer;
-}
-
 export async function requestPodAnalysis({ accessToken, podId, sourceUrl, notes, imageUrls = [] }) {
   const response = await fetch('/api/ai/analyze', {
     method: 'POST',
@@ -54,6 +34,16 @@ export async function askPodAssistant({ accessToken, podId, question }) {
     body: JSON.stringify({ podId, question }),
   });
   return readApiResponse(response);
+}
+
+export async function requestCompetitorSnapshot({ accessToken, podId, urls }) {
+  const response = await fetch('/api/ai/competitors', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ podId, urls }),
+  });
+  const payload = await readApiResponse(response);
+  if (payload.ok !== true || payload.saved !== true || !payload.snapshot) throw new Error('The competitor snapshot save was not confirmed.');
+  return payload;
 }
 
 export async function requestSocialContent({ accessToken, podId, platforms, contentDay, direction = '' }) {

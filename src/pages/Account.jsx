@@ -11,13 +11,13 @@ const TIER_INFO = {
     price: 'Free',
     posting: null,
     seats: '1 seat',
-    note: 'Build your pod free — subscribe to publish and unlock more.',
+    note: 'Build your pod free — subscribe to unlock campaign planning tools.',
   },
   starter: {
     label: 'Starter Pod',
     pods: '1 active pod',
     price: '$89/mo',
-    posting: '2 campaign posting days per week',
+    posting: '2 campaign content-planning days per week',
     seats: '1 seat',
     note: null,
   },
@@ -25,15 +25,15 @@ const TIER_INFO = {
     label: 'Growth Pods',
     pods: 'Up to 3 active pods',
     price: '$249/mo',
-    posting: '3 campaign posting days per week',
+    posting: '3 campaign content-planning days per week',
     seats: '3 team seats',
-    note: 'Extra posting days available as add-ons.',
+    note: 'Extra campaign content-planning days available as add-ons.',
   },
   pro: {
     label: 'Pro Marketing Pods',
     pods: 'Up to 7 active pods',
     price: '$599/mo',
-    posting: '6 campaign posting days per week',
+    posting: '6 campaign content-planning days per week',
     seats: '5 team seats',
     note: null,
   },
@@ -41,7 +41,7 @@ const TIER_INFO = {
     label: 'Scale / Agency Pods',
     pods: 'Up to 12 active pods',
     price: '$1,299/mo',
-    posting: '7 campaign posting days per week',
+    posting: '7 campaign content-planning days per week',
     seats: 'Unlimited team seats',
     note: null,
   },
@@ -71,6 +71,9 @@ function TierBadge({ tier }) {
             {info.note}
           </li>
         )}
+        <li style={{ padding: '0.25rem 0', color: 'var(--muted)', fontSize: '0.875rem' }}>
+          Planning and drafts only. Direct social connections and publishing are not available yet.
+        </li>
       </ul>
     </article>
   );
@@ -95,6 +98,9 @@ function UpgradeOptions({ currentTier, onCheckoutUnavailable }) {
     <article className="panel detail-card">
       <p className="eyebrow">Upgrade your plan</p>
       <h4>Scale when you are ready.</h4>
+      <p className="subtle" style={{ marginTop: '0.5rem' }}>
+        Plan allowances cover drafts and calendar planning. Direct social connections and publishing are not available yet.
+      </p>
       <div className="cards-grid" style={{ marginTop: '1rem' }}>
         {upgrades.map((t) => (
           <div key={t.key} className="panel" style={{ padding: '1rem' }}>

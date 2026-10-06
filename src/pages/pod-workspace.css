@@ -37,7 +37,8 @@
 }
 
 .pod-workspace-title { gap: 0.8rem; }
-.pod-workspace-title h1 { font-family: 'Playfair Display', serif; font-size: 1.35rem; }
+.pod-workspace-title h1,
+.pod-workspace-title h2 { font-family: 'Playfair Display', serif; font-size: 1.35rem; }
 .pod-workspace-title .eyebrow { margin-bottom: 0.18rem; }
 .pod-workspace-actions { gap: 0.65rem; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -269,7 +270,8 @@ kbd {
 .pod-social-card p { margin: 0.18rem 0; color: var(--navy-65); font-size: 0.72rem; }
 .pod-social-card small { color: var(--muted); font-size: 0.62rem; }
 .pod-honesty-note,
-.pod-decision-note { padding: 0.75rem 0.9rem; border-left: 3px solid var(--gold); border-radius: 6px; color: var(--navy-65); background: rgba(216, 184, 103, 0.12); font-size: 0.72rem; line-height: 1.5; }
+.pod-decision-note,
+.pod-showcase-note { padding: 0.75rem 0.9rem; border-left: 3px solid var(--gold); border-radius: 6px; color: var(--navy-65); background: rgba(216, 184, 103, 0.12); font-size: 0.72rem; line-height: 1.5; }
 .pod-post-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
 .pod-post-card { padding: 0.85rem; display: grid; gap: 0.7rem; }
 .pod-post-card header,
@@ -277,6 +279,7 @@ kbd {
 .pod-post-card header > div { display: grid; gap: 0.2rem; }
 .pod-post-card small { color: var(--muted); font-size: 0.64rem; }
 .pod-post-card textarea { width: 100%; padding: 0.7rem; resize: vertical; line-height: 1.45; }
+.pod-demo-post-copy { padding: 0.75rem; border: 1px solid var(--gold-border); border-radius: 10px; color: var(--navy-65); background: var(--panel); white-space: pre-wrap; line-height: 1.5; }
 
 .pod-toggle { width: fit-content; display: flex; align-items: center; gap: 0.65rem; cursor: pointer; }
 .pod-toggle > input { position: absolute; opacity: 0; }
@@ -304,6 +307,9 @@ kbd {
 .pod-launch-preview h2 { font-family: 'Playfair Display', serif; font-size: clamp(2rem, 6vw, 4rem); }
 .pod-launch-preview > p:not(.eyebrow) { max-width: 520px; color: rgba(255,255,255,0.72); }
 .pod-launch-preview > div { width: min(460px, 100%); display: flex; }
+.pod-launch-preview .pod-demo-email-preview { overflow: hidden; border: 1px solid rgba(255,255,255,0.22); border-radius: 9px; background: rgba(255,255,255,0.1); }
+.pod-demo-email-preview span { flex: 1; padding: 0.75rem; color: rgba(255,255,255,0.68); text-align: left; }
+.pod-demo-email-preview strong { padding: 0.75rem 1rem; color: var(--navy); background: var(--gold-soft); }
 .pod-launch-preview input { flex: 1; min-width: 0; padding: 0.75rem; border: 0; border-radius: 9px 0 0 9px; }
 .pod-launch-preview button { padding: 0.75rem 1rem; border: 0; border-radius: 0 9px 9px 0; color: var(--navy); background: var(--gold-soft); font-weight: 800; }
 .pod-launch-preview small { color: rgba(255,255,255,0.55); }
@@ -509,6 +515,11 @@ kbd {
   border-bottom: 1px solid var(--gold-border);
 }
 .pod-demo-banner a { color: var(--navy); font-weight: 800; text-decoration: underline; }
+.pod-showcase [role="tab"]:focus-visible,
+.pod-showcase [role="tabpanel"]:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+}
 
 /* ─── Pod back link + brand colour swatches ─── */
 .pod-back-link {
@@ -531,3 +542,22 @@ kbd {
   display: inline-block;
 }
 .pod-swatch-names { font-size: 0.68rem; color: var(--navy-65); font-weight: 600; }
+.pod-competitor-inputs,
+.pod-competitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+}
+
+.pod-competitor-grid .pod-rich-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pod-learning-history {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

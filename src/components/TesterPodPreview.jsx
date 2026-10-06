@@ -288,7 +288,7 @@ export default function TesterPodPreview() {
       <div className="tester-pod-cta">
         <Link className="button button-primary" to="/signup">Create Your Account</Link>
         <p className="tester-pod-note">
-          This is a preview. Live posting and ad actions require connected accounts and user approval.
+          This is a preview. Provider integrations are not live yet, so it cannot connect accounts, publish, or run ads.
         </p>
       </div>
     </section>

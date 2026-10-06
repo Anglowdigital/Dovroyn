@@ -104,7 +104,7 @@ const LANDING_SECTIONS = [
   },
   {
     heading: "Plan campaigns for the platforms that matter.",
-    body: "Dovroyn recommends the best social, search, content, and community platforms for your campaign. Posting and ads require the user to connect each account and approve permissions first.",
+    body: "Dovroyn recommends the best social, search, content, and community platforms for your campaign and prepares platform-specific drafts and calendars. Direct provider connections, publishing, and ad actions are not available yet.",
   },
 ];
 
@@ -112,7 +112,7 @@ const DASHBOARD_PREVIEW_CARDS = [
   { title: 'Website analysed', metric: 'Ready', description: 'Brand, offer, audience, and tone extracted from the source.' },
   { title: 'Campaign direction', metric: 'Locked', description: 'The approved strategy controls all content, ads, and calendar suggestions.' },
   { title: 'Content calendar', metric: 'Generated', description: 'Posts planned around the pod, selected platforms, paid tier, and target country.' },
-  { title: 'Socials connected', metric: 'Pending', description: 'Connect each platform securely before posting or ad permissions are enabled.' },
+  { title: 'Provider publishing', metric: 'Unavailable', description: 'Platform planning and drafts are available. Direct provider connections and posting are not live.' },
   { title: 'Budget tracker', metric: 'Active', description: 'Track planned spend, used spend, leads, sales, and return.' },
   { title: 'Ad improvement', metric: 'Needs approval', description: 'AI suggestions are shown for review before anything changes.' },
 ];
@@ -249,7 +249,7 @@ const PRICING_TIERS = [
       'Audience and offer direction',
       'Campaign angles — upgrade to unlock',
       'Content calendar — upgrade to unlock',
-      'Posting schedule — upgrade to unlock',
+      'Campaign calendar planning — upgrade to unlock',
       'Budget tracking — upgrade to unlock',
     ],
     stripeKey: null,
@@ -266,7 +266,7 @@ const PRICING_TIERS = [
       'AI brand/tone summary',
       'Audience and offer direction',
       'Campaign angles',
-      '2 campaign posting days per week',
+      '2 campaign content-planning days per week',
       'Manual budget tracking',
       'Core pod workspace',
     ],
@@ -282,11 +282,11 @@ const PRICING_TIERS = [
       'Website/app/image analysis',
       'Campaign strategy',
       'Social platform recommendations',
-      '3 campaign posting days per week',
+      '3 campaign content-planning days per week',
       'Holiday-aware calendar planning',
       'Budget tracking',
       'Ad analysis preview',
-      'Extra posting days available as add-ons',
+      'Extra campaign content-planning days available as add-ons',
     ],
     stripeKey: 'growth',
   },
@@ -300,7 +300,7 @@ const PRICING_TIERS = [
       'Full pod analysis',
       'Launch planning',
       'Content calendar generation',
-      '6 campaign posting days per week',
+      '6 campaign content-planning days per week',
       'Budget dashboard',
       'Ad analysis dashboard',
       'Approval workflow for AI recommendations',
@@ -316,7 +316,7 @@ const PRICING_TIERS = [
       'Up to 12 active pods',
       'Multi-brand campaign planning',
       'Advanced calendar generation',
-      '7 campaign posting days per week',
+      '7 campaign content-planning days per week',
       'Budget and performance tracking',
       'Ad analysis recommendations',
       'Priority support',
@@ -339,7 +339,7 @@ const PRICING_PAGE_TIERS = [
       'Audience and offer direction',
       'Campaign angles — upgrade to unlock',
       'Content calendar — upgrade to unlock',
-      'Posting schedule — upgrade to unlock',
+      'Campaign calendar planning — upgrade to unlock',
       'Budget tracking — upgrade to unlock',
     ],
     stripeKey: null,
@@ -356,7 +356,7 @@ const PRICING_PAGE_TIERS = [
       'AI brand/tone summary',
       'Audience and offer direction',
       'Campaign angles',
-      '2 campaign posting days per week',
+      '2 campaign content-planning days per week',
       'Manual budget tracking',
       'Core pod workspace',
     ],
@@ -372,11 +372,11 @@ const PRICING_PAGE_TIERS = [
       'Website/app/image analysis',
       'Campaign strategy',
       'Social platform recommendations',
-      '3 campaign posting days per week',
+      '3 campaign content-planning days per week',
       'Holiday-aware calendar planning',
       'Budget tracking',
       'Ad analysis preview',
-      'Extra posting days available as add-ons',
+      'Extra campaign content-planning days available as add-ons',
     ],
     stripeKey: 'growth',
   },
@@ -390,7 +390,7 @@ const PRICING_PAGE_TIERS = [
       'Full pod analysis',
       'Launch planning',
       'Content calendar generation',
-      '6 campaign posting days per week',
+      '6 campaign content-planning days per week',
       'Budget dashboard',
       'Ad analysis dashboard',
       'Approval workflow for AI recommendations',
@@ -406,7 +406,7 @@ const PRICING_PAGE_TIERS = [
       'Up to 12 active pods',
       'Multi-brand campaign planning',
       'Advanced calendar generation',
-      '7 campaign posting days per week',
+      '7 campaign content-planning days per week',
       'Budget and performance tracking',
       'Ad analysis recommendations',
       'Priority support',
@@ -633,12 +633,12 @@ function PodTabsView({ pod }) {
                   <p className="subtle">Platform-specific content direction ready</p>
                   <p className="subtle"><strong>Posting permission:</strong> Not connected</p>
                   <p className="subtle"><strong>Ad permission:</strong> Not connected</p>
-                  <button className="button button-ghost button-sm">Connect Account</button>
-                  <p className="subtle" style={{ fontSize: '0.75rem' }}>Posting and ads: Requires connection and user approval</p>
+                  <span className="button button-ghost button-sm" aria-disabled="true">Provider setup unavailable</span>
+                  <p className="subtle" style={{ fontSize: '0.75rem' }}>Direct provider connections, posting, and ads are not available in this release.</p>
                 </article>
               ))}
             </div>
-            <p className="subtle" style={{ marginTop: '0.8rem' }}>Important: Users must connect each platform securely via OAuth. Dovroyn cannot post or run ads until you connect and grant permission. No passwords are stored.</p>
+            <p className="subtle" style={{ marginTop: '0.8rem' }}>Provider OAuth applications and publishing APIs must be implemented and approved before Dovroyn can post or run ads.</p>
           </div>
         );
       case 'Calendar':
@@ -653,8 +653,8 @@ function PodTabsView({ pod }) {
               <button className="button button-primary">Generate Calendar</button>
             </div>
             <p className="subtle" style={{ marginTop: '0.5rem' }}>Calendar will be generated from the pod's analysed website/campaign/images, using the accepted/locked-in tone, selected platforms, paid tier, and target country.</p>
-            <p className="subtle">Content posting to multiple platforms happens on the same campaign day unless you choose otherwise.</p>
-            <p className="subtle">You can preview, edit, approve, or regenerate before anything posts.</p>
+            <p className="subtle">Drafts for multiple platforms can share the same campaign day unless you choose otherwise.</p>
+            <p className="subtle">You can preview, edit, approve, or regenerate drafts. Dovroyn does not publish them.</p>
           </div>
         );
       case 'Holidays':
@@ -940,25 +940,19 @@ function Wordmark() {
   return <BrandLogo />;
 }
 
-/* ─── SOCIAL PROOF DATA ─── */
-const TESTIMONIALS = [
+/* ─── PRODUCT PRINCIPLES ─── */
+const PRODUCT_PRINCIPLES = [
   {
-    quote: "I went from 'what do I post?' to having a full month of content in 20 minutes. The pod actually understood my brand.",
-    name: "Sarah K.",
-    role: "Founder, Aurora Skincare",
-    metric: "3.2x engagement",
+    title: 'One brand, one brain',
+    body: 'Each pod keeps its own sources, brand direction and campaign context together.',
   },
   {
-    quote: "We used to plan campaigns in spreadsheets. Now one pod holds the strategy, calendar, and ad angles — and it actually remembers what worked.",
-    name: "Marcus T.",
-    role: "Founder, Gidgee Co",
-    metric: "12 pods active",
+    title: 'Direction before content',
+    body: 'Review and approve a brand direction before preparing channel-specific drafts.',
   },
   {
-    quote: "The direction-lock feature changed everything. Once the strategy is set, every piece of content follows it. No more off-brand posts.",
-    name: "Jessica L.",
-    role: "Marketing Director, House of MGNM",
-    metric: "Zero off-brand posts",
+    title: 'You stay in control',
+    body: 'Recommendations are planning outputs, not external actions. Direct provider publishing and spend changes are not available.',
   },
 ];
 
@@ -988,14 +982,15 @@ function LandingPage({ session }) {
           <span className="hero-badge"><Sparkles size={14} /> AI Marketing Pods</span>
         </div>
         <div className="hero-content-centered">
-          <h1>Your brand deserves a <span className="hero-emphasis">strategy</span>, not a scramble.</h1>
+          <h1>EVERY BRAND GETS ITS OWN AI BRAIN</h1>
           <p className="hero-gold-line">Drop in your website. Dovroyn builds your campaign direction, content calendar, and next moves — all inside one intelligent pod.</p>
           <p className="lede">Stop staring at blank content calendars. Each pod learns your brand, locks your strategy, and tells you exactly what to post, where, and when.</p>
           <div className="hero-actions">
-            <NavLink className="button button-primary button-lg" to={session ? '/pods' : '/signup'}>
-              {session ? 'Open My Pods' : 'Start Free — No Card Required'}
+            <NavLink className="button button-primary button-lg" to="/signup">
+              Start Free — No Card Required
             </NavLink>
             <NavLink className="button button-ghost" to="/demo-pod">See Demo Pod</NavLink>
+            <NavLink className="button button-ghost" to="/pricing">View Pricing</NavLink>
           </div>
           <div className="hero-trust-row">
             <span className="hero-trust-item"><CheckCircle size={14} /> Free plan available</span>
@@ -1007,23 +1002,15 @@ function LandingPage({ session }) {
 
       <PodWorkspace demo />
 
-      {/* Social Proof Section */}
+      {/* Product principles — not customer testimonials */}
       <section className="social-proof-section">
-        <p className="eyebrow">Trusted by Founders</p>
+        <p className="eyebrow">Product principles</p>
         <h2 className="section-title">From blank page to full campaign.</h2>
         <div className="testimonials-grid">
-          {TESTIMONIALS.map((t, i) => (
-            <article key={i} className="panel testimonial-card">
-              <div className="testimonial-stars">★★★★★</div>
-              <p className="testimonial-quote">"{t.quote}"</p>
-              <div className="testimonial-author">
-                <div className="testimonial-avatar" aria-hidden="true">{t.name.charAt(0)}</div>
-                <div>
-                  <p className="testimonial-name">{t.name}</p>
-                  <p className="testimonial-role">{t.role}</p>
-                </div>
-              </div>
-              <span className="testimonial-metric">{t.metric}</span>
+          {PRODUCT_PRINCIPLES.map((principle) => (
+            <article key={principle.title} className="panel testimonial-card">
+              <h3>{principle.title}</h3>
+              <p>{principle.body}</p>
             </article>
           ))}
         </div>
@@ -1057,10 +1044,10 @@ function LandingPage({ session }) {
       </section>
 
       <section className="multipod-preview">
-        <p className="eyebrow">One Workspace, Many Pods</p>
+        <p className="eyebrow">Illustrative ecosystem</p>
         <h2 className="section-title">Your marketing world, organised into AI pods.</h2>
-        <p className="lede multipod-lede">Create one pod for every brand, launch, website, offer, or campaign. Dovroyn keeps the strategy, content ideas, platforms, ads, and next moves in one place.</p>
-        <div className="multipod-dashboard-frame" aria-label="Dovroyn pod ecosystem dashboard preview">
+        <p className="lede multipod-lede">Create one pod for every brand, launch, website, offer, or campaign. Dovroyn keeps the strategy, content ideas, platforms, ads, and next moves in one place. The cards below are fictional sample pods, not customer accounts or live connections.</p>
+        <div className="multipod-dashboard-frame" aria-label="Illustrative Dovroyn pod ecosystem preview">
           <div className="multipod-dashboard-topbar">
             <div>
               <span className="multipod-screen-label">Pod Ecosystem</span>
@@ -1101,7 +1088,7 @@ function LandingPage({ session }) {
                       <span className="multipod-status-dot" aria-hidden="true" />
                       {pod.status}
                     </p>
-                    <div className="multipod-platforms" aria-label={`${pod.name} connected platforms: ${pod.platforms.map((platform) => platform.name).join(', ')}`}>
+                    <div className="multipod-platforms" aria-label={`${pod.name} sample recommended platforms: ${pod.platforms.map((platform) => platform.name).join(', ')}`}>
                       {pod.platforms.map((platform) => {
                         const PlatformIcon = platform.icon;
                         return (
@@ -1154,10 +1141,10 @@ function LandingPage({ session }) {
       <section className="platforms-section">
         <p className="eyebrow">Platform Planning</p>
         <h2 className="section-title">Plan campaigns for the places your audience already lives.</h2>
-        <p className="lede">Dovroyn can analyse and plan for more than 30 social, search, content, messaging, and community platforms. Posting and ads require users to connect their own approved accounts before anything can go live.</p>
+        <p className="lede">Dovroyn can analyse and plan for more than 30 social, search, content, messaging, and community platforms. Direct provider connections, publishing, and ad actions are not available yet.</p>
         <div className="platforms-legend" aria-hidden="true">
           <span className="platforms-legend-item"><span className="platform-dot" /> Planning-ready</span>
-          <span className="platforms-legend-item">Connect your own accounts to go live</span>
+          <span className="platforms-legend-item">Planning and drafts only — provider connections are not live</span>
         </div>
         <div className="platforms-grid">
           {PLATFORMS.map((platform) => {
@@ -1171,12 +1158,12 @@ function LandingPage({ session }) {
             );
           })}
         </div>
-        <p className="platforms-note">Platform availability may depend on official account connection, permissions, region, and API access.</p>
+        <p className="platforms-note">Official provider integrations, permissions, regional availability, and API access must be completed before direct publishing can be offered.</p>
       </section>
 
       <section className="pricing-section">
         <p className="eyebrow">Subscription Pricing</p>
-        <h2 className="section-title">Four tiers. Scale when you are ready.</h2>
+        <h2 className="section-title">Plans for every stage. Scale when you are ready.</h2>
         <BillingToggle billing={billing} onChange={setBilling} />
         <div className="pricing-grid">
           {PRICING_TIERS.map((tier) => (
@@ -1253,9 +1240,9 @@ function DemoPodPage() {
       <Header variant="page" showNav />
 
       <section className="hero-block panel" style={{ padding: '1.5rem' }}>
-        <p className="eyebrow">Demo Pod</p>
-        <h2 style={{ fontFamily: "'Playfair Display', serif" }}>Aurora Skincare — AI Marketing Pod</h2>
-        <p className="subtle">This demo shows how Dovroyn analyses a website and builds a complete marketing direction inside one pod.</p>
+        <p className="eyebrow">Read-only Demo Pod</p>
+        <h1 style={{ fontFamily: "'Playfair Display', serif" }}>Aurora Botanicals — Fictional AI Marketing Pod</h1>
+        <p className="subtle">Click each side-panel section to explore a completed example. The showcase uses fictional data and cannot edit, connect, send, save, or publish anything.</p>
       </section>
 
       <PodWorkspace demo />

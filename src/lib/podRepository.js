@@ -1,5 +1,10 @@
 import { supabase, supabaseConfigured } from './supabaseClient';
 import { persistPodDirectionApproval, persistPodDirectionOverride } from './podDirection.js';
+import { normalizePodLearning, selectPodCompetitorSnapshot } from './podLearning.js';
+import {
+  loadOperationalCollections, persistPlatformSelection, persistCalendarItems,
+  persistCampaignDecision, persistBudgetPlan, persistPreferenceDecision, persistHolidayPreference,
+} from './podState.js';
 
 function requireSupabase() {
   if (!supabaseConfigured || !supabase) throw new Error('Supabase is not configured.');
@@ -8,6 +13,106 @@ function requireSupabase() {
 
 function throwIfError(error) {
   if (error) throw error;
+}
+
+function structuredPreferenceValue(value) {
+  return value !== null && typeof value === 'object' ? value : { value };
+}
+
+export function selectWebsiteIntelligenceSnapshot(preferences = [], podId) {
+  return (Array.isArray(preferences) ? preferences : [])
+    .map((preference, index) => ({ preference, index }))
+    .filter(({ preference }) => preference?.preference_type === 'website_intelligence'
+      && preference.active !== false && (!podId || preference.pod_id === podId))
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.preference.created_at || '') || 0;
+      const rightTime = Date.parse(right.preference.created_at || '') || 0;
+      return rightTime - leftTime || right.index - left.index;
+    })
+    .map(({ preference }) => {
+      let value = preference.preference_value;
+      if (typeof value === 'string') {
+        try { value = JSON.parse(value); } catch { return null; }
+      }
+      if (!isRecord(value)) return null;
+      if (Object.hasOwn(value, 'value')) value = value.value;
+      if (!isRecord(value)) return null;
+      const fields = WEBSITE_INTELLIGENCE_FIELDS.filter((field) => Object.hasOwn(value, field));
+      // A broken newer snapshot must not hide a valid older observation.
+      if (!fields.length || fields.some((field) => !validIntelligenceField(field, value[field]))) return null;
+      return Object.fromEntries(fields.map((field) => [field, value[field]]));
+    })
+    .find(Boolean) || null;
+}
+
+const WEBSITE_INTELLIGENCE_FIELDS = [
+  'brand_colours', 'geography', 'products_services', 'visual_style', 'site_structure', 'best_landing_pages',
+  'weak_pages', 'seo_opportunities', 'content_opportunities', 'audience_fit',
+];
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringList(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function validIntelligenceField(field, value) {
+  if (['visual_style', 'audience_fit'].includes(field)) return typeof value === 'string';
+  if (field === 'brand_colours') return Array.isArray(value) && value.every((item) => isRecord(item)
+    && typeof item.name === 'string' && typeof item.hex === 'string' && /^#(?:[a-f\d]{3}|[a-f\d]{6}|[a-f\d]{8})$/i.test(item.hex));
+  if (['best_landing_pages', 'weak_pages'].includes(field)) {
+    const detail = field === 'best_landing_pages' ? 'reason' : 'issue';
+    return Array.isArray(value) && value.every((item) => isRecord(item)
+      && typeof item.source_reference === 'string' && typeof item[detail] === 'string');
+  }
+  return stringList(value);
+}
+
+function parseStoredList(value) {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === 'string');
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function restorePodAnalysisSnapshot(canonicalAnalysis, websiteIntelligence) {
+  if (!isRecord(canonicalAnalysis)) return null;
+  const rich = {};
+  if (isRecord(websiteIntelligence)) {
+    WEBSITE_INTELLIGENCE_FIELDS.forEach((field) => {
+      if (validIntelligenceField(field, websiteIntelligence[field])) rich[field] = websiteIntelligence[field];
+    });
+  }
+  const text = (value) => typeof value === 'string' ? value : '';
+  const confidence = ['number', 'string'].includes(typeof canonicalAnalysis.confidence) && canonicalAnalysis.confidence !== ''
+    ? Number(canonicalAnalysis.confidence) : null;
+  const evidence = (Array.isArray(canonicalAnalysis.evidence) ? canonicalAnalysis.evidence : [])
+    .filter((item) => isRecord(item) && typeof item.source_reference === 'string' && typeof item.finding === 'string')
+    .map((item) => ({ source_reference: item.source_reference, finding: item.finding,
+      ...(typeof item.source_type === 'string' ? { source_type: item.source_type } : {}),
+      ...(typeof item.confidence === 'number' && Number.isFinite(item.confidence) && item.confidence >= 0 && item.confidence <= 1 ? { confidence: item.confidence } : {}),
+    }));
+  return {
+    ...rich,
+    summary: text(canonicalAnalysis.brand_summary),
+    tone: text(canonicalAnalysis.tone),
+    audience: text(canonicalAnalysis.audience),
+    offer: text(canonicalAnalysis.offer_direction),
+    opportunity: text(canonicalAnalysis.campaign_angles),
+    evidence,
+    confidence: Number.isFinite(confidence) && confidence >= 0 && confidence <= 1 ? confidence : null,
+    source_captured_at: typeof canonicalAnalysis.source_captured_at === 'string' && Number.isFinite(Date.parse(canonicalAnalysis.source_captured_at)) ? canonicalAnalysis.source_captured_at : undefined,
+    personal_data_detected: canonicalAnalysis.personal_data_detected === true,
+    personal_data_categories: parseStoredList(canonicalAnalysis.personal_data_categories),
+    platforms: parseStoredList(canonicalAnalysis.social_recommendations),
+    pillars: parseStoredList(canonicalAnalysis.content_ideas),
+  };
 }
 
 export async function loadPodWorkspace(podId) {
@@ -25,29 +130,34 @@ export async function loadPodWorkspace(podId) {
     if (result.error) return [];
     return result.data || [];
   };
-  const [preferences, messages, posts, connections, campaigns, assets] = await Promise.all([
+  const [preferences, messages, posts, connections, assets, operational] = await Promise.all([
     client.from('pod_preferences').select('*').eq('pod_id', podId).eq('active', true).order('created_at'),
     optionalQuery(client.from('pod_ai_messages').select('id,role,content,created_at').eq('pod_id', podId).order('created_at', { ascending: true }).limit(30)),
-    optionalQuery(client.from('social_posts').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
+    client.from('social_posts').select('*').eq('pod_id', podId).order('created_at', { ascending: false }),
     optionalQuery(client.from('social_connections').select('*').eq('pod_id', podId)),
-    optionalQuery(client.from('campaigns').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
     optionalQuery(client.from('pod_assets').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
+    loadOperationalCollections(client, podId),
   ]);
   // Direction review must not silently fall back to old analysis if saved
   // overrides cannot be read.
-  throwIfError(preferences.error);
+  if (preferences.error) throw new Error(`pod_preferences: ${preferences.error.message || 'collection could not be loaded'}`, { cause: preferences.error });
+  if (posts.error) throw new Error(`social_posts: ${posts.error.message || 'saved content history could not be loaded'}`, { cause: posts.error });
+  const websiteIntelligence = selectWebsiteIntelligenceSnapshot(preferences.data, podId);
 
-  return {
+  const workspace = {
     pod: pod.data,
     sources: sources.data || [],
     analysis: analysis.data || null,
     preferences: preferences.data || [],
+    websiteIntelligence,
+    restoredAnalysis: restorePodAnalysisSnapshot(analysis.data, websiteIntelligence),
     messages,
-    posts,
+    posts: posts.data || [],
     connections,
-    campaigns,
     assets,
+    ...operational,
   };
+  return { ...workspace, competitorSnapshot: selectPodCompetitorSnapshot(workspace.preferences, podId), learningEvents: normalizePodLearning(workspace) };
 }
 
 export async function addPodSource(podId, source) {
@@ -115,16 +225,36 @@ export async function savePodAnalysis(podId, analysis) {
   return data;
 }
 
-export async function savePodPreference(podId, preferenceType, value) {
-  const { data, error } = await requireSupabase().from('pod_preferences').insert({
+export async function persistPodPreference(client, podId, preferenceType, value, source = 'user_override') {
+  const { data, error } = await client.from('pod_preferences').insert({
     pod_id: podId,
     preference_type: preferenceType,
-    preference_value: { value },
-    source: 'user_override',
+    preference_value: structuredPreferenceValue(value),
+    source,
   }).select().single();
   throwIfError(error);
   return data;
 }
+
+export async function savePodPreference(podId, preferenceType, value, source = 'user_override') {
+  return persistPodPreference(requireSupabase(), podId, preferenceType, value, source);
+}
+
+export async function saveWebsiteIntelligenceSnapshot(podId, analysis, savePreference = savePodPreference) {
+  try {
+    await savePreference(podId, 'website_intelligence', analysis, 'observed_result');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const savePlatformSelection = (podId, keys) => persistPlatformSelection(requireSupabase(), podId, keys);
+export const saveCalendarItems = (podId, items) => persistCalendarItems(requireSupabase(), podId, items);
+export const saveCampaignDecision = (podId, decision) => persistCampaignDecision(requireSupabase(), podId, decision);
+export const saveBudgetPlan = (podId, plan) => persistBudgetPlan(requireSupabase(), podId, plan);
+export const savePreferenceDecision = (podId, type, value) => persistPreferenceDecision(requireSupabase(), podId, type, value);
+export const saveHolidayPreference = (podId, preference) => persistHolidayPreference(requireSupabase(), podId, preference);
 
 export async function approvePodDirection(podId, analysis) {
   return persistPodDirectionApproval(requireSupabase(), podId, analysis);
