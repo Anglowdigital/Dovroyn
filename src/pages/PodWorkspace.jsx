@@ -28,10 +28,11 @@ import {
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
 import { buildCalendarItems, restoreOperationalState } from '../lib/podState';
+import { normalizePodLearning, selectPodCompetitorSnapshot } from '../lib/podLearning';
 import { getPlan } from '../lib/plans';
 import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
-import { askPodAssistant, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
+import { askPodAssistant, requestCompetitorSnapshot, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
 import {
   approvePodDirection,
@@ -81,6 +82,8 @@ const TAB_GROUPS = [
       ['team', 'Collaborations', Users],
       ['launch', 'Coming soon', Mail],
       ['budget', 'Budget & ads', CircleDollarSign],
+      ['competitors', 'Competitor Watch', Globe2],
+      ['learning', 'Learning History', Activity],
     ],
   },
 ];
@@ -102,10 +105,8 @@ const INITIAL_ANALYSIS = {
   geography: ['Australia', 'New Zealand', 'USA'],
 };
 
-// Keep public navigation separate from live Pod features.
-const DEMO_TAB_GROUPS = TAB_GROUPS.map((group) => group.label === 'Grow'
-  ? { ...group, items: [...group.items, ['competitors', 'Competitor Watch', Globe2], ['learning', 'Learning History', Activity]] }
-  : group);
+// Shared navigation, isolated rendering: the public showcase never uses live services.
+const DEMO_TAB_GROUPS = TAB_GROUPS;
 
 function StatusPill({ children, tone = 'gold' }) {
   return <span className={`pod-status pod-status-${tone}`}>{children}</span>;
@@ -133,10 +134,22 @@ function EmptyState({ icon: Icon, title, body, action, actionLabel }) {
   );
 }
 
+function CompetitorSnapshotCards({ snapshot }) {
+  const strings = (values) => Array.isArray(values) ? values.filter((value) => typeof value === 'string').slice(0, 8) : [];
+  const competitors = Array.isArray(snapshot?.competitors) ? snapshot.competitors.slice(0, 3) : [];
+  const evidence = Array.isArray(snapshot?.evidence) ? snapshot.evidence.slice(0, 12) : [];
+  return <div className="pod-panel-stack">
+    {typeof snapshot?.summary === 'string' && <p>{snapshot.summary}</p>}
+    <div className="pod-competitor-grid">{competitors.filter((item) => item && typeof item.url === 'string').map((item) => <article className="pod-rich-card" key={item.url}><small>{item.url}</small><h3>{typeof item.positioning === 'string' ? item.positioning : 'Public positioning'}</h3><h4>Public strengths</h4><ul>{strings(item.public_strengths).map((value, index) => <li key={index}>{value}</li>)}</ul><h4>Public gaps</h4><ul>{strings(item.public_gaps).map((value, index) => <li key={index}>{value}</li>)}</ul></article>)}</div>
+    {strings(snapshot?.opportunities).length > 0 && <article className="pod-rich-card"><h3>Evidence-based opportunities</h3><ul>{strings(snapshot.opportunities).map((value, index) => <li key={index}>{value}</li>)}</ul></article>}
+    {evidence.length > 0 && <article className="pod-rich-card"><h3>Public-page evidence</h3>{evidence.filter((item) => typeof item?.source_reference === 'string' && typeof item?.finding === 'string').map((item, index) => <p key={index}><small>{item.source_reference}</small><br />{item.finding}</p>)}</article>}
+  </div>;
+}
+
 function DemoPodShowcase() {
   const [activeTab, setActiveTab] = useState('sources');
   const tabRefs = useRef({});
-  const { pod, analysis, assets, messages, posts, competitors, learningHistory } = DEMO_WORKSPACE;
+  const { pod, analysis, assets, messages, posts, competitorWatch, learningHistory } = DEMO_WORKSPACE;
   const logoAssets = assets.filter((asset) => asset.assetRole === 'logo');
   const brandPhotos = assets.filter((asset) => asset.assetRole === 'brand_photo');
   const selectedPlatforms = analysis.platforms.map((key) => getPlatform(key)).filter(Boolean);
@@ -216,7 +229,7 @@ function DemoPodShowcase() {
       case 'budget':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional budget & ads</p><h2>Sample spend plan</h2><p className="subtle">Illustrative planning data only. The showcase cannot approve or change spend.</p></div><StatusPill>Sample data</StatusPill></header><section className="pod-metric-grid"><MetricCard label="Sample budget" value="$2,000" detail="Illustrative monthly plan" /><MetricCard label="Sample spend" value="$847" detail="Not live spend" /><MetricCard label="Sample revenue" value="$4,230" detail="Not live revenue" /><MetricCard label="Sample ROAS" value="4.99x" detail="Not measured" /></section><article className="pod-budget-recommendation"><span><CircleDollarSign /></span><div><small>Sample AI recommendation</small><h3>Test more of the fictional budget on the stronger Reel creative.</h3><p>A real pod would require an authorised user and connected provider before any spend could change.</p></div></article></div>;
       case 'competitors':
-        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional competitor snapshot</p><h2>Competitor Watch</h2><p className="subtle">Prepared public-page comparisons only. No continuous monitoring, traffic estimates, ad results or real provider data.</p></div><StatusPill>Fictional sample</StatusPill></header>{competitors.map((competitor) => <article className="pod-rich-card" key={competitor.name}><h3>{competitor.name}</h3><p>{competitor.observation}</p><small>{competitor.sourceReference} · {competitor.sourceUrl}</small></article>)}</div>;
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional competitor snapshot</p><h2>Competitor Watch</h2><p className="subtle">Prepared public-page comparisons only. No continuous monitoring, traffic estimates, ad results or real provider data.</p></div><StatusPill>Fictional sample</StatusPill></header>{competitorWatch.map((competitor) => <article className="pod-rich-card" key={competitor.name}><small>Fictional sample · {competitor.checkedAt.slice(0, 10)}</small><h3>{competitor.name}</h3><p>{competitor.positioning}</p><h4>Sample public strengths</h4><p>{competitor.publicStrengths.join(' · ')}</p><h4>Sample public gaps</h4><p>{competitor.publicGaps.join(' · ')}</p><small>{competitor.sourceReference} · {competitor.sourceUrl}</small></article>)}</div>;
       case 'learning':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional learning history</p><h2>Learning History</h2><p className="subtle">Prepared sample events, not real saved actions or measured outcomes.</p></div><StatusPill>Fictional sample</StatusPill></header>{learningHistory.map((entry) => <article className="pod-rich-card" key={entry.at}><small><time dateTime={entry.at}>{entry.at.slice(0, 10)}</time></small><h3>{entry.title}</h3><p>{entry.detail}</p></article>)}</div>;
       default:
@@ -291,6 +304,12 @@ function LivePodWorkspace({ session, subscription }) {
   const [budgetRecommendation, setBudgetRecommendation] = useState('');
   const [budgetDecision, setBudgetDecision] = useState('pending');
   const [operationalMutation, setOperationalMutation] = useState('');
+  const [competitorUrls, setCompetitorUrls] = useState(['', '', '']);
+  const [competitorSnapshot, setCompetitorSnapshot] = useState(null);
+  const [competitorBusy, setCompetitorBusy] = useState(false);
+  const [competitorError, setCompetitorError] = useState('');
+  const [learningEvents, setLearningEvents] = useState([]);
+  const competitorOperation = useRef(null);
   const operationalOperation = useRef('');
   const operationalLifecycle = useRef(null);
   const currentPodId = useRef(podId);
@@ -314,6 +333,12 @@ function LivePodWorkspace({ session, subscription }) {
     const lifecycle = { podId, active: true };
     operationalLifecycle.current = lifecycle;
     operationalOperation.current = '';
+    competitorOperation.current = null;
+    setCompetitorBusy(false);
+    setCompetitorError('');
+    setCompetitorUrls(['', '', '']);
+    setCompetitorSnapshot(null);
+    setLearningEvents([]);
     setOperationalMutation('');
     setNotice('');
     if (!supabaseConfigured || !podId) {
@@ -331,6 +356,10 @@ function LivePodWorkspace({ session, subscription }) {
       setSourceUrl(workspace.pod?.source_url || '');
       setSources(workspace.sources || []);
       setAiMessages(workspace.messages || []);
+      const savedCompetitors = workspace.competitorSnapshot || selectPodCompetitorSnapshot(workspace.preferences, podId);
+      setCompetitorSnapshot(savedCompetitors);
+      setCompetitorUrls(Array.from({ length: 3 }, (_, index) => savedCompetitors?.competitors?.[index]?.url || ''));
+      setLearningEvents(workspace.learningEvents || normalizePodLearning(workspace));
       setDirectionApproved(isPodDirectionApprovalCurrent(workspace.pod, workspace.preferences));
       const operational = restoreOperationalState(workspace);
       hasPlatformSelection.current = operational.platformKeys !== null;
@@ -472,6 +501,39 @@ function LivePodWorkspace({ session, subscription }) {
       }
     }
   };
+
+  const checkCompetitors = async () => {
+    if (competitorOperation.current) return;
+    const lifecycle = operationalLifecycle.current;
+    const originPodId = pod?.id;
+    const isCurrent = () => lifecycle?.active && operationalLifecycle.current === lifecycle
+      && currentPodId.current === originPodId && lifecycle.podId === originPodId;
+    if (!isCurrent()) return;
+    const operation = { lifecycle };
+    competitorOperation.current = operation;
+    setCompetitorBusy(true);
+    setCompetitorError('');
+    try {
+      const result = await requestCompetitorSnapshot({ accessToken: session?.access_token, podId: originPodId, urls: competitorUrls.map((url) => url.trim()).filter(Boolean) });
+      if (!isCurrent()) return;
+      if (result?.ok !== true || result.saved !== true || !result.snapshot) throw new Error('The competitor snapshot save was not confirmed.');
+      setCompetitorSnapshot(result.snapshot);
+      const refreshed = await loadPodWorkspace(originPodId);
+      if (isCurrent()) setLearningEvents(refreshed.learningEvents || normalizePodLearning(refreshed));
+    } catch (error) {
+      if (isCurrent()) setCompetitorError(error.message || 'The public competitor snapshot could not be checked.');
+    } finally {
+      if (isCurrent() && competitorOperation.current === operation) {
+        competitorOperation.current = null;
+        setCompetitorBusy(false);
+      }
+    }
+  };
+
+  const refreshLearning = () => saveOperational('learning', async (isCurrent) => {
+    const refreshed = await loadPodWorkspace(pod.id);
+    if (isCurrent()) setLearningEvents(refreshed.learningEvents || normalizePodLearning(refreshed));
+  });
 
   const saveObservances = (enabled) => saveOperational('observances', async (isCurrent) => {
     const saved = await saveHolidayPreference(pod.id, {
@@ -1014,6 +1076,10 @@ function LivePodWorkspace({ session, subscription }) {
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Coming soon</p><h2>Launch page and email capture</h2><p className="subtle">Create a simple branded page inside this pod, then review it before publishing.</p></div><button className="button button-primary" type="button" onClick={() => setModal({ type: 'launch' })}><Sparkles size={16} /> Generate page draft</button></header><article className="pod-launch-preview"><span className="pod-launch-orbit"><Sparkles /></span><p className="eyebrow">Aurora Skincare</p><h2>Winter skin, restored.</h2><p>A calmer barrier ritual is almost here. Join the list for first access.</p><div><input aria-label="Preview email" placeholder="you@example.com" disabled /><button type="button" disabled>Notify me</button></div><small>Preview only · Email captures remain private to this pod</small></article></div>;
       case 'budget':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Budget & ads</p><h2>Plan a monthly budget</h2><p className="subtle">This is your saved budget plan, not permission to spend. Provider spend and revenue remain unavailable until connected.</p></div><StatusPill>Plan only</StatusPill></header><section className="pod-metric-grid"><MetricCard label="Saved planned budget" value={budget ? `${budgetCurrency} ${Number(budget.planned_budget).toFixed(2)}`.trim() : 'Not set'} detail="Monthly plan only" /><MetricCard label="Provider spend" value="Unavailable" detail="Provider connection required" /><MetricCard label="Provider revenue" value="Unavailable" detail="Attribution required" /><MetricCard label="ROAS" value="Unavailable" detail="Live provider data required" /></section><article className="pod-rich-card"><label className="pod-modal-field">Planned monthly budget {budgetCurrency && `(${budgetCurrency})`}<input type="number" min="0" step="0.01" value={plannedBudgetInput} disabled={Boolean(operationalMutation)} onChange={(event) => setPlannedBudgetInput(event.target.value)} /></label><label className="pod-modal-field">Budget notes<textarea value={budgetNotes} disabled={Boolean(operationalMutation)} onChange={(event) => setBudgetNotes(event.target.value)} rows={3} /></label><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={saveBudget}>Save budget plan</button></article><article className="pod-budget-recommendation"><span><CircleDollarSign /></span><div><small>{budgetRecommendation ? 'Planning recommendation' : 'Budget planning'}</small><h3>{budgetRecommendation || 'Review your planned budget before authorising spend.'}</h3><p>Approval records a plan-only decision. It does not change provider spend or authorise publishing.</p></div><div className="pod-action-row"><button className="button button-primary button-sm" type="button" disabled={Boolean(operationalMutation)} onClick={() => decideBudget('approved')}>Approve recommendation</button><button className="button button-ghost button-sm" type="button" disabled={Boolean(operationalMutation)} onClick={() => decideBudget('rejected')}>Reject</button></div></article>{budgetDecision !== 'pending' && <p className="pod-decision-note">Saved plan-only decision: <strong>{budgetDecision}</strong>. No provider spend changed.</p>}</div>;
+      case 'competitors':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Public-page comparison</p><h2>Competitor Watch</h2><p className="subtle">On-demand public snapshot — refresh to check again.</p><p className="subtle">Public positioning only, not traffic, sales, ad performance or continuous monitoring.</p></div><StatusPill>On demand</StatusPill></header><div className="pod-competitor-inputs">{competitorUrls.map((url, index) => <label className="pod-modal-field" key={index}>Competitor URL {index + 1}<input type="url" maxLength={1000} value={url} placeholder="https://" disabled={competitorBusy} onChange={(event) => setCompetitorUrls((current) => current.map((value, position) => position === index ? event.target.value : value))} /></label>)}</div><div className="pod-action-row"><button className="button button-primary" type="button" disabled={competitorBusy || !competitorUrls.some((url) => url.trim())} onClick={checkCompetitors}>{competitorBusy ? 'Checking public pages…' : 'Check public pages'}</button>{competitorBusy && <span role="status">Checking and saving a public snapshot…</span>}</div>{competitorError && <p role="alert" className="pod-honesty-note">{competitorError}</p>}{competitorSnapshot ? <><p className="subtle">Last checked: <time dateTime={competitorSnapshot.checked_at}>{Number.isFinite(Date.parse(competitorSnapshot.checked_at)) ? new Date(competitorSnapshot.checked_at).toLocaleString() : 'Not recorded'}</time></p><CompetitorSnapshotCards snapshot={competitorSnapshot} /></> : <EmptyState icon={Globe2} title="No saved public snapshot" body="Add one to three unique public URLs, then check their pages. Nothing runs automatically." />}</div>;
+      case 'learning':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Recent saved activity</p><h2>Learning History</h2><p className="subtle">These saved decisions guide future Pod output. This is recent saved activity, not a complete or immutable audit log.</p></div><button className="button button-ghost button-sm" type="button" disabled={Boolean(operationalMutation)} onClick={refreshLearning}>Refresh saved activity</button></header>{learningEvents.length ? <ol className="pod-learning-history">{learningEvents.map((event) => <li key={event.id}><article className="pod-rich-card"><small><time dateTime={event.occurredAt}>{new Date(event.occurredAt).toLocaleString()}</time> · {event.source}</small><h3>{event.title}</h3><p>{event.detail}</p></article></li>)}</ol> : <EmptyState icon={Activity} title="No saved activity yet" body="Save a direction, choose platforms, create drafts or a schedule, decide a campaign or budget plan, or check competitor pages to create history." />}</div>;
       default:
         return null;
     }

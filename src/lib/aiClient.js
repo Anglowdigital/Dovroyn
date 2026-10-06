@@ -36,6 +36,16 @@ export async function askPodAssistant({ accessToken, podId, question }) {
   return readApiResponse(response);
 }
 
+export async function requestCompetitorSnapshot({ accessToken, podId, urls }) {
+  const response = await fetch('/api/ai/competitors', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ podId, urls }),
+  });
+  const payload = await readApiResponse(response);
+  if (payload.ok !== true || payload.saved !== true || !payload.snapshot) throw new Error('The competitor snapshot save was not confirmed.');
+  return payload;
+}
+
 export async function requestSocialContent({ accessToken, podId, platforms, contentDay, direction = '' }) {
   const response = await fetch('/api/ai/content', {
     method: 'POST',

@@ -9,6 +9,7 @@ import * as direction from '../src/lib/podDirection.js';
 import * as setup from '../src/lib/podSetup.js';
 import * as demo from '../src/lib/demoPod.js';
 import * as state from '../src/lib/podState.js';
+import * as learning from '../src/lib/podLearning.js';
 
 // Exercise the real Supabase query builder against a deterministic HTTP boundary.
 function database(seed = {}, { fail, empty, wait, failMessage } = {}) {
@@ -249,7 +250,7 @@ async function workspaceHarness(workspace, services = {}) {
     'lucide-react': new Proxy({}, { get: () => () => null }),
     '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
-    '../lib/aiClient': {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state,
+    '../lib/aiClient': {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/podLearning': learning,
     '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let source = readFileSync(new URL('../src/pages/PodWorkspace.jsx', import.meta.url), 'utf8');
@@ -376,7 +377,7 @@ test('live reload restores approved campaign, saved budget and decision, and exp
 function repositoryHarness(client) {
   const source = readFileSync(new URL('../src/lib/podRepository.js', import.meta.url), 'utf8')
     .replace(/import\s+{[\s\S]*?}\s+from\s+'[^']+';/g, '').replace(/export /g, '');
-  const bindings = { supabase: client, supabaseConfigured: true, ...state, ...direction };
+  const bindings = { supabase: client, supabaseConfigured: true, ...state, ...direction, ...learning };
   return new Function(...Object.keys(bindings), `${source}; return { loadPodWorkspace, saveBudgetPlan };`)(...Object.values(bindings));
 }
 

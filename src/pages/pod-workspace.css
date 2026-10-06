@@ -542,3 +542,22 @@ kbd {
   display: inline-block;
 }
 .pod-swatch-names { font-size: 0.68rem; color: var(--navy-65); font-weight: 600; }
+.pod-competitor-inputs,
+.pod-competitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+}
+
+.pod-competitor-grid .pod-rich-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pod-learning-history {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

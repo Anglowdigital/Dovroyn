@@ -1,5 +1,6 @@
 import { supabase, supabaseConfigured } from './supabaseClient';
 import { persistPodDirectionApproval, persistPodDirectionOverride } from './podDirection.js';
+import { normalizePodLearning, selectPodCompetitorSnapshot } from './podLearning.js';
 import {
   loadOperationalCollections, persistPlatformSelection, persistCalendarItems,
   persistCampaignDecision, persistBudgetPlan, persistPreferenceDecision, persistHolidayPreference,
@@ -94,7 +95,7 @@ export async function loadPodWorkspace(podId) {
   const [preferences, messages, posts, connections, assets, operational] = await Promise.all([
     client.from('pod_preferences').select('*').eq('pod_id', podId).eq('active', true).order('created_at'),
     optionalQuery(client.from('pod_ai_messages').select('id,role,content,created_at').eq('pod_id', podId).order('created_at', { ascending: true }).limit(30)),
-    optionalQuery(client.from('social_posts').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
+    client.from('social_posts').select('*').eq('pod_id', podId).order('created_at', { ascending: false }),
     optionalQuery(client.from('social_connections').select('*').eq('pod_id', podId)),
     optionalQuery(client.from('pod_assets').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
     loadOperationalCollections(client, podId),
@@ -102,9 +103,10 @@ export async function loadPodWorkspace(podId) {
   // Direction review must not silently fall back to old analysis if saved
   // overrides cannot be read.
   if (preferences.error) throw new Error(`pod_preferences: ${preferences.error.message || 'collection could not be loaded'}`, { cause: preferences.error });
+  if (posts.error) throw new Error(`social_posts: ${posts.error.message || 'saved content history could not be loaded'}`, { cause: posts.error });
   const websiteIntelligence = selectWebsiteIntelligenceSnapshot(preferences.data);
 
-  return {
+  const workspace = {
     pod: pod.data,
     sources: sources.data || [],
     analysis: analysis.data || null,
@@ -112,11 +114,12 @@ export async function loadPodWorkspace(podId) {
     websiteIntelligence,
     restoredAnalysis: restorePodAnalysisSnapshot(analysis.data, websiteIntelligence),
     messages,
-    posts,
+    posts: posts.data || [],
     connections,
     assets,
     ...operational,
   };
+  return { ...workspace, competitorSnapshot: selectPodCompetitorSnapshot(workspace.preferences, podId), learningEvents: normalizePodLearning(workspace) };
 }
 
 export async function addPodSource(podId, source) {

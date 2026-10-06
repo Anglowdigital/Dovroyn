@@ -20,21 +20,25 @@ export function buildPodAiContext({ pod, analysis, sources = [], preferences = [
     cleanText(source.source_url, 1000),
     cleanText(source.notes, 2500),
   ].filter(Boolean).join(' | '));
-  const preferenceCandidates = preferences.slice(-20).map((preference, index) => [
+  const latestDirection = preferences.filter((preference) => preference?.preference_type === 'brand_direction' && preference.active !== false)
+    .reduce((latest, preference) => !latest || (Date.parse(preference.created_at) || 0) >= (Date.parse(latest.created_at) || 0) ? preference : latest, null);
+  const directionLine = latestDirection ? `Latest user brand_direction: ${cleanText(latestDirection.preference_value, 3000)}` : '';
+  const preferenceCandidates = preferences.filter((preference) => preference?.preference_type !== 'brand_direction').slice(-20).map((preference, index) => [
     `Preference ${index + 1}`,
     cleanText(preference.preference_type, 100),
     cleanText(preference.preference_value, 1200),
   ].filter(Boolean).join(' | '));
   const preferenceLines = [];
-  let preferenceCharacters = PREFERENCE_HEADING.length;
+  let preferenceCharacters = PREFERENCE_HEADING.length + directionLine.length + 1;
   // Reserve whole newest entries, then restore chronological presentation.
   for (let index = preferenceCandidates.length - 1; index >= 0; index -= 1) {
     const line = preferenceCandidates[index];
-    if (preferenceCharacters + line.length + 1 > MAX_PREFERENCE_CHARACTERS) break;
+    if (preferenceCharacters + line.length + 1 > MAX_PREFERENCE_CHARACTERS) continue;
     preferenceLines.push(line);
     preferenceCharacters += line.length + 1;
   }
   preferenceLines.reverse();
+  if (directionLine) preferenceLines.unshift(directionLine);
 
   return [
     `Pod ID: ${cleanText(pod?.id, 100)}`,

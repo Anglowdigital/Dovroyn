@@ -85,6 +85,16 @@ test('demo mutations are blocked without disabling real signed-in pods', () => {
   assert.equal(canMutatePod(false), true);
 });
 
+test('competitorWatch fixture supplies complete explicitly fictional snapshot items', () => {
+  assert.ok(DEMO_WORKSPACE.competitorWatch?.length >= 2);
+  for (const item of DEMO_WORKSPACE.competitorWatch) {
+    assert.equal(item.fictional, true);
+    assert.ok(item.positioning && item.publicStrengths?.length && item.publicGaps?.length && item.checkedAt);
+    assert.equal(new URL(item.sourceUrl).hostname.endsWith('.example'), true);
+  }
+  assert.ok(DEMO_WORKSPACE.learningHistory.every((item) => item.fictional === true));
+});
+
 test('showcase provider copy cannot imply currently available signed-in connections', () => {
   const source = readFileSync(new URL('../src/pages/PodWorkspace.jsx', import.meta.url), 'utf8');
   const showcase = source.split('function DemoPodShowcase() {')[1].split('export default function PodWorkspace')[0];

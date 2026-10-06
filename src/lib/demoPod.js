@@ -168,10 +168,14 @@ export const DEMO_WORKSPACE = Object.freeze({
       observation: 'This fictional competitor groups products by ingredient. Aurora’s sample opportunity is to explain the seasonal routine first.',
     },
   ],
+  competitorWatch: [
+    { fictional: true, name: 'Juniper Rituals', sourceUrl: 'https://juniper-rituals.example', checkedAt: '2026-06-03T09:00:00.000Z', positioning: 'Fictional sample: an extended evening ritual.', publicStrengths: ['Sample step-by-step routine pages'], publicGaps: ['Sample routine needs a quicker introduction'], sourceReference: 'Fictional homepage hero' },
+    { fictional: true, name: 'Coastal Botanical', sourceUrl: 'https://coastal-botanical.example', checkedAt: '2026-06-03T09:00:00.000Z', positioning: 'Fictional sample: ingredient-led collections.', publicStrengths: ['Sample ingredient navigation'], publicGaps: ['Sample seasonal routine guidance is limited'], sourceReference: 'Fictional collection page' },
+  ],
   learningHistory: [
-    { at: '2026-06-02T08:30:00.000Z', title: 'Sample source captured', detail: 'The fictional website and prepared brand assets define this sample’s evidence.' },
-    { at: '2026-06-02T09:00:00.000Z', title: 'Sample direction approved', detail: 'The fictional owner chose calm, reassuring language and a simple winter ritual.' },
-    { at: '2026-06-03T10:00:00.000Z', title: 'Sample drafts reviewed', detail: 'Four prepared channel drafts follow that sample direction. Nothing was published.' },
+    { fictional: true, at: '2026-06-02T08:30:00.000Z', title: 'Sample source captured', detail: 'The fictional website and prepared brand assets define this sample’s evidence.' },
+    { fictional: true, at: '2026-06-02T09:00:00.000Z', title: 'Sample direction approved', detail: 'The fictional owner chose calm, reassuring language and a simple winter ritual.' },
+    { fictional: true, at: '2026-06-03T10:00:00.000Z', title: 'Sample drafts reviewed', detail: 'Four prepared channel drafts follow that sample direction. Nothing was published.' },
   ],
 });
 
