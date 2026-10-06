@@ -13,6 +13,14 @@ const learning = await import('../src/lib/podLearning.js').catch(() => ({}));
 
 const workspace = (extra = {}) => ({ pod: { id: 'one', pod_name: 'Own Pod', target_country: 'Australia' }, preferences: [], campaigns: [], calendarItems: [], posts: [], budgets: [], sources: [], assets: [], messages: [], analysis: { brand_summary: 'Own brand', social_recommendations: '[]', content_ideas: '[]' }, ...extra });
 
+const savedSnapshot = (extra = {}) => ({
+  summary: 'Saved public comparison',
+  competitors: [{ url: 'https://8.8.8.8/', positioning: 'Saved positioning', public_strengths: ['Materials'], public_gaps: ['Care'] }],
+  opportunities: ['Explain care'],
+  evidence: [{ source_reference: 'competitor_1_website_home', finding: 'Material detail' }],
+  confidence: 0.8, checked_at: '2026-10-07T00:00:00.000Z', ...extra,
+});
+
 test('learning derives sorted Pod-scoped saved activity from every supported collection, not fabricated audit events', () => {
   assert.equal(typeof learning.normalizePodLearning, 'function', 'learning normalizer is missing');
   const rows = workspace({ pod: { id: 'one', direction_approved_at: '2026-10-09' },
@@ -21,7 +29,7 @@ test('learning derives sorted Pod-scoped saved activity from every supported col
       { id: 'platform', pod_id: 'one', preference_type: 'platform_selection', preference_value: { platforms: ['email'] }, created_at: '2026-10-02' },
       { id: 'website', pod_id: 'one', preference_type: 'website_intelligence', preference_value: { summary: 'Our website' }, created_at: '2026-10-03' },
       { id: 'budget-decision', pod_id: 'one', preference_type: 'budget_recommendation_decision', preference_value: { decision: 'approved', scope: 'plan_only' }, created_at: '2026-10-04' },
-      { id: 'competitor', pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: { value: { summary: 'Public comparison', checked_at: '2026-10-05' } }, created_at: '2026-10-05', source: 'observed_result' },
+      { id: 'competitor', pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: { value: savedSnapshot({ summary: 'Public comparison', checked_at: '2026-10-05' }) }, created_at: '2026-10-05', source: 'observed_result' },
       { id: 'foreign', pod_id: 'two', preference_type: 'brand_direction', preference_value: { value: 'DO-NOT-SHOW' }, created_at: '2026-10-10' },
     ],
     campaigns: [{ id: 'campaign', pod_id: 'one', name: 'Autumn', status: 'approved', created_at: '2026-10-01', updated_at: '2026-10-06' }],
@@ -61,7 +69,7 @@ test('learning and snapshot restoration require Pod attribution and ignore times
     { id: 'missing-pod', preference_type: 'brand_direction', preference_value: 'Not attributed', created_at: '2026-10-01' },
     { id: 'bad-value', pod_id: 'one', preference_type: 'brand_direction', preference_value: [], created_at: '2026-10-01' },
     { id: 'unattributed-snapshot', preference_type: 'competitor_snapshot', preference_value: { summary: 'Missing Pod' }, created_at: '2026-10-09' },
-    { id: 'legacy', pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: JSON.stringify({ value: { summary: 'Saved legacy snapshot' } }), created_at: '2026-10-02' },
+    { id: 'legacy', pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: JSON.stringify({ value: savedSnapshot({ summary: 'Saved legacy snapshot' }) }), created_at: '2026-10-02' },
   ], campaigns: [{ pod_id: 'one', created_at: '2026-10-03' }], posts: [{ pod_id: 'one', created_at: '2026-10-03' }] });
   const events = learning.normalizePodLearning(rows);
   assert.equal(events.length, 1);
@@ -85,9 +93,9 @@ test('repository reports a failed social_posts read and restores newest saved co
     const parsed = new URL(url); const table = parsed.pathname.split('/').at(-1);
     assert.equal(parsed.searchParams.get(table === 'pods' ? 'id' : 'pod_id'), 'eq.one');
     const payload = table === 'pods' ? { id: 'one' } : table === 'pod_preferences' ? [
-      { id: 'old', pod_id: 'one', preference_type: 'competitor_snapshot', active: true, preference_value: { summary: 'Old' }, created_at: '2026-10-01' },
-      { id: 'new', pod_id: 'one', preference_type: 'competitor_snapshot', active: true, preference_value: { value: { summary: 'Newest' } }, created_at: '2026-10-07' },
-      { id: 'foreign', pod_id: 'two', preference_type: 'competitor_snapshot', active: true, preference_value: { summary: 'Foreign' }, created_at: '2026-10-08' },
+      { id: 'old', pod_id: 'one', preference_type: 'competitor_snapshot', active: true, preference_value: savedSnapshot({ summary: 'Old' }), created_at: '2026-10-01' },
+      { id: 'new', pod_id: 'one', preference_type: 'competitor_snapshot', active: true, preference_value: { value: savedSnapshot({ summary: 'Newest' }) }, created_at: '2026-10-07' },
+      { id: 'foreign', pod_id: 'two', preference_type: 'competitor_snapshot', active: true, preference_value: savedSnapshot({ summary: 'Foreign' }), created_at: '2026-10-08' },
     ] : new Headers(init.headers).get('accept')?.includes('object') ? null : [];
     return new Response(JSON.stringify(table === 'social_posts' && failPosts ? { message: 'denied' } : payload), { status: table === 'social_posts' && failPosts ? 403 : 200, headers: { 'content-type': 'application/json' } });
   } } });
@@ -128,7 +136,7 @@ async function uiHarness(first, { request, load = async () => first, demoMode = 
 }
 
 test('live navigation has 15 items and shows persisted competitor and recent learning data without running services', async () => {
-  const ui = await uiHarness(workspace({ competitorSnapshot: { summary: 'Saved public comparison', competitors: [{ url: 'https://8.8.8.8/', positioning: 'Saved positioning', public_strengths: ['Materials'], public_gaps: ['Care'] }], opportunities: ['Explain care'], evidence: [{ source_reference: 'competitor_1_website_home', finding: 'Material detail' }], checked_at: '2026-10-07' }, learningEvents: [{ id: 'saved', type: 'brand_direction', title: 'Direction saved', detail: 'Owner chose practical', occurredAt: '2026-10-07', source: 'user_override' }] }));
+  const ui = await uiHarness(workspace({ competitorSnapshot: savedSnapshot(), learningEvents: [{ id: 'saved', type: 'brand_direction', title: 'Direction saved', detail: 'Owner chose practical', occurredAt: '2026-10-07', source: 'user_override' }] }));
   const nav = ui.nodes().find((node) => node.type === 'aside');
   assert.equal(ui.nodes(nav).filter((node) => node.type === 'button').length, 15);
   await ui.tab('Competitor Watch');
@@ -140,6 +148,73 @@ test('live navigation has 15 items and shows persisted competitor and recent lea
   assert.match(ui.text(), /recent saved activity/i);
   assert.match(ui.text(), /guide future Pod output/i);
   assert.equal(ui.requestCount(), 0);
+});
+
+test('reload skips malformed newer competitor data and renders an older valid snapshot without URL button crashes', async () => {
+  const malformed = { summary: 'Legacy malformed', competitors: [{ url: 42 }] };
+  const older = savedSnapshot({ summary: 'Valid older snapshot', competitors: [{ url: ' HTTPS://8.8.8.8 ', positioning: 'Older saved positioning', public_strengths: ['Materials'], public_gaps: ['Care'] }] });
+  const preferences = [
+    { id: 'valid', pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: { value: older }, active: true, created_at: '2026-10-01' },
+    { id: 'malformed', pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: malformed, active: true, created_at: '2026-10-07' },
+  ];
+  // The stale direct cached value must not bypass validation of persisted rows.
+  const ui = await uiHarness(workspace({ preferences, competitorSnapshot: malformed }));
+  await ui.tab('Competitor Watch');
+  assert.match(ui.text(), /Valid older snapshot|Older saved positioning/);
+  assert.doesNotMatch(ui.text(), /Legacy malformed/);
+  const inputs = ui.nodes().filter((node) => node.type === 'input' && node.props.type === 'url');
+  assert.deepEqual(inputs.map((node) => node.props.value), ['https://8.8.8.8/', '', '']);
+  assert.equal(ui.button('Check public pages').props.disabled, false);
+  assert.equal(ui.requestCount(), 0);
+  const onlyMalformed = await uiHarness(workspace({ preferences: preferences.slice(1) }));
+  await onlyMalformed.tab('Competitor Watch');
+  assert.match(onlyMalformed.text(), /No saved public snapshot/);
+  assert.equal(onlyMalformed.button('Check public pages').props.disabled, true);
+});
+
+test('restored competitor snapshots require complete typed structure before any URL enters input state', () => {
+  const invalid = [
+    { summary: 'Legacy malformed', competitors: [{ url: 42 }] },
+    savedSnapshot({ competitors: [{ ...savedSnapshot().competitors[0], url: 42 }] }),
+    savedSnapshot({ competitors: [{ ...savedSnapshot().competitors[0], url: 'javascript:alert(1)' }] }),
+    savedSnapshot({ competitors: Array.from({ length: 4 }, (_, index) => ({ ...savedSnapshot().competitors[0], url: `https://8.8.8.8/${index}` })) }),
+    savedSnapshot({ competitors: [{ ...savedSnapshot().competitors[0], public_strengths: [{ toString: null }] }] }),
+    savedSnapshot({ summary: { toString: null } }), savedSnapshot({ evidence: null }), savedSnapshot({ confidence: '0.8' }), savedSnapshot({ checked_at: 'invalid' }),
+  ];
+  for (const value of invalid) {
+    const rows = [{ pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: value, created_at: '2026-10-07' }];
+    assert.equal(learning.selectPodCompetitorSnapshot(rows, 'one'), null);
+  }
+});
+
+test('malformed platform preferences are isolated before coercion while valid saved activity remains visible', () => {
+  const malformed = [{ platforms: [{ toString: null }] }, { platforms: [42] }, { platforms: [null] }, { platforms: [[]] }, { platforms: 'email' }, 'email', 42, null, [], { platforms: ['email', { toString: null }] }];
+  const rows = workspace({ preferences: [
+    ...malformed.map((preference_value, index) => ({ id: `bad-${index}`, pod_id: 'one', preference_type: 'platform_selection', preference_value, created_at: '2026-10-07' })),
+    { id: 'good-platforms', pod_id: 'one', preference_type: 'platform_selection', preference_value: { platforms: ['email', 'instagram'] }, created_at: '2026-10-06' },
+    { id: 'good-empty', pod_id: 'one', preference_type: 'platform_selection', preference_value: { platforms: [] }, created_at: '2026-10-05' },
+    { id: 'good-direction', pod_id: 'one', preference_type: 'brand_direction', preference_value: { value: 'Friendly direction' }, created_at: '2026-10-04' },
+  ] });
+  const events = learning.normalizePodLearning(rows);
+  assert.equal(events.length, 3);
+  assert.deepEqual(events.map((event) => event.detail), ['email, instagram', 'No platforms selected', 'Friendly direction']);
+});
+
+test('per-type learning validation skips malformed supported rows without losing valid rows', () => {
+  const rows = workspace({ preferences: [
+    { id: 'direction-bad', pod_id: 'one', preference_type: 'brand_direction', preference_value: { value: { toString: null } }, created_at: '2026-10-07' },
+    { id: 'website-bad', pod_id: 'one', preference_type: 'website_intelligence', preference_value: { summary: ['Not a string'] }, created_at: '2026-10-07' },
+    { id: 'budget-bad', pod_id: 'one', preference_type: 'budget_recommendation_decision', preference_value: { decision: { toString: null } }, created_at: '2026-10-07' },
+    { id: 'snapshot-bad', pod_id: 'one', preference_type: 'competitor_snapshot', preference_value: { summary: 'Incomplete' }, created_at: '2026-10-07' },
+    { id: 'website-good', pod_id: 'one', preference_type: 'website_intelligence', preference_value: { summary: 'Saved website observation' }, created_at: '2026-10-06' },
+    { id: 'budget-good', pod_id: 'one', preference_type: 'budget_recommendation_decision', preference_value: { decision: 'approved' }, created_at: '2026-10-05' },
+  ], budgets: [
+    { id: 'malformed-budget', pod_id: 'one', planned_budget: { toString: null }, created_at: '2026-10-07' },
+    { id: 'valid-budget', pod_id: 'one', planned_budget: '120.00', created_at: '2026-10-04' },
+  ] });
+  const events = learning.normalizePodLearning(rows);
+  assert.equal(events.length, 3);
+  assert.deepEqual(events.map((event) => event.type), ['website_intelligence', 'budget_recommendation_decision', 'budget']);
 });
 
 test('competitor request is explicit and old completion cannot mutate B, returned A, or unmounted state', async () => {

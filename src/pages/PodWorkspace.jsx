@@ -28,7 +28,7 @@ import {
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
 import { buildCalendarItems, restoreOperationalState } from '../lib/podState';
-import { normalizePodLearning, selectPodCompetitorSnapshot } from '../lib/podLearning';
+import { normalizePodCompetitorSnapshot, normalizePodLearning, selectPodCompetitorSnapshot } from '../lib/podLearning';
 import { getPlan } from '../lib/plans';
 import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
@@ -356,7 +356,7 @@ function LivePodWorkspace({ session, subscription }) {
       setSourceUrl(workspace.pod?.source_url || '');
       setSources(workspace.sources || []);
       setAiMessages(workspace.messages || []);
-      const savedCompetitors = workspace.competitorSnapshot || selectPodCompetitorSnapshot(workspace.preferences, podId);
+      const savedCompetitors = normalizePodCompetitorSnapshot(workspace.competitorSnapshot) || selectPodCompetitorSnapshot(workspace.preferences, podId);
       setCompetitorSnapshot(savedCompetitors);
       setCompetitorUrls(Array.from({ length: 3 }, (_, index) => savedCompetitors?.competitors?.[index]?.url || ''));
       setLearningEvents(workspace.learningEvents || normalizePodLearning(workspace));
