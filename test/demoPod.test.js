@@ -85,6 +85,17 @@ test('demo mutations are blocked without disabling real signed-in pods', () => {
   assert.equal(canMutatePod(false), true);
 });
 
+test('showcase provider copy cannot imply currently available signed-in connections', () => {
+  const source = readFileSync(new URL('../src/pages/PodWorkspace.jsx', import.meta.url), 'utf8');
+  const showcase = source.split('function DemoPodShowcase() {')[1].split('export default function PodWorkspace')[0];
+  const socials = showcase.split("case 'socials':")[1].split("case 'content':")[0];
+  const note = socials.match(/<p className="pod-honesty-note">([^<]+)<\/p>/)?.[1] || '';
+  assert.ok(note, 'missing provider availability disclosure');
+  assert.doesNotMatch(note, /Signed-in pod owners connect their own authorised providers/i);
+  assert.match(note, /not live yet/i);
+  assert.match(note, /future.*provider configuration.*authorisation/i);
+});
+
 test('crafted demo chat requests are rejected before reaching OpenAI', async () => {
   const originalFetch = globalThis.fetch;
   let providerCalls = 0;

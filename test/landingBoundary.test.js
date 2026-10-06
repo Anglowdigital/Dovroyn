@@ -29,3 +29,12 @@ test('public assistant cannot regain live API calls or present prepared examples
   assert.doesNotMatch(client, /askLandingAssistant|['"]\/api\/ai\/chat['"]/);
   assert.match(client, /['"]\/api\/ai\/pod-chat['"]/);
 });
+
+test('static ecosystem cards cannot claim connected accounts or masquerade as real customer pods', () => {
+  const ecosystem = landing.split('<section className="multipod-preview">')[1]?.split('</section>')[0] || '';
+  assert.ok(ecosystem, 'missing ecosystem section');
+  assert.equal(/connected platforms/i.test(ecosystem), false, 'static ecosystem still claims connected platforms');
+  assert.match(ecosystem, /aria-label={`\$\{pod.name\} sample recommended platforms:/);
+  assert.match(ecosystem, /Illustrative ecosystem/);
+  assert.match(ecosystem, /fictional sample pods/i);
+});

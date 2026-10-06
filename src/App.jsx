@@ -1044,10 +1044,10 @@ function LandingPage({ session }) {
       </section>
 
       <section className="multipod-preview">
-        <p className="eyebrow">One Workspace, Many Pods</p>
+        <p className="eyebrow">Illustrative ecosystem</p>
         <h2 className="section-title">Your marketing world, organised into AI pods.</h2>
-        <p className="lede multipod-lede">Create one pod for every brand, launch, website, offer, or campaign. Dovroyn keeps the strategy, content ideas, platforms, ads, and next moves in one place.</p>
-        <div className="multipod-dashboard-frame" aria-label="Dovroyn pod ecosystem dashboard preview">
+        <p className="lede multipod-lede">Create one pod for every brand, launch, website, offer, or campaign. Dovroyn keeps the strategy, content ideas, platforms, ads, and next moves in one place. The cards below are fictional sample pods, not customer accounts or live connections.</p>
+        <div className="multipod-dashboard-frame" aria-label="Illustrative Dovroyn pod ecosystem preview">
           <div className="multipod-dashboard-topbar">
             <div>
               <span className="multipod-screen-label">Pod Ecosystem</span>
@@ -1088,7 +1088,7 @@ function LandingPage({ session }) {
                       <span className="multipod-status-dot" aria-hidden="true" />
                       {pod.status}
                     </p>
-                    <div className="multipod-platforms" aria-label={`${pod.name} connected platforms: ${pod.platforms.map((platform) => platform.name).join(', ')}`}>
+                    <div className="multipod-platforms" aria-label={`${pod.name} sample recommended platforms: ${pod.platforms.map((platform) => platform.name).join(', ')}`}>
                       {pod.platforms.map((platform) => {
                         const PlatformIcon = platform.icon;
                         return (
