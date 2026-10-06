@@ -940,25 +940,19 @@ function Wordmark() {
   return <BrandLogo />;
 }
 
-/* ─── SOCIAL PROOF DATA ─── */
-const TESTIMONIALS = [
+/* ─── PRODUCT PRINCIPLES ─── */
+const PRODUCT_PRINCIPLES = [
   {
-    quote: "I went from 'what do I post?' to having a full month of content in 20 minutes. The pod actually understood my brand.",
-    name: "Sarah K.",
-    role: "Founder, Aurora Skincare",
-    metric: "3.2x engagement",
+    title: 'One brand, one brain',
+    body: 'Each pod keeps its own sources, brand direction and campaign context together.',
   },
   {
-    quote: "We used to plan campaigns in spreadsheets. Now one pod holds the strategy, calendar, and ad angles — and it actually remembers what worked.",
-    name: "Marcus T.",
-    role: "Founder, Gidgee Co",
-    metric: "12 pods active",
+    title: 'Direction before content',
+    body: 'Review and approve a brand direction before preparing channel-specific drafts.',
   },
   {
-    quote: "The direction-lock feature changed everything. Once the strategy is set, every piece of content follows it. No more off-brand posts.",
-    name: "Jessica L.",
-    role: "Marketing Director, House of MGNM",
-    metric: "Zero off-brand posts",
+    title: 'You stay in control',
+    body: 'Recommendations are not external actions. Publishing and spend require authorised providers and your approval.',
   },
 ];
 
@@ -988,14 +982,15 @@ function LandingPage({ session }) {
           <span className="hero-badge"><Sparkles size={14} /> AI Marketing Pods</span>
         </div>
         <div className="hero-content-centered">
-          <h1>Your brand deserves a <span className="hero-emphasis">strategy</span>, not a scramble.</h1>
+          <h1>EVERY BRAND GETS ITS OWN AI BRAIN</h1>
           <p className="hero-gold-line">Drop in your website. Dovroyn builds your campaign direction, content calendar, and next moves — all inside one intelligent pod.</p>
           <p className="lede">Stop staring at blank content calendars. Each pod learns your brand, locks your strategy, and tells you exactly what to post, where, and when.</p>
           <div className="hero-actions">
-            <NavLink className="button button-primary button-lg" to={session ? '/pods' : '/signup'}>
-              {session ? 'Open My Pods' : 'Start Free — No Card Required'}
+            <NavLink className="button button-primary button-lg" to="/signup">
+              Start Free — No Card Required
             </NavLink>
             <NavLink className="button button-ghost" to="/demo-pod">See Demo Pod</NavLink>
+            <NavLink className="button button-ghost" to="/pricing">View Pricing</NavLink>
           </div>
           <div className="hero-trust-row">
             <span className="hero-trust-item"><CheckCircle size={14} /> Free plan available</span>
@@ -1007,23 +1002,15 @@ function LandingPage({ session }) {
 
       <PodWorkspace demo />
 
-      {/* Social Proof Section */}
+      {/* Product principles — not customer testimonials */}
       <section className="social-proof-section">
-        <p className="eyebrow">Trusted by Founders</p>
+        <p className="eyebrow">Product principles</p>
         <h2 className="section-title">From blank page to full campaign.</h2>
         <div className="testimonials-grid">
-          {TESTIMONIALS.map((t, i) => (
-            <article key={i} className="panel testimonial-card">
-              <div className="testimonial-stars">★★★★★</div>
-              <p className="testimonial-quote">"{t.quote}"</p>
-              <div className="testimonial-author">
-                <div className="testimonial-avatar" aria-hidden="true">{t.name.charAt(0)}</div>
-                <div>
-                  <p className="testimonial-name">{t.name}</p>
-                  <p className="testimonial-role">{t.role}</p>
-                </div>
-              </div>
-              <span className="testimonial-metric">{t.metric}</span>
+          {PRODUCT_PRINCIPLES.map((principle) => (
+            <article key={principle.title} className="panel testimonial-card">
+              <h3>{principle.title}</h3>
+              <p>{principle.body}</p>
             </article>
           ))}
         </div>
@@ -1176,7 +1163,7 @@ function LandingPage({ session }) {
 
       <section className="pricing-section">
         <p className="eyebrow">Subscription Pricing</p>
-        <h2 className="section-title">Four tiers. Scale when you are ready.</h2>
+        <h2 className="section-title">Plans for every stage. Scale when you are ready.</h2>
         <BillingToggle billing={billing} onChange={setBilling} />
         <div className="pricing-grid">
           {PRICING_TIERS.map((tier) => (
@@ -1253,9 +1240,9 @@ function DemoPodPage() {
       <Header variant="page" showNav />
 
       <section className="hero-block panel" style={{ padding: '1.5rem' }}>
-        <p className="eyebrow">Demo Pod</p>
-        <h2 style={{ fontFamily: "'Playfair Display', serif" }}>Aurora Skincare — AI Marketing Pod</h2>
-        <p className="subtle">This demo shows how Dovroyn analyses a website and builds a complete marketing direction inside one pod.</p>
+        <p className="eyebrow">Read-only Demo Pod</p>
+        <h1 style={{ fontFamily: "'Playfair Display', serif" }}>Aurora Botanicals — Fictional AI Marketing Pod</h1>
+        <p className="subtle">Click each side-panel section to explore a completed example. The showcase uses fictional data and cannot edit, connect, send, save, or publish anything.</p>
       </section>
 
       <PodWorkspace demo />

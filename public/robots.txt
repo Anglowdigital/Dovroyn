@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /pods
+Disallow: /account
+Disallow: /settings
+Disallow: /login
+Disallow: /signup
+
+Sitemap: https://dovroyn.com/sitemap.xml

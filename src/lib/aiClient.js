@@ -11,26 +11,6 @@ async function readApiResponse(response) {
   return payload;
 }
 
-export async function askLandingAssistant(question) {
-  const response = await fetch('/api/ai/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
-  });
-  const payload = await readApiResponse(response);
-  return payload.answer;
-}
-
-export async function askDemoPodAssistant(question) {
-  const response = await fetch('/api/ai/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, demoPod: true }),
-  });
-  const payload = await readApiResponse(response);
-  return payload.answer;
-}
-
 export async function requestPodAnalysis({ accessToken, podId, sourceUrl, notes, imageUrls = [] }) {
   const response = await fetch('/api/ai/analyze', {
     method: 'POST',

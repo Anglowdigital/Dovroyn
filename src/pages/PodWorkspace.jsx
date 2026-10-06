@@ -27,11 +27,11 @@ import {
 } from 'lucide-react';
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
-import { formatPlatformPost } from '../lib/podEngine';
 import { getPlan } from '../lib/plans';
 import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
-import { askDemoPodAssistant, askPodAssistant, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
+import { askPodAssistant, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
+import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
 import {
   approvePodDirection,
   getAssetPreview,
@@ -77,16 +77,6 @@ const TAB_GROUPS = [
   },
 ];
 
-const DEMO_POD = {
-  id: 'demo',
-  pod_name: 'Aurora Skincare Launch',
-  brand_name: 'Aurora Skincare',
-  pod_type: 'website',
-  source_url: 'https://auroraskincare.co',
-  target_country: 'Australia',
-  status: 'awaiting_direction',
-};
-
 const INITIAL_ANALYSIS = {
   summary: 'A premium skincare brand that makes effective routines feel calm, clear, and attainable.',
   tone: 'Expert, reassuring, modern luxury',
@@ -104,34 +94,10 @@ const INITIAL_ANALYSIS = {
   geography: ['Australia', 'New Zealand', 'USA'],
 };
 
-const CONTENT_SEED = {
-  body: 'Cold weather asks more of your skin. Meet the simple evening ritual designed to restore hydration without adding five extra steps.',
-  keywords: ['Winter Skin', 'Skin Barrier', 'Aurora Skincare', 'Hydration Ritual'],
-  callToAction: 'Explore the winter barrier bundle.',
-};
-
-const DEMO_CONTENT_SEEDS = {
-  instagram: {
-    body: 'A winter evening ritual, made beautifully simple. Restore hydration and support your skin barrier in two calm steps.',
-    keywords: ['Winter Skin', 'Skin Barrier', 'Aurora Skincare', 'Hydration Ritual'],
-    callToAction: 'Save this ritual, then explore the winter barrier bundle.',
-  },
-  tiktok: {
-    body: 'POV: your winter routine has five products but still misses the barrier-support step that matters most. Here is the two-step reset.',
-    keywords: ['Winter Skin', 'Skin Barrier', 'Skincare Routine', 'Hydration'],
-    callToAction: 'Watch the routine, then see what is inside the bundle.',
-  },
-  facebook: {
-    body: 'Cold weather can leave a good routine working harder than it should. Our winter barrier bundle pairs two straightforward hydration steps for calmer evening care.',
-    keywords: [],
-    callToAction: 'Read the routine and decide whether it fits your skin.',
-  },
-  email: {
-    body: 'Subject: Your two-step winter barrier ritual\n\nA thoughtful winter routine does not need to be complicated. We paired the evening hydration steps in one simple bundle.',
-    keywords: [],
-    callToAction: 'Explore the winter barrier bundle.',
-  },
-};
+// Keep public navigation separate from live Pod features.
+const DEMO_TAB_GROUPS = TAB_GROUPS.map((group) => group.label === 'Grow'
+  ? { ...group, items: [...group.items, ['competitors', 'Competitor Watch', Globe2], ['learning', 'Learning History', Activity]] }
+  : group);
 
 function StatusPill({ children, tone = 'gold' }) {
   return <span className={`pod-status pod-status-${tone}`}>{children}</span>;
@@ -159,14 +125,135 @@ function EmptyState({ icon: Icon, title, body, action, actionLabel }) {
   );
 }
 
+function DemoPodShowcase() {
+  const [activeTab, setActiveTab] = useState('sources');
+  const tabRefs = useRef({});
+  const { pod, analysis, assets, messages, posts, competitors, learningHistory } = DEMO_WORKSPACE;
+  const logoAssets = assets.filter((asset) => asset.assetRole === 'logo');
+  const brandPhotos = assets.filter((asset) => asset.assetRole === 'brand_photo');
+  const selectedPlatforms = analysis.platforms.map((key) => getPlatform(key)).filter(Boolean);
+  const calendarPostDays = new Set([2, 5, 9, 12, 16, 19, 23, 26, 30]);
+
+  const handleTabKeyDown = (event, key) => {
+    const next = getNextDemoTab(key, event.key);
+    if (!next) return;
+    event.preventDefault();
+    setActiveTab(next);
+    tabRefs.current[next]?.focus();
+  };
+
+  const renderShowcasePanel = () => {
+    switch (activeTab) {
+      case 'overview':
+        return (
+          <div className="pod-panel-stack">
+            <div className="pod-overview-hero">
+              <div><p className="eyebrow">Fictional showcase</p><h2>{pod.pod_name}</h2><p>{analysis.summary}</p></div>
+              <StatusPill tone="green">Sample complete</StatusPill>
+            </div>
+            <section className="pod-metric-grid">
+              <MetricCard label="Direction" value="Approved" detail="Fictional sample" />
+              <MetricCard label="Content plan" value="9 dates" detail="Sample monthly calendar" />
+              <MetricCard label="Publishing rhythm" value="3 days/week" detail="Example recommendation" />
+              <MetricCard label="Channels" value="4" detail="No accounts connected" />
+            </section>
+            <section className="pod-dashboard-grid">
+              <article className="pod-rich-card pod-next-card"><span className="pod-card-icon"><Activity size={18} /></span><div><small>Recommended next move</small><h3>Prepare launch creative</h3><p className="subtle">Example recommendation based on the fictional website and approved direction.</p></div></article>
+              <article className="pod-rich-card"><div className="pod-card-heading"><div><small>Sample activity</small><h3>Content readiness</h3></div><StatusPill>Ready</StatusPill></div><div className="pod-chart" aria-label="Sample content readiness chart">{[36, 54, 48, 72, 64, 90, 86].map((height, index) => <span key={index} style={{ height: `${height}%` }} />)}</div></article>
+              <article className="pod-rich-card"><div className="pod-card-heading"><div><small>Sample completion</small><h3>100%</h3></div><Palette size={19} /></div><div className="pod-progress"><span style={{ width: '100%' }} /></div><ul className="pod-check-list"><li className="done"><Check /> Source added</li><li className="done"><Check /> Analysis generated</li><li className="done"><Check /> Direction approved</li><li className="done"><Check /> Content prepared</li></ul></article>
+            </section>
+          </div>
+        );
+      case 'assistant':
+        return (
+          <div className="pod-panel-stack pod-ai-panel">
+            <header className="pod-panel-heading"><div><p className="eyebrow">Example conversation</p><h2>{pod.pod_name} AI</h2><p className="subtle">This is a prepared example. The public showcase does not send questions to AI.</p></div><StatusPill>Read-only sample</StatusPill></header>
+            <div className="pod-ai-thread">{messages.map((message) => <article key={message.id} className={`pod-ai-message pod-ai-message-${message.role}`}><span>{message.role === 'assistant' ? 'Sample Pod AI' : 'Sample user'}</span><p>{message.content}</p></article>)}</div>
+            <p className="pod-showcase-note">Create your own pod to ask questions using your private sources and saved brand direction.</p>
+          </div>
+        );
+      case 'sources':
+        return (
+          <div className="pod-panel-stack">
+            <header className="pod-panel-heading"><div><p className="eyebrow">Fictional website & photos</p><h2>Brand analysis inputs</h2><p className="subtle">A complete sample of the information a real pod can organise after its owner provides the source.</p></div><StatusPill tone="green">Sample locked</StatusPill></header>
+            <article className="pod-lock-card"><LockKeyhole size={22} /><div><strong>{pod.source_url}</strong><p>Reserved demonstration address. It is not a real business or connected website.</p></div></article>
+            <div className="pod-asset-grid"><article className="pod-file-card"><Globe2 /><div><strong>{pod.source_url}</strong><small>Fictional primary website</small></div></article>{[...logoAssets, ...brandPhotos].map((asset) => <article className="pod-file-card" key={asset.id}><img src={asset.preview} alt="" /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample brand logo' : 'Sample brand photo'}</small></div></article>)}</div>
+          </div>
+        );
+      case 'direction':
+        return (
+          <div className="pod-panel-stack">
+            <header className="pod-panel-heading"><div><p className="eyebrow">Sample AI direction</p><h2>Approved launch direction</h2><p className="subtle">Prepared fictional output showing what a completed analysis can look like.</p></div><StatusPill tone="green">Sample approved</StatusPill></header>
+            <section className="pod-insight-grid">{[['Brand summary', analysis.summary], ['Tone', analysis.tone], ['Audience', analysis.audience], ['Offer', analysis.offer], ['Strongest opportunity', analysis.opportunity]].map(([label, value]) => <article key={label}><small>{label}</small><p>{value}</p></article>)}</section>
+            <article className="pod-rich-card"><small>Content pillars</small><div className="pod-chip-row">{analysis.pillars.map((pillar) => <span key={pillar}>{pillar}</span>)}</div></article>
+            <article className="pod-rich-card"><small>Sample evidence</small><ul>{analysis.evidence.map((item) => <li key={item.source_reference}>{item.finding} <span className="subtle">({item.source_reference})</span></li>)}</ul></article>
+          </div>
+        );
+      case 'assets':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample library</p><h2>Campaign assets</h2><p className="subtle">Prepared fictional images demonstrate how real pod assets are grouped without allowing public uploads.</p></div><StatusPill>Read-only sample</StatusPill></header><div className="pod-media-grid">{assets.map((asset) => <article key={asset.id}><img src={asset.preview} alt={asset.name} /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample logo' : asset.assetRole === 'brand_photo' ? 'Sample brand photo' : 'Sample campaign creative'}</small></div></article>)}</div></div>;
+      case 'socials':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample channel plan</p><h2>Recommended social accounts</h2><p className="subtle">These are example recommendations only. No public demo accounts are connected.</p></div><StatusPill>0 live connections</StatusPill></header><div className="pod-platform-select-grid">{selectedPlatforms.map((platform) => <article key={platform.key} className="pod-platform-select selected"><span className="pod-social-monogram">{platform.name.slice(0, 2)}</span><div><h3>{platform.name}</h3><p>{platform.focus}</p><small>Recommended in this fictional plan</small></div></article>)}</div><p className="pod-honesty-note">Signed-in pod owners connect their own authorised providers. This showcase cannot connect, post, or publish.</p></div>;
+      case 'content':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample social manager</p><h2>Prepared campaign drafts</h2><p className="subtle">Fictional, read-only examples for each recommended channel.</p></div><StatusPill>{posts.length} sample drafts</StatusPill></header><div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Sample</StatusPill></header><img className="pod-post-photo" src={brandPhotos[0].preview} alt="Fictional Aurora Botanicals campaign" /><small className="pod-photo-source">Fictional sample creative</small><p className="pod-demo-post-copy">{post.content}</p></article>)}</div></div>;
+      case 'calendar':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample June calendar</p><h2>Content calendar</h2><p className="subtle">A filled example showing the same approved campaign adapted for the selected channels.</p></div><StatusPill>Fictional schedule</StatusPill></header><div className="pod-cal-grid" aria-label="Fictional June content calendar">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day} className="pod-cal-dow">{day}</span>)}{Array.from({ length: 30 }, (_, index) => index + 1).map((date) => <div key={date} className={`pod-cal-day${calendarPostDays.has(date) ? ' pod-cal-post' : ''}`}><span className="pod-cal-date">{date}</span>{calendarPostDays.has(date) && <><span className="pod-cal-thumb"><img src={brandPhotos[0].preview} alt="" /></span><strong>Winter ritual</strong><span className="pod-cal-badges">{selectedPlatforms.slice(0, 2).map((platform) => <span key={platform.key}>{platform.name}</span>)}</span></>}</div>)}</div></div>;
+      case 'campaigns':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample campaign</p><h2>Winter barrier launch</h2><p className="subtle">A completed fictional campaign board.</p></div><StatusPill tone="green">Sample approved</StatusPill></header><section className="pod-campaign-board">{['Brief', 'Creative', 'Schedule', 'Approval'].map((stage, index) => <article key={stage}><small>0{index + 1}</small><h3>{stage}</h3><p>{['Fictional website and offer analysed', 'Four sample channel drafts ready', 'Nine sample calendar dates prepared', 'Sample direction approved'][index]}</p><span className="complete" /></article>)}</section></div>;
+      case 'analytics':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional analytics</p><h2>Organic and campaign signals</h2><p className="subtle">Illustrative numbers only—no live accounts or customer data.</p></div><StatusPill>Sample data</StatusPill></header><section className="pod-metric-grid"><MetricCard label="Sample reach" value="18.4K" detail="Illustrative only" /><MetricCard label="Sample engagement" value="6.2%" detail="Illustrative only" /><MetricCard label="Sample clicks" value="1,247" detail="Illustrative only" /><MetricCard label="Sample conversions" value="84" detail="Illustrative only" /></section><article className="pod-rich-card"><div className="pod-card-heading"><div><small>Sample channel trend</small><h3>Eight fictional campaign days</h3></div><BarChart3 /></div><div className="pod-chart pod-chart-large">{[32, 46, 42, 60, 54, 76, 68, 88].map((height, index) => <span key={index} style={{ height: `${height}%` }} />)}</div></article></div>;
+      case 'team':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample collaboration</p><h2>People inside this fictional pod</h2><p className="subtle">Example roles only. The showcase cannot invite anyone.</p></div><StatusPill>Read-only sample</StatusPill></header><article className="pod-team-row"><span>AS</span><div><strong>Aurora Studio</strong><small>Fictional owner · Full pod access</small></div><StatusPill tone="green">Sample</StatusPill></article><article className="pod-team-row"><span>MC</span><div><strong>Mia Chen</strong><small>Fictional collaborator · Content review</small></div><StatusPill>Sample</StatusPill></article></div>;
+      case 'launch':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample launch page</p><h2>Prepared email-capture concept</h2><p className="subtle">Visual example only. It does not accept or save email addresses.</p></div><StatusPill>Not published</StatusPill></header><article className="pod-launch-preview"><span className="pod-launch-orbit"><Sparkles /></span><p className="eyebrow">Aurora Botanicals</p><h2>Winter skin, restored.</h2><p>A calmer barrier ritual is almost here. Join the fictional launch story.</p><div className="pod-demo-email-preview"><span>you@example.com</span><strong>Notify me</strong></div><small>Fictional preview · No form or data collection</small></article></div>;
+      case 'budget':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional budget & ads</p><h2>Sample spend plan</h2><p className="subtle">Illustrative planning data only. The showcase cannot approve or change spend.</p></div><StatusPill>Sample data</StatusPill></header><section className="pod-metric-grid"><MetricCard label="Sample budget" value="$2,000" detail="Illustrative monthly plan" /><MetricCard label="Sample spend" value="$847" detail="Not live spend" /><MetricCard label="Sample revenue" value="$4,230" detail="Not live revenue" /><MetricCard label="Sample ROAS" value="4.99x" detail="Not measured" /></section><article className="pod-budget-recommendation"><span><CircleDollarSign /></span><div><small>Sample AI recommendation</small><h3>Test more of the fictional budget on the stronger Reel creative.</h3><p>A real pod would require an authorised user and connected provider before any spend could change.</p></div></article></div>;
+      case 'competitors':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional competitor snapshot</p><h2>Competitor Watch</h2><p className="subtle">Prepared public-page comparisons only. No continuous monitoring, traffic estimates, ad results or real provider data.</p></div><StatusPill>Fictional sample</StatusPill></header>{competitors.map((competitor) => <article className="pod-rich-card" key={competitor.name}><h3>{competitor.name}</h3><p>{competitor.observation}</p><small>{competitor.sourceReference} · {competitor.sourceUrl}</small></article>)}</div>;
+      case 'learning':
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Fictional learning history</p><h2>Learning History</h2><p className="subtle">Prepared sample events, not real saved actions or measured outcomes.</p></div><StatusPill>Fictional sample</StatusPill></header>{learningHistory.map((entry) => <article className="pod-rich-card" key={entry.at}><small><time dateTime={entry.at}>{entry.at.slice(0, 10)}</time></small><h3>{entry.title}</h3><p>{entry.detail}</p></article>)}</div>;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <section className="pod-workspace pod-showcase" data-pod-mode="showcase">
+      <div className="pod-demo-banner" role="note"><Sparkles size={15} /><span>Read-only fictional showcase — explore each section; nothing can be edited, connected, sent, saved, or published.</span><Link to="/signup">Create a working pod →</Link></div>
+      <Link to="/" className="pod-back-link">&larr; Back to Dovroyn</Link>
+      <header className="pod-workspace-topbar"><div className="pod-workspace-title"><span className="pod-brand-orb"><Sparkles size={18} /></span><div><p className="eyebrow">{pod.brand_name} · fictional</p><h2>{pod.pod_name}</h2></div></div><div className="pod-workspace-actions"><StatusPill>Showcase only</StatusPill></div></header>
+      <div className="pod-workspace-body">
+        <aside className="pod-workspace-nav" role="tablist" aria-label="Demo pod sections" aria-orientation="vertical">
+          {DEMO_TAB_GROUPS.map((group) => <div key={group.label} role="presentation"><p role="presentation">{group.label}</p>
+            {group.items.map(([key, label, Icon]) => <button key={key}
+              ref={(node) => { tabRefs.current[key] = node; }}
+              id={`demo-tab-${key}`} role="tab" aria-selected={activeTab === key}
+              aria-controls="demo-panel" tabIndex={activeTab === key ? 0 : -1}
+              className={activeTab === key ? 'active' : ''} type="button"
+              onKeyDown={(event) => handleTabKeyDown(event, key)} onClick={() => setActiveTab(key)}>
+              <Icon size={16} aria-hidden="true" /><span>{label}</span>
+            </button>)}
+          </div>)}
+        </aside>
+        <div className="pod-workspace-panel" role="tabpanel" id="demo-panel"
+          aria-labelledby={`demo-tab-${activeTab}`} tabIndex={0}>{renderShowcasePanel()}</div>
+      </div>
+    </section>
+  );
+}
+
 export default function PodWorkspace({ demo = false, session, subscription }) {
+  if (!canMutatePod(demo)) return <DemoPodShowcase />;
+  return <LivePodWorkspace session={session} subscription={subscription} />;
+}
+
+function LivePodWorkspace({ session, subscription }) {
   const { podId } = useParams();
-  const [pod, setPod] = useState(demo ? DEMO_POD : null);
-  const [loading, setLoading] = useState(!demo);
-  const [activeTab, setActiveTab] = useState(demo ? 'sources' : 'overview');
-  const [analysis, setAnalysis] = useState(demo ? INITIAL_ANALYSIS : null);
-  const [analysisState, setAnalysisState] = useState(demo ? 'ready' : 'idle');
-  const [aiMessages, setAiMessages] = useState(demo ? [{ id: 'demo-welcome', role: 'assistant', content: 'I am the private AI for this Aurora pod. Ask me about this brand, campaign, content or approved direction.' }] : []);
+  const [pod, setPod] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisState, setAnalysisState] = useState('idle');
+  const [aiMessages, setAiMessages] = useState([]);
   const [aiQuestion, setAiQuestion] = useState('');
   const [aiSending, setAiSending] = useState(false);
   const [directionApproved, setDirectionApproved] = useState(false);
@@ -176,7 +263,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   const directionOperation = useRef('');
   const [overrideText, setOverrideText] = useState('');
   const [sources, setSources] = useState([]);
-  const [sourceType, setSourceType] = useState(demo ? 'website' : 'website');
+  const [sourceType, setSourceType] = useState('website');
   const [sourceUrl, setSourceUrl] = useState('');
   const [assets, setAssets] = useState([]);
   const [selectedPlatformKeys, setSelectedPlatformKeys] = useState([]);
@@ -189,14 +276,14 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState('');
 
-  const plan = getPlan(subscription?.tier || (demo ? 'growth' : 'free'));
+  const plan = getPlan(subscription?.tier || 'free');
   const sourceLocked = Boolean(pod?.source_locked_at || analysis);
   const logoAssets = assets.filter((asset) => asset.assetRole === 'logo');
   const brandPhotos = assets.filter((asset) => asset.assetRole === 'brand_photo');
   const selectedSource = POD_SOURCE_TYPES.find((source) => source.value === sourceType);
 
   useEffect(() => {
-    if (demo || !supabaseConfigured || !podId) {
+    if (!supabaseConfigured || !podId) {
       setLoading(false);
       return;
     }
@@ -263,7 +350,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       if (mounted) { setPod(null); setLoading(false); }
     });
     return () => { mounted = false; };
-  }, [demo, podId]);
+  }, [podId]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -315,7 +402,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       showNotice('Add the one primary URL for this pod.');
       return;
     }
-    if (demo || !pod?.id) return;
+    if (!pod?.id) return;
     try {
       const savedPod = await savePodPrimarySource(pod.id, { sourceType, sourceUrl });
       setPod(savedPod);
@@ -362,7 +449,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
     setAssets((current) => [...current, ...nextAssets]);
     if (nextAssets.length) showNotice(`${nextAssets.length} asset${nextAssets.length === 1 ? '' : 's'} added to this pod.`);
     event.target.value = '';
-    if (!demo && pod?.id && session?.user?.id) {
+    if (pod?.id && session?.user?.id) {
       try {
         const savedAssets = await Promise.all(files.map(async (file) => {
           const saved = await uploadPodAsset({ userId: session.user.id, podId: pod.id, file, assetRole });
@@ -392,7 +479,7 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
       showNotice('This pod has already been analysed. Use an override to adjust its direction.');
       return;
     }
-    const setupError = demo ? '' : validatePodSetup({
+    const setupError = validatePodSetup({
       sourceType,
       sourceUrl,
       logoCount: logoAssets.length,
@@ -405,23 +492,18 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
     setAnalysisState('running');
     setDirectionApproved(false);
     try {
-      let nextAnalysis = INITIAL_ANALYSIS;
-      if (demo) {
-        await new Promise((resolve) => window.setTimeout(resolve, 900));
-      } else {
-        const accessToken = session?.access_token;
-        if (!accessToken) throw new Error('Sign in again before running analysis.');
-        const savedPod = sourceLocked ? pod : await savePodPrimarySource(pod.id, { sourceType, sourceUrl });
-        setPod(savedPod);
-        const result = await requestPodAnalysis({
-          accessToken,
-          podId: pod.id,
-          notes: sources.map((source) => source.notes).filter(Boolean).join('\n').slice(0, 4000),
-          imageUrls: [...logoAssets, ...brandPhotos].map((asset) => asset.preview).filter((url) => /^https:\/\//i.test(url)),
-        });
-        nextAnalysis = result.analysis;
-        setPod((current) => ({ ...current, source_locked_at: result.sourceLockedAt ?? new Date().toISOString(), status: 'awaiting_direction' }));
-      }
+      const accessToken = session?.access_token;
+      if (!accessToken) throw new Error('Sign in again before running analysis.');
+      const savedPod = sourceLocked ? pod : await savePodPrimarySource(pod.id, { sourceType, sourceUrl });
+      setPod(savedPod);
+      const result = await requestPodAnalysis({
+        accessToken,
+        podId: pod.id,
+        notes: sources.map((source) => source.notes).filter(Boolean).join('\n').slice(0, 4000),
+        imageUrls: [...logoAssets, ...brandPhotos].map((asset) => asset.preview).filter((url) => /^https:\/\//i.test(url)),
+      });
+      const nextAnalysis = result.analysis;
+      setPod((current) => ({ ...current, source_locked_at: result.sourceLockedAt ?? new Date().toISOString(), status: 'awaiting_direction' }));
       setAnalysis(nextAnalysis);
       setAnalysisState('ready');
       setActiveTab('direction');
@@ -438,10 +520,8 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
     setDirectionMutation('approving');
     setDirectionApproved(false);
     try {
-      if (!demo) {
-        const savedPod = await approvePodDirection(pod?.id, analysis);
-        setPod(savedPod);
-      }
+      const savedPod = await approvePodDirection(pod?.id, analysis);
+      setPod(savedPod);
       setDirectionApproved(true);
       setModal(null);
       showNotice('Brand direction approved. Content generation is unlocked.');
@@ -460,10 +540,8 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
     setDirectionMutation('override');
     setDirectionApproved(false);
     try {
-      if (!demo) {
-        const { pod: savedPod } = await savePodDirectionOverride(pod?.id, direction);
-        setPod(savedPod);
-      }
+      const { pod: savedPod } = await savePodDirectionOverride(pod?.id, direction);
+      setPod(savedPod);
       setAnalysis((current) => ({ ...current, tone: direction, userDirection: direction }));
       setDirectionSaveFailed(false);
       setOverrideText('');
@@ -493,25 +571,16 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
     directionOperation.current = 'generating';
     setContentGenerating(true);
     try {
-      let generated;
-      if (demo) {
-        generated = analysis.platforms.map((platformKey, index) => ({
-          id: `${platformKey}-${Date.now()}-${index}`,
-          status: 'Draft',
-          ...formatPlatformPost({ platformKey, ...(DEMO_CONTENT_SEEDS[platformKey] || CONTENT_SEED) }),
-        }));
-      } else {
-        if (!session?.access_token) throw new Error('Sign in again before generating content.');
-        const result = await requestSocialContent({
-          accessToken: session.access_token,
-          podId: pod.id,
-          platforms: selectedPlatformKeys.length ? selectedPlatformKeys : analysis.platforms,
-          contentDay: new Date().toISOString().slice(0, 10),
-        });
-        generated = result.posts.map((post, index) => ({ ...post, id: `${post.platformKey}-${Date.now()}-${index}`, status: 'Draft' }));
-      }
+      if (!session?.access_token) throw new Error('Sign in again before generating content.');
+      const result = await requestSocialContent({
+        accessToken: session.access_token,
+        podId: pod.id,
+        platforms: selectedPlatformKeys.length ? selectedPlatformKeys : analysis.platforms,
+        contentDay: new Date().toISOString().slice(0, 10),
+      });
+      const generated = result.posts.map((post, index) => ({ ...post, id: `${post.platformKey}-${Date.now()}-${index}`, status: 'Draft' }));
       setPosts(generated);
-      if (!demo && pod?.id) {
+      if (pod?.id) {
         const saved = await saveSocialPosts(pod.id, generated);
         setPosts((current) => current.map((post, index) => ({ ...post, id: saved[index]?.id || post.id })));
       }
@@ -535,10 +604,6 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
   };
 
   const savePostEdit = async (post) => {
-    if (demo) {
-      showNotice(`${post.platformName} draft saved in this pod.`);
-      return;
-    }
     try {
       await updateSocialPost(post.id, post.content);
       showNotice(`${post.platformName} draft saved.`);
@@ -556,16 +621,10 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
     setAiQuestion('');
     setAiSending(true);
     try {
-      let answer;
-      let memorySaved = true;
-      if (demo) {
-        answer = await askDemoPodAssistant(question);
-      } else {
-        if (!session?.access_token) throw new Error('Sign in again before using this pod AI.');
-        const result = await askPodAssistant({ accessToken: session.access_token, podId: pod.id, question });
-        answer = result.answer;
-        memorySaved = result.memorySaved;
-      }
+      if (!session?.access_token) throw new Error('Sign in again before using this pod AI.');
+      const result = await askPodAssistant({ accessToken: session.access_token, podId: pod.id, question });
+      const answer = result.answer;
+      const memorySaved = result.memorySaved;
       setAiMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: answer }]);
       if (!memorySaved) showNotice('The answer is visible, but pod memory needs the workspace migration before it can be saved.');
     } catch (error) {
@@ -794,18 +853,11 @@ export default function PodWorkspace({ demo = false, session, subscription }) {
 
   return (
     <section className="pod-workspace">
-      {!demo && (subscription?.tier || 'free') === 'free' && (
+      {(subscription?.tier || 'free') === 'free' && (
         <div className="pod-demo-banner" role="note">
           <Sparkles size={15} />
           <span>Your pod is built and ready. Upgrade to start posting — plans from $89/month.</span>
           <Link to="/pricing">View plans →</Link>
-        </div>
-      )}
-      {demo && (
-        <div className="pod-demo-banner" role="note">
-          <Sparkles size={15} />
-          <span>You're exploring a demo pod — nothing here is saved, connected, or published.</span>
-          <Link to="/signup">Create your own pod →</Link>
         </div>
       )}
       <Link to="/pods" className="pod-back-link">&larr; Pods</Link><header className="pod-workspace-topbar">
