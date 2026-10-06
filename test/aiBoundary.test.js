@@ -1,13 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import publicChatHandler from '../api/ai/chat.js';
 import { createSafetyIdentifier, DEFAULT_OPENAI_MODEL, extractOutputText, resolveOpenAIModel } from '../api/_lib/openai.js';
 import { buildPodAiContext } from '../api/_lib/podContext.js';
-import { extractReadableText, validatePublicWebsiteUrl } from '../api/_lib/webSource.js';
+import * as webSource from '../api/_lib/webSource.js';
 import { MARKETING_TRUTH_RULES } from '../api/_lib/marketingTruth.js';
 import '../api/ai/analyze.js';
 import '../api/ai/content.js';
 import '../api/ai/pod-chat.js';
+
+function podRepositoryHarness(client = {}) {
+  const source = readFileSync(new URL('../src/lib/podRepository.js', import.meta.url), 'utf8')
+    .replace(/import\s+{[\s\S]*?}\s+from\s+'[^']+';/g, '')
+    .replace(/export /g, '');
+  return new Function('supabase', 'supabaseConfigured', `${source}; return {
+    persistPodPreference: typeof persistPodPreference === 'function' ? persistPodPreference : undefined,
+    selectWebsiteIntelligenceSnapshot: typeof selectWebsiteIntelligenceSnapshot === 'function' ? selectWebsiteIntelligenceSnapshot : undefined,
+    restorePodAnalysisSnapshot: typeof restorePodAnalysisSnapshot === 'function' ? restorePodAnalysisSnapshot : undefined,
+    saveWebsiteIntelligenceSnapshot: typeof saveWebsiteIntelligenceSnapshot === 'function' ? saveWebsiteIntelligenceSnapshot : undefined,
+  };`)(client, true);
+}
 
 test('OpenAI safety identifiers are stable without exposing the Supabase user id', () => {
   const userId = '6ad64dc2-79a7-4ed0-8e28-980ca5da29a0';
@@ -112,10 +125,10 @@ test('pod context reserves space for the newest corrections before large source 
 });
 
 test('website analysis blocks local and private network targets', async () => {
-  await assert.rejects(() => validatePublicWebsiteUrl('http://localhost:3000'), /public website/i);
-  await assert.rejects(() => validatePublicWebsiteUrl('http://127.0.0.1/admin'), /public website/i);
-  await assert.rejects(() => validatePublicWebsiteUrl('http://169.254.169.254/latest/meta-data'), /public website/i);
-  await assert.rejects(() => validatePublicWebsiteUrl('https://10.0.0.8'), /public website/i);
+  await assert.rejects(() => webSource.validatePublicWebsiteUrl('http://localhost:3000'), /public website/i);
+  await assert.rejects(() => webSource.validatePublicWebsiteUrl('http://127.0.0.1/admin'), /public website/i);
+  await assert.rejects(() => webSource.validatePublicWebsiteUrl('http://169.254.169.254/latest/meta-data'), /public website/i);
+  await assert.rejects(() => webSource.validatePublicWebsiteUrl('https://10.0.0.8'), /public website/i);
 });
 
 test('website analysis extracts readable text and removes executable page content', () => {
@@ -123,7 +136,7 @@ test('website analysis extracts readable text and removes executable page conten
     <html><head><style>.hidden { display:none }</style><script>stealSecrets()</script></head>
     <body><h1>Aurora &amp; Co</h1><p>Calm skin&nbsp;care.</p><nav>Shop Home</nav></body></html>
   `;
-  const text = extractReadableText(html);
+  const text = webSource.extractReadableText(html);
 
   assert.match(text, /Aurora & Co/);
   assert.match(text, /Calm skin care/);
@@ -131,5 +144,164 @@ test('website analysis extracts readable text and removes executable page conten
 });
 
 test('website analysis preserves invalid numeric entities without failing', () => {
-  assert.equal(extractReadableText('Price: &#999999999;'), 'Price: &#999999999;');
+  assert.equal(webSource.extractReadableText('Price: &#999999999;'), 'Price: &#999999999;');
+});
+
+test('website page fetch returns deterministic metadata and same-document links without executing markup', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(`
+    <html><head>
+      <title>Aurora &amp; Co</title>
+      <meta name="description" content="Calm &amp; capable skincare">
+      <link rel="canonical" href="/canonical-home">
+      <script>window.location = 'http://127.0.0.1'; const fake = '<a href="/script-only">Hidden</a>';</script>
+    </head><body>
+      <h1>Barrier care, simplified</h1>
+      <a href="/products#best">Products</a><a href="https://outside.example/">Outside</a>
+    </body></html>
+  `, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  try {
+    const page = await webSource.fetchWebsiteText('https://8.8.8.8');
+    assert.deepEqual({
+      url: page.url,
+      title: page.title,
+      description: page.description,
+      canonicalUrl: page.canonicalUrl,
+      h1: page.h1,
+      links: page.links,
+    }, {
+      url: 'https://8.8.8.8/',
+      title: 'Aurora & Co',
+      description: 'Calm & capable skincare',
+      canonicalUrl: 'https://8.8.8.8/canonical-home',
+      h1: 'Barrier care, simplified',
+      links: ['https://8.8.8.8/products#best', 'https://outside.example/'],
+    });
+    assert.doesNotMatch(page.text, /window\.location|127\.0\.0\.1/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('website page fetch rejects a streamed body once it exceeds one megabyte', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(600_000).fill(65));
+      controller.enqueue(new Uint8Array(500_001).fill(66));
+      controller.close();
+    },
+  }), { headers: { 'content-type': 'text/plain' } });
+  try {
+    await assert.rejects(() => webSource.fetchWebsiteText('https://8.8.4.4'), /too large/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('website page fetch revalidates and rejects a private redirect target', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('', {
+    status: 302,
+    headers: { location: 'http://127.0.0.1/private' },
+  });
+  try {
+    await assert.rejects(() => webSource.fetchWebsiteText('https://1.1.1.1'), /public website/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('website intelligence preference payload stores structured analysis directly with observed provenance', async () => {
+  const inserted = [];
+  const client = {
+    from(table) {
+      assert.equal(table, 'pod_preferences');
+      return {
+        insert(row) {
+          inserted.push(row);
+          return { select: () => ({ single: async () => ({ data: row, error: null }) }) };
+        },
+      };
+    },
+  };
+  const podRepository = podRepositoryHarness(client);
+  assert.equal(typeof podRepository.persistPodPreference, 'function');
+  const analysis = { summary: 'Canonical summary', brand_colours: [{ name: 'Navy', hex: '#0B1F3A' }], geography: ['Australia'] };
+
+  await podRepository.persistPodPreference(client, 'pod-one', 'website_intelligence', analysis, 'observed_result');
+  await podRepository.persistPodPreference(client, 'pod-one', 'tone', 'Direct');
+
+  assert.deepEqual(inserted[0], {
+    pod_id: 'pod-one',
+    preference_type: 'website_intelligence',
+    preference_value: analysis,
+    source: 'observed_result',
+  });
+  assert.deepEqual(inserted[1], {
+    pod_id: 'pod-one',
+    preference_type: 'tone',
+    preference_value: { value: 'Direct' },
+    source: 'user_override',
+  });
+});
+
+test('newest website intelligence snapshot restores rich fields from direct and legacy payloads', () => {
+  const podRepository = podRepositoryHarness();
+  assert.equal(typeof podRepository.selectWebsiteIntelligenceSnapshot, 'function');
+  const preferences = [
+    { preference_type: 'website_intelligence', created_at: '2026-10-07T01:00:00Z', preference_value: { products_services: ['Old'] } },
+    { preference_type: 'website_intelligence', created_at: '2026-10-07T03:00:00Z', preference_value: { value: { products_services: ['Newest legacy'], geography: ['Australia'] } } },
+    { preference_type: 'website_intelligence', created_at: '2026-10-07T02:00:00Z', preference_value: { products_services: ['Middle'] } },
+  ];
+
+  assert.deepEqual(podRepository.selectWebsiteIntelligenceSnapshot(preferences), {
+    products_services: ['Newest legacy'],
+    geography: ['Australia'],
+  });
+});
+
+test('restored analysis keeps canonical fields from pod_analysis and rich fields from the snapshot', () => {
+  const podRepository = podRepositoryHarness();
+  assert.equal(typeof podRepository.restorePodAnalysisSnapshot, 'function');
+  const restored = podRepository.restorePodAnalysisSnapshot({
+    brand_summary: 'Canonical saved summary',
+    tone: 'Canonical saved tone',
+    audience: 'Canonical audience',
+    offer_direction: 'Canonical offer',
+    campaign_angles: 'Canonical opportunity',
+    social_recommendations: '["instagram"]',
+    content_ideas: '["Education"]',
+    evidence: [{ source_reference: 'website_home', finding: 'Canonical evidence' }],
+  }, {
+    summary: 'Stale snapshot summary',
+    tone: 'Stale snapshot tone',
+    brand_colours: [{ name: 'Navy', hex: '#0B1F3A' }],
+    geography: ['Australia'],
+    products_services: ['Strategy service'],
+    audience_fit: 'Strong local fit',
+  });
+
+  assert.equal(restored.summary, 'Canonical saved summary');
+  assert.equal(restored.tone, 'Canonical saved tone');
+  assert.deepEqual(restored.platforms, ['instagram']);
+  assert.deepEqual(restored.pillars, ['Education']);
+  assert.deepEqual(restored.brand_colours, [{ name: 'Navy', hex: '#0B1F3A' }]);
+  assert.deepEqual(restored.geography, ['Australia']);
+  assert.deepEqual(restored.products_services, ['Strategy service']);
+  assert.equal(restored.audience_fit, 'Strong local fit');
+});
+
+test('failed rich snapshot persistence is contained after canonical analysis finalization', async () => {
+  const podRepository = podRepositoryHarness();
+  assert.equal(typeof podRepository.saveWebsiteIntelligenceSnapshot, 'function');
+  const calls = [];
+  const analysis = { summary: 'Already finalized by the server', products_services: ['Service'] };
+  const saved = await podRepository.saveWebsiteIntelligenceSnapshot('pod-one', analysis, async (...args) => {
+    calls.push(args);
+    throw new Error('preference insert failed');
+  });
+
+  assert.equal(saved, false);
+  assert.deepEqual(calls, [['pod-one', 'website_intelligence', analysis, 'observed_result']]);
 });

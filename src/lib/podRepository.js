@@ -14,6 +14,68 @@ function throwIfError(error) {
   if (error) throw error;
 }
 
+function structuredPreferenceValue(value) {
+  return value !== null && typeof value === 'object' ? value : { value };
+}
+
+export function selectWebsiteIntelligenceSnapshot(preferences = []) {
+  return (Array.isArray(preferences) ? preferences : [])
+    .map((preference, index) => ({ preference, index }))
+    .filter(({ preference }) => preference?.preference_type === 'website_intelligence')
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.preference.created_at || '') || 0;
+      const rightTime = Date.parse(right.preference.created_at || '') || 0;
+      return rightTime - leftTime || right.index - left.index;
+    })
+    .map(({ preference }) => {
+      const value = preference.preference_value;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+      if (value.value && typeof value.value === 'object' && !Array.isArray(value.value)) return value.value;
+      return value;
+    })
+    .find(Boolean) || null;
+}
+
+const WEBSITE_INTELLIGENCE_FIELDS = [
+  'brand_colours', 'geography', 'products_services', 'visual_style', 'site_structure', 'best_landing_pages',
+  'weak_pages', 'seo_opportunities', 'content_opportunities', 'audience_fit',
+];
+
+function parseStoredList(value) {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function restorePodAnalysisSnapshot(canonicalAnalysis, websiteIntelligence) {
+  if (!canonicalAnalysis) return null;
+  const rich = {};
+  if (websiteIntelligence && typeof websiteIntelligence === 'object') {
+    WEBSITE_INTELLIGENCE_FIELDS.forEach((field) => {
+      if (websiteIntelligence[field] !== undefined) rich[field] = websiteIntelligence[field];
+    });
+  }
+  return {
+    ...rich,
+    summary: canonicalAnalysis.brand_summary,
+    tone: canonicalAnalysis.tone,
+    audience: canonicalAnalysis.audience,
+    offer: canonicalAnalysis.offer_direction,
+    opportunity: canonicalAnalysis.campaign_angles,
+    evidence: canonicalAnalysis.evidence || [],
+    confidence: canonicalAnalysis.confidence == null ? null : Number(canonicalAnalysis.confidence),
+    source_captured_at: canonicalAnalysis.source_captured_at,
+    personal_data_detected: Boolean(canonicalAnalysis.personal_data_detected),
+    personal_data_categories: canonicalAnalysis.personal_data_categories || [],
+    platforms: parseStoredList(canonicalAnalysis.social_recommendations),
+    pillars: parseStoredList(canonicalAnalysis.content_ideas),
+  };
+}
+
 export async function loadPodWorkspace(podId) {
   const client = requireSupabase();
   const [pod, sources, analysis] = await Promise.all([
@@ -40,12 +102,15 @@ export async function loadPodWorkspace(podId) {
   // Direction review must not silently fall back to old analysis if saved
   // overrides cannot be read.
   if (preferences.error) throw new Error(`pod_preferences: ${preferences.error.message || 'collection could not be loaded'}`, { cause: preferences.error });
+  const websiteIntelligence = selectWebsiteIntelligenceSnapshot(preferences.data);
 
   return {
     pod: pod.data,
     sources: sources.data || [],
     analysis: analysis.data || null,
     preferences: preferences.data || [],
+    websiteIntelligence,
+    restoredAnalysis: restorePodAnalysisSnapshot(analysis.data, websiteIntelligence),
     messages,
     posts,
     connections,
@@ -119,15 +184,28 @@ export async function savePodAnalysis(podId, analysis) {
   return data;
 }
 
-export async function savePodPreference(podId, preferenceType, value) {
-  const { data, error } = await requireSupabase().from('pod_preferences').insert({
+export async function persistPodPreference(client, podId, preferenceType, value, source = 'user_override') {
+  const { data, error } = await client.from('pod_preferences').insert({
     pod_id: podId,
     preference_type: preferenceType,
-    preference_value: { value },
-    source: 'user_override',
+    preference_value: structuredPreferenceValue(value),
+    source,
   }).select().single();
   throwIfError(error);
   return data;
+}
+
+export async function savePodPreference(podId, preferenceType, value, source = 'user_override') {
+  return persistPodPreference(requireSupabase(), podId, preferenceType, value, source);
+}
+
+export async function saveWebsiteIntelligenceSnapshot(podId, analysis, savePreference = savePodPreference) {
+  try {
+    await savePreference(podId, 'website_intelligence', analysis, 'observed_result');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export const savePlatformSelection = (podId, keys) => persistPlatformSelection(requireSupabase(), podId, keys);

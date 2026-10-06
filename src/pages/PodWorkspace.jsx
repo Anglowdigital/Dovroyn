@@ -43,6 +43,7 @@ import {
   saveBudgetPlan,
   savePreferenceDecision,
   saveHolidayPreference,
+  saveWebsiteIntelligenceSnapshot,
   savePodDirectionOverride,
   savePodPrimarySource,
   saveSocialPosts,
@@ -347,9 +348,8 @@ function LivePodWorkspace({ session, subscription }) {
         let platformKeys = [];
         let pillars = [];
         try { platformKeys = JSON.parse(workspace.analysis.social_recommendations || '[]'); } catch { platformKeys = []; }
-        if (!hasPlatformSelection.current) setSelectedPlatformKeys(platformKeys.length ? platformKeys : INITIAL_ANALYSIS.platforms);
         try { pillars = JSON.parse(workspace.analysis.content_ideas || '[]'); } catch { pillars = []; }
-        setAnalysis(restorePodDirection({
+        const restoredAnalysis = workspace.restoredAnalysis || {
           summary: workspace.analysis.brand_summary,
           tone: workspace.analysis.tone,
           audience: workspace.analysis.audience,
@@ -360,8 +360,16 @@ function LivePodWorkspace({ session, subscription }) {
           source_captured_at: workspace.analysis.source_captured_at,
           personal_data_detected: Boolean(workspace.analysis.personal_data_detected),
           personal_data_categories: workspace.analysis.personal_data_categories || [],
+          platforms: platformKeys,
+          pillars,
+        };
+        platformKeys = Array.isArray(restoredAnalysis.platforms) ? restoredAnalysis.platforms : [];
+        const restoredPillars = Array.isArray(restoredAnalysis.pillars) ? restoredAnalysis.pillars : [];
+        if (!hasPlatformSelection.current) setSelectedPlatformKeys(platformKeys.length ? platformKeys : INITIAL_ANALYSIS.platforms);
+        setAnalysis(restorePodDirection({
+          ...restoredAnalysis,
           platforms: platformKeys.length ? platformKeys : INITIAL_ANALYSIS.platforms,
-          pillars: pillars.length ? pillars : INITIAL_ANALYSIS.pillars,
+          pillars: restoredPillars.length ? restoredPillars : INITIAL_ANALYSIS.pillars,
         }, workspace.preferences));
         setAnalysisState('ready');
       } else {
@@ -622,7 +630,10 @@ function LivePodWorkspace({ session, subscription }) {
       if (!hasPlatformSelection.current) setSelectedPlatformKeys(nextAnalysis.platforms || []);
       setAnalysisState('ready');
       setActiveTab('direction');
-      showNotice('Analysis ready for your approval.');
+      const snapshotSaved = await saveWebsiteIntelligenceSnapshot(pod.id, nextAnalysis);
+      showNotice(snapshotSaved
+        ? 'Analysis ready for your approval.'
+        : 'Analysis is saved and this source is locked, but the rich intelligence snapshot could not be saved. Reload before approving if you need to confirm every detail.');
     } catch (error) {
       setAnalysisState('idle');
       showNotice(error.message || 'AI analysis could not run. Check the server configuration.');
@@ -786,6 +797,12 @@ function LivePodWorkspace({ session, subscription }) {
               <MetricCard label="Publishing rhythm" value={`${plan.weeklyPostingDays} days/week`} detail="Posting days, not total posts" />
               <MetricCard label="Connected accounts" value="0" detail="Provider sign-in required" />
             </section>
+            {analysis && (analysis.visual_style || analysis.audience_fit) && (
+              <section className="pod-insight-grid">
+                {analysis.visual_style && <article><small>Visual style</small><p>{analysis.visual_style}</p></article>}
+                {analysis.audience_fit && <article><small>Audience fit</small><p>{analysis.audience_fit}</p></article>}
+              </section>
+            )}
             <section className="pod-dashboard-grid">
               <article className="pod-rich-card pod-next-card">
                 <span className="pod-card-icon"><Activity size={18} /></span>
@@ -878,6 +895,30 @@ function LivePodWorkspace({ session, subscription }) {
             <section className="pod-insight-grid">
               {[['Brand summary', analysis.summary], ['Tone', analysis.tone], ['Audience', analysis.audience], ['Offer', analysis.offer], ['Strongest opportunity', analysis.opportunity]].map(([label, value]) => <article key={label}><small>{label}</small><p>{value}</p></article>)}
             </section>
+            {Array.isArray(analysis.products_services) && analysis.products_services.length > 0 && (
+              <article className="pod-rich-card"><small>Products &amp; services</small><div className="pod-chip-row">{analysis.products_services.map((item) => <span key={item}>{item}</span>)}</div></article>
+            )}
+            {(analysis.visual_style || analysis.audience_fit) && (
+              <section className="pod-insight-grid">
+                {analysis.visual_style && <article><small>Visual style</small><p>{analysis.visual_style}</p></article>}
+                {analysis.audience_fit && <article><small>Audience fit</small><p>{analysis.audience_fit}</p></article>}
+              </section>
+            )}
+            {Array.isArray(analysis.site_structure) && analysis.site_structure.length > 0 && (
+              <article className="pod-rich-card"><small>Site structure</small><div className="pod-chip-row">{analysis.site_structure.map((item) => <span key={item}>{item}</span>)}</div></article>
+            )}
+            {(analysis.best_landing_pages?.length > 0 || analysis.weak_pages?.length > 0) && (
+              <section className="pod-insight-grid">
+                {analysis.best_landing_pages?.length > 0 && <article><small>Best landing pages</small><ul>{analysis.best_landing_pages.map((item, index) => <li key={`${item.source_reference}-${index}`}>{item.reason} <span className="subtle">({item.source_reference})</span></li>)}</ul></article>}
+                {analysis.weak_pages?.length > 0 && <article><small>Pages to strengthen</small><ul>{analysis.weak_pages.map((item, index) => <li key={`${item.source_reference}-${index}`}>{item.issue} <span className="subtle">({item.source_reference})</span></li>)}</ul></article>}
+              </section>
+            )}
+            {(analysis.seo_opportunities?.length > 0 || analysis.content_opportunities?.length > 0) && (
+              <section className="pod-insight-grid">
+                {analysis.seo_opportunities?.length > 0 && <article><small>SEO opportunities</small><ul>{analysis.seo_opportunities.map((item) => <li key={item}>{item}</li>)}</ul></article>}
+                {analysis.content_opportunities?.length > 0 && <article><small>Content opportunities</small><ul>{analysis.content_opportunities.map((item) => <li key={item}>{item}</li>)}</ul></article>}
+              </section>
+            )}
             {Array.isArray(analysis.brand_colours) && analysis.brand_colours.length > 0 && (
               <article className="pod-rich-card"><small>Brand colours</small><div className="pod-colour-swatches">{analysis.brand_colours.map((colour) => <span key={colour.name} className="pod-colour-swatch" style={{ background: colour.hex }} title={colour.name} />)}</div><p className="pod-swatch-names">{analysis.brand_colours.map((colour) => colour.name).join(' · ')}</p></article>
             )}
