@@ -1,5 +1,9 @@
 import { supabase, supabaseConfigured } from './supabaseClient';
 import { persistPodDirectionApproval, persistPodDirectionOverride } from './podDirection.js';
+import {
+  loadOperationalCollections, persistPlatformSelection, persistCalendarItems,
+  persistCampaignDecision, persistBudgetPlan, persistPreferenceDecision, persistHolidayPreference,
+} from './podState.js';
 
 function requireSupabase() {
   if (!supabaseConfigured || !supabase) throw new Error('Supabase is not configured.');
@@ -25,17 +29,17 @@ export async function loadPodWorkspace(podId) {
     if (result.error) return [];
     return result.data || [];
   };
-  const [preferences, messages, posts, connections, campaigns, assets] = await Promise.all([
+  const [preferences, messages, posts, connections, assets, operational] = await Promise.all([
     client.from('pod_preferences').select('*').eq('pod_id', podId).eq('active', true).order('created_at'),
     optionalQuery(client.from('pod_ai_messages').select('id,role,content,created_at').eq('pod_id', podId).order('created_at', { ascending: true }).limit(30)),
     optionalQuery(client.from('social_posts').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
     optionalQuery(client.from('social_connections').select('*').eq('pod_id', podId)),
-    optionalQuery(client.from('campaigns').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
     optionalQuery(client.from('pod_assets').select('*').eq('pod_id', podId).order('created_at', { ascending: false })),
+    loadOperationalCollections(client, podId),
   ]);
   // Direction review must not silently fall back to old analysis if saved
   // overrides cannot be read.
-  throwIfError(preferences.error);
+  if (preferences.error) throw new Error(`pod_preferences: ${preferences.error.message || 'collection could not be loaded'}`, { cause: preferences.error });
 
   return {
     pod: pod.data,
@@ -45,8 +49,8 @@ export async function loadPodWorkspace(podId) {
     messages,
     posts,
     connections,
-    campaigns,
     assets,
+    ...operational,
   };
 }
 
@@ -125,6 +129,13 @@ export async function savePodPreference(podId, preferenceType, value) {
   throwIfError(error);
   return data;
 }
+
+export const savePlatformSelection = (podId, keys) => persistPlatformSelection(requireSupabase(), podId, keys);
+export const saveCalendarItems = (podId, items) => persistCalendarItems(requireSupabase(), podId, items);
+export const saveCampaignDecision = (podId, decision) => persistCampaignDecision(requireSupabase(), podId, decision);
+export const saveBudgetPlan = (podId, plan) => persistBudgetPlan(requireSupabase(), podId, plan);
+export const savePreferenceDecision = (podId, type, value) => persistPreferenceDecision(requireSupabase(), podId, type, value);
+export const saveHolidayPreference = (podId, preference) => persistHolidayPreference(requireSupabase(), podId, preference);
 
 export async function approvePodDirection(podId, analysis) {
   return persistPodDirectionApproval(requireSupabase(), podId, analysis);

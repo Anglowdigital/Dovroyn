@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
+import { buildCalendarItems, restoreOperationalState } from '../lib/podState';
 import { getPlan } from '../lib/plans';
 import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
@@ -36,6 +37,12 @@ import {
   approvePodDirection,
   getAssetPreview,
   loadPodWorkspace,
+  savePlatformSelection,
+  saveCalendarItems,
+  saveCampaignDecision,
+  saveBudgetPlan,
+  savePreferenceDecision,
+  saveHolidayPreference,
   savePodDirectionOverride,
   savePodPrimarySource,
   saveSocialPosts,
@@ -250,6 +257,7 @@ function LivePodWorkspace({ session, subscription }) {
   const { podId } = useParams();
   const [pod, setPod] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState('overview');
   const [analysis, setAnalysis] = useState(null);
   const [analysisState, setAnalysisState] = useState('idle');
@@ -268,10 +276,22 @@ function LivePodWorkspace({ session, subscription }) {
   const [assets, setAssets] = useState([]);
   const [selectedPlatformKeys, setSelectedPlatformKeys] = useState([]);
   const [posts, setPosts] = useState([]);
-  const [calendarCreated, setCalendarCreated] = useState(false);
-  const [campaignState, setCampaignState] = useState('Draft');
+  const [calendarItems, setCalendarItems] = useState([]);
+  const [calendarMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [campaign, setCampaign] = useState(null);
   const [observancesEnabled, setObservancesEnabled] = useState(false);
+  const [holidayPreference, setHolidayPreference] = useState(null);
+  const [budget, setBudget] = useState(null);
+  const [plannedBudgetInput, setPlannedBudgetInput] = useState('');
+  const [budgetNotes, setBudgetNotes] = useState('');
+  const [budgetRecommendation, setBudgetRecommendation] = useState('');
   const [budgetDecision, setBudgetDecision] = useState('pending');
+  const [operationalMutation, setOperationalMutation] = useState('');
+  const operationalOperation = useRef('');
+  const hasPlatformSelection = useRef(false);
   const [modal, setModal] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState('');
@@ -281,6 +301,10 @@ function LivePodWorkspace({ session, subscription }) {
   const logoAssets = assets.filter((asset) => asset.assetRole === 'logo');
   const brandPhotos = assets.filter((asset) => asset.assetRole === 'brand_photo');
   const selectedSource = POD_SOURCE_TYPES.find((source) => source.value === sourceType);
+  const monthItems = calendarItems.filter((item) => item.scheduled_date.startsWith(calendarMonth));
+  const campaignState = campaign?.status ? campaign.status[0].toUpperCase() + campaign.status.slice(1) : 'Draft';
+  const targetCountry = pod?.target_country === 'Australia' ? 'AU' : String(pod?.target_country || '').trim().toUpperCase();
+  const budgetCurrency = targetCountry === 'AU' ? 'AUD' : '';
 
   useEffect(() => {
     if (!supabaseConfigured || !podId) {
@@ -289,6 +313,8 @@ function LivePodWorkspace({ session, subscription }) {
     }
 
     let mounted = true;
+    setLoading(true);
+    setLoadError('');
     loadPodWorkspace(podId).then(async (workspace) => {
       if (!mounted) return;
       setPod(workspace.pod || null);
@@ -297,10 +323,23 @@ function LivePodWorkspace({ session, subscription }) {
       setSources(workspace.sources || []);
       setAiMessages(workspace.messages || []);
       setDirectionApproved(isPodDirectionApprovalCurrent(workspace.pod, workspace.preferences));
+      const operational = restoreOperationalState(workspace);
+      hasPlatformSelection.current = operational.platformKeys !== null;
+      setSelectedPlatformKeys(operational.platformKeys || []);
+      setCalendarItems(operational.calendarItems);
+      setCampaign(operational.campaign);
+      setBudget(operational.budget);
+      setPlannedBudgetInput(operational.budget ? String(operational.budget.planned_budget) : '');
+      setBudgetNotes(operational.budget?.notes || '');
+      setHolidayPreference(operational.holidayPreference);
+      setObservancesEnabled(operational.holidayPreference?.include_religious_observances === true);
+      setBudgetDecision(operational.budgetDecision);
+      setBudgetRecommendation(workspace.adAnalysis?.[0]?.recommendation || 'Review how your planned budget is allocated before authorising any provider spend.');
       if (workspace.analysis) {
         let platformKeys = [];
         let pillars = [];
         try { platformKeys = JSON.parse(workspace.analysis.social_recommendations || '[]'); } catch { platformKeys = []; }
+        if (!hasPlatformSelection.current) setSelectedPlatformKeys(platformKeys.length ? platformKeys : INITIAL_ANALYSIS.platforms);
         try { pillars = JSON.parse(workspace.analysis.content_ideas || '[]'); } catch { pillars = []; }
         setAnalysis(restorePodDirection({
           summary: workspace.analysis.brand_summary,
@@ -346,8 +385,8 @@ function LivePodWorkspace({ session, subscription }) {
         if (mounted) setAssets(persistedAssets);
       }
       setLoading(false);
-    }).catch(() => {
-      if (mounted) { setPod(null); setLoading(false); }
+    }).catch((error) => {
+      if (mounted) { setLoadError(error.message || 'The Pod state could not be loaded.'); setPod(null); setLoading(false); }
     });
     return () => { mounted = false; };
   }, [podId]);
@@ -364,21 +403,27 @@ function LivePodWorkspace({ session, subscription }) {
   }, []);
 
   useEffect(() => {
-    if (analysis) setSelectedPlatformKeys(analysis.platforms || []);
-  }, [analysis]);
-
-  useEffect(() => {
     if (!notice) return undefined;
     const timer = window.setTimeout(() => setNotice(''), 3200);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  const togglePlatform = (platformKey) => {
+  const togglePlatform = async (platformKey) => {
+    if (operationalOperation.current) return;
+    const previous = selectedPlatformKeys;
     const next = selectedPlatformKeys.includes(platformKey)
       ? selectedPlatformKeys.filter((key) => key !== platformKey)
       : [...selectedPlatformKeys, platformKey];
     setSelectedPlatformKeys(next);
-    setAnalysis((currentAnalysis) => (currentAnalysis ? { ...currentAnalysis, platforms: next } : currentAnalysis));
+    await saveOperational('platforms', async () => {
+      try {
+        await savePlatformSelection(pod.id, next);
+        hasPlatformSelection.current = true;
+      } catch (error) {
+        setSelectedPlatformKeys(previous);
+        throw error;
+      }
+    });
   };
 
   const allTabs = useMemo(() => TAB_GROUPS.flatMap((group) => group.items), []);
@@ -391,6 +436,52 @@ function LivePodWorkspace({ session, subscription }) {
   ], [allTabs, analysis, directionApproved, sourceLocked]);
 
   const showNotice = (message) => setNotice(message);
+
+  const saveOperational = async (operation, save) => {
+    if (operationalOperation.current) return;
+    operationalOperation.current = operation;
+    setOperationalMutation(operation);
+    try { await save(); }
+    catch (error) { showNotice(error.message || 'This Pod change could not be saved.'); }
+    finally { operationalOperation.current = ''; setOperationalMutation(''); }
+  };
+
+  const saveObservances = (enabled) => saveOperational('observances', async () => {
+    const saved = await saveHolidayPreference(pod.id, {
+      country_code: targetCountry,
+      region_code: holidayPreference?.region_code || null,
+      include_public_holidays: holidayPreference?.include_public_holidays !== false,
+      include_religious_observances: enabled === true,
+      selected_observances: holidayPreference?.selected_observances || [],
+    });
+    setHolidayPreference(saved);
+    setObservancesEnabled(saved.include_religious_observances === true);
+    showNotice('Observance preference saved. No religion or observance was guessed.');
+  });
+
+  const decideCampaign = (status) => saveOperational('campaign', async () => {
+    const saved = await saveCampaignDecision(pod.id, {
+      campaignId: campaign?.id, name: campaign?.name || `${pod.pod_name} campaign`, status,
+      objective: campaign?.objective || analysis?.offer || null,
+      brief: campaign?.brief || { strategy: analysis?.opportunity || '', platforms: selectedPlatformKeys },
+    });
+    setCampaign(saved);
+    showNotice(status === 'approved' ? 'Campaign approval saved. Publishing still requires connected accounts.' : 'Campaign returned to draft and saved.');
+  });
+
+  const saveBudget = () => saveOperational('budget', async () => {
+    if (!plannedBudgetInput.trim()) throw new Error('Enter a planned monthly budget.');
+    const saved = await saveBudgetPlan(pod.id, { plannedBudget: Number(plannedBudgetInput), notes: budgetNotes });
+    setBudget(saved);
+    setPlannedBudgetInput(String(saved.planned_budget));
+    showNotice('Monthly budget plan saved. No provider spend was changed.');
+  });
+
+  const decideBudget = (decision) => saveOperational('budget-decision', async () => {
+    await savePreferenceDecision(pod.id, 'budget_recommendation_decision', { decision, scope: 'plan_only' });
+    setBudgetDecision(decision);
+    showNotice(`Recommendation ${decision} for the plan only. No provider spend was changed.`);
+  });
 
   const savePrimarySource = async (event) => {
     event.preventDefault();
@@ -505,6 +596,7 @@ function LivePodWorkspace({ session, subscription }) {
       const nextAnalysis = result.analysis;
       setPod((current) => ({ ...current, source_locked_at: result.sourceLockedAt ?? new Date().toISOString(), status: 'awaiting_direction' }));
       setAnalysis(nextAnalysis);
+      if (!hasPlatformSelection.current) setSelectedPlatformKeys(nextAnalysis.platforms || []);
       setAnalysisState('ready');
       setActiveTab('direction');
       showNotice('Analysis ready for your approval.');
@@ -568,6 +660,10 @@ function LivePodWorkspace({ session, subscription }) {
       setModal({ type: 'approval-first' });
       return;
     }
+    if (!selectedPlatformKeys.length) {
+      showNotice('Select at least one planning platform before generating content.');
+      return;
+    }
     directionOperation.current = 'generating';
     setContentGenerating(true);
     try {
@@ -575,7 +671,7 @@ function LivePodWorkspace({ session, subscription }) {
       const result = await requestSocialContent({
         accessToken: session.access_token,
         podId: pod.id,
-        platforms: selectedPlatformKeys.length ? selectedPlatformKeys : analysis.platforms,
+        platforms: selectedPlatformKeys,
         contentDay: new Date().toISOString().slice(0, 10),
       });
       const generated = result.posts.map((post, index) => ({ ...post, id: `${post.platformKey}-${Date.now()}-${index}`, status: 'Draft' }));
@@ -594,13 +690,21 @@ function LivePodWorkspace({ session, subscription }) {
     }
   };
 
-  const createCalendar = () => {
+  const createCalendar = async () => {
+    if (operationalOperation.current) return;
+    if (monthItems.length) { showNotice('This month already has a saved calendar. No duplicates were created.'); return; }
     if (!posts.length) {
       setModal({ type: 'content-first' });
       return;
     }
-    setCalendarCreated(true);
-    showNotice(`Calendar generated inside the current allowance of ${plan.monthlyContentDays} content days.`);
+    await saveOperational('calendar', async () => {
+      const items = buildCalendarItems({ month: calendarMonth, posts, platformKeys: selectedPlatformKeys,
+        weeklyPostingDays: plan.weeklyPostingDays, monthlyContentDays: plan.monthlyContentDays });
+      if (!items.length) throw new Error('No calendar days are available. Check your plan allowance and selected platform drafts.');
+      const saved = await saveCalendarItems(pod.id, items);
+      setCalendarItems((current) => [...current.filter((item) => !item.scheduled_date.startsWith(calendarMonth)), ...saved]);
+      showNotice('Calendar drafts saved for this month. Nothing was approved or published.');
+    });
   };
 
   const savePostEdit = async (post) => {
@@ -635,7 +739,7 @@ function LivePodWorkspace({ session, subscription }) {
   };
 
   if (loading) return <div className="pod-workspace-loading">Opening this pod…</div>;
-  if (!pod) return <EmptyState icon={BriefcaseBusiness} title="Pod not found" body="This pod is unavailable or does not belong to the signed-in account." />;
+  if (!pod) return <EmptyState icon={BriefcaseBusiness} title={loadError ? 'Pod could not be loaded' : 'Pod not found'} body={loadError || 'This pod is unavailable or does not belong to the signed-in account.'} />;
 
   const renderPanel = () => {
     switch (activeTab) {
@@ -778,7 +882,7 @@ function LivePodWorkspace({ session, subscription }) {
                 const recommended = recommendedKeys.includes(platform.key);
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
-                    <input type="checkbox" checked={selected} onChange={() => togglePlatform(platform.key)} />
+                    <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
                     <span className="pod-social-monogram">{platform.name.slice(0, 2)}</span>
                     <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}Provider setup required for live connection</small></div>
                     {selected && <button className="button button-ghost button-sm" type="button" onClick={(event) => { event.preventDefault(); setModal({ type: 'connect', platform }); }}>Connect account</button>}
@@ -795,37 +899,36 @@ function LivePodWorkspace({ session, subscription }) {
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign, posted everywhere</h2><p className="subtle">The same approved campaign goes to every selected platform on the same day — with photos from the website gallery first, the asset folder second.</p></div><button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={generateContent}><Sparkles size={16} /> {contentGenerating ? 'Generating…' : 'Generate content'}</button></header>
-            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Campaign marked for the next posting day — the calendar save is not live yet.'); }}>Add to calendar</button></footer></article>)}</div>}
+            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>)}</div>}
           </div>
         );
       }
       case 'calendar': {
-        const today = new Date();
-        const startOffset = (new Date(today.getFullYear(), today.getMonth(), 1).getDay() + 6) % 7;
-        const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-        const postWeekdays = [0, 2, 4, 6, 1, 3, 5].slice(0, Math.max(1, plan.weeklyPostingDays));
+        const [year, month] = calendarMonth.split('-').map(Number);
+        const startOffset = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+        const daysInMonth = new Date(year, month, 0).getDate();
         const calThumb = brandPhotos[0]?.preview || assets.find((asset) => asset.assetRole === 'campaign_asset')?.preview || '';
-        const calPlatforms = selectedPlatformKeys.length ? selectedPlatformKeys : (analysis?.platforms || []);
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Current allowance period</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. Every posting day ships the same approved campaign to all selected platforms.</p></div><button className="button button-primary" type="button" onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
-            <label className="pod-toggle"><input type="checkbox" checked={observancesEnabled} onChange={(event) => setObservancesEnabled(event.target.checked)} /><span /><div><strong>Include selected religious observances</strong><small>Off by default. Dovroyn will never guess a user's religion.</small></div></label>
-            {calendarCreated ? (
-              <div className="pod-cal-grid" aria-label="30 day content calendar">
+            <header className="pod-panel-heading"><div><p className="eyebrow">Visible month · {calendarMonth}</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. Saved calendar entries remain drafts until approved; provider publishing is unavailable.</p></div><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
+            <label className="pod-toggle"><input type="checkbox" checked={observancesEnabled} disabled={Boolean(operationalMutation)} onChange={(event) => saveObservances(event.target.checked)} /><span /><div><strong>Include selected religious observances</strong><small>Off by default. Dovroyn will never guess a user's religion. No observances are selected unless you supply them.</small></div></label>
+            {monthItems.length ? (
+              <div className="pod-cal-grid" aria-label={`Saved content calendar for ${calendarMonth}`}>
                 {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((dow) => <span key={dow} className="pod-cal-dow">{dow}</span>)}
                 {Array.from({ length: startOffset }).map((_, index) => <div key={`pad-${index}`} className="pod-cal-day pod-cal-empty" />)}
                 {Array.from({ length: daysInMonth }).map((_, index) => {
                   const date = index + 1;
-                  const weekday = (startOffset + index) % 7;
-                  const isPostDay = postWeekdays.includes(weekday);
+                  const dateItems = monthItems.filter((item) => item.scheduled_date === `${calendarMonth}-${String(date).padStart(2, '0')}`);
+                  const isPostDay = dateItems.length > 0;
                   return (
                     <div key={date} className={`pod-cal-day${isPostDay ? ' pod-cal-post' : ''}`}>
                       <span className="pod-cal-date">{date}</span>
                       {isPostDay && (
                         <>
                           <span className="pod-cal-thumb">{calThumb ? <img src={calThumb} alt="" /> : <Sparkles size={14} />}</span>
-                          <strong>Approved brand campaign</strong>
-                          <span className="pod-cal-badges">{calPlatforms.map((key) => <span key={key}>{getPlatform(key)?.name || key}</span>)}</span>
+                          <strong>{dateItems[0].caption || dateItems[0].content_type}</strong>
+                          <small>{[...new Set(dateItems.map((item) => item.status))].join(' · ')}</small>
+                          <span className="pod-cal-badges">{[...new Set(dateItems.map((item) => item.platform))].map((key) => <span key={key}>{getPlatform(key)?.name || key}</span>)}</span>
                         </>
                       )}
                     </div>
@@ -837,7 +940,7 @@ function LivePodWorkspace({ session, subscription }) {
         );
       }
       case 'campaigns':
-        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Campaigns</p><h2>Winter barrier launch</h2></div><StatusPill>{campaignState}</StatusPill></header><section className="pod-campaign-board">{['Brief', 'Creative', 'Schedule', 'Approval'].map((stage, index) => <article key={stage}><small>0{index + 1}</small><h3>{stage}</h3><p>{['Website and offer analysed', 'Four platform drafts ready', 'Waiting for calendar generation', 'Nothing publishes without approval'][index]}</p><span className={index < (campaignState === 'Approved' ? 4 : 2) ? 'complete' : ''} /></article>)}</section><div className="pod-action-row"><button className="button button-primary" type="button" onClick={() => { setCampaignState('Approved'); showNotice('Campaign approved. Publishing still requires connected accounts.'); }}>Approve campaign</button><button className="button button-ghost" type="button" onClick={() => { setCampaignState('Draft'); showNotice('Campaign returned to draft.'); }}>Return to draft</button></div></div>;
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Campaigns</p><h2>{campaign?.name || `${pod.pod_name} campaign`}</h2></div><StatusPill>{campaignState}</StatusPill></header><section className="pod-campaign-board">{['Brief', 'Creative', 'Schedule', 'Approval'].map((stage, index) => <article key={stage}><small>0{index + 1}</small><h3>{stage}</h3><p>{[analysis ? 'Brand direction available' : 'Brand analysis required', `${posts.length} platform drafts available`, monthItems.length ? 'Calendar drafts saved' : 'Waiting for calendar generation', 'Publishing requires approval and connected providers'][index]}</p><span className={index < (campaignState === 'Approved' ? 4 : 2) ? 'complete' : ''} /></article>)}</section><div className="pod-action-row"><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={() => decideCampaign('approved')}>Approve campaign</button><button className="button button-ghost" type="button" disabled={Boolean(operationalMutation)} onClick={() => decideCampaign('draft')}>Return to draft</button></div></div>;
       case 'analytics':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Analytics</p><h2>Organic and campaign signals</h2><p className="subtle">Sample layout until connected platforms provide real data.</p></div><StatusPill>Preview data</StatusPill></header><section className="pod-metric-grid"><MetricCard label="Reach" value="18.4K" detail="+12.8% vs prior period" /><MetricCard label="Engagement" value="6.2%" detail="Strongest on Instagram" /><MetricCard label="Clicks" value="1,247" detail="Website visits" /><MetricCard label="Conversions" value="84" detail="Provider attribution required" /></section><article className="pod-rich-card"><div className="pod-card-heading"><div><small>Channel trend</small><h3>Last 8 campaign days</h3></div><BarChart3 /></div><div className="pod-chart pod-chart-large">{[32, 46, 42, 60, 54, 76, 68, 88].map((height, index) => <span key={index} style={{ height: `${height}%` }} />)}</div></article></div>;
       case 'team':
@@ -845,7 +948,7 @@ function LivePodWorkspace({ session, subscription }) {
       case 'launch':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Coming soon</p><h2>Launch page and email capture</h2><p className="subtle">Create a simple branded page inside this pod, then review it before publishing.</p></div><button className="button button-primary" type="button" onClick={() => setModal({ type: 'launch' })}><Sparkles size={16} /> Generate page draft</button></header><article className="pod-launch-preview"><span className="pod-launch-orbit"><Sparkles /></span><p className="eyebrow">Aurora Skincare</p><h2>Winter skin, restored.</h2><p>A calmer barrier ritual is almost here. Join the list for first access.</p><div><input aria-label="Preview email" placeholder="you@example.com" disabled /><button type="button" disabled>Notify me</button></div><small>Preview only · Email captures remain private to this pod</small></article></div>;
       case 'budget':
-        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Budget & ads</p><h2>Spend with an approval boundary</h2><p className="subtle">Scale receives the full live-spend view after ad providers are connected. This screen currently uses clearly marked preview data.</p></div><StatusPill>Preview data</StatusPill></header><section className="pod-metric-grid"><MetricCard label="Planned budget" value="$2,000" detail="Monthly plan" /><MetricCard label="Preview spend" value="$847" detail="Provider connection required" /><MetricCard label="Preview revenue" value="$4,230" detail="Attribution required" /><MetricCard label="Preview ROAS" value="4.99x" detail="Not live data" /></section><article className="pod-budget-recommendation"><span><CircleDollarSign /></span><div><small>AI recommendation</small><h3>Move 20% of the test budget toward the stronger Reel creative.</h3><p>No real spend will change unless an authorised user approves it and the ad provider is connected.</p></div><div className="pod-action-row"><button className="button button-primary button-sm" type="button" onClick={() => { setBudgetDecision('approved'); showNotice('Recommendation approved for the plan. No live provider change was made.'); }}>Approve recommendation</button><button className="button button-ghost button-sm" type="button" onClick={() => { setBudgetDecision('rejected'); showNotice('Recommendation rejected. This pod will remember that preference.'); }}>Reject</button></div></article>{budgetDecision !== 'pending' && <p className="pod-decision-note">Decision recorded in this session: <strong>{budgetDecision}</strong>.</p>}</div>;
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Budget & ads</p><h2>Plan a monthly budget</h2><p className="subtle">This is your saved budget plan, not permission to spend. Provider spend and revenue remain unavailable until connected.</p></div><StatusPill>Plan only</StatusPill></header><section className="pod-metric-grid"><MetricCard label="Saved planned budget" value={budget ? `${budgetCurrency} ${Number(budget.planned_budget).toFixed(2)}`.trim() : 'Not set'} detail="Monthly plan only" /><MetricCard label="Provider spend" value="Unavailable" detail="Provider connection required" /><MetricCard label="Provider revenue" value="Unavailable" detail="Attribution required" /><MetricCard label="ROAS" value="Unavailable" detail="Live provider data required" /></section><article className="pod-rich-card"><label className="pod-modal-field">Planned monthly budget {budgetCurrency && `(${budgetCurrency})`}<input type="number" min="0" step="0.01" value={plannedBudgetInput} disabled={Boolean(operationalMutation)} onChange={(event) => setPlannedBudgetInput(event.target.value)} /></label><label className="pod-modal-field">Budget notes<textarea value={budgetNotes} disabled={Boolean(operationalMutation)} onChange={(event) => setBudgetNotes(event.target.value)} rows={3} /></label><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={saveBudget}>Save budget plan</button></article><article className="pod-budget-recommendation"><span><CircleDollarSign /></span><div><small>{budgetRecommendation ? 'Planning recommendation' : 'Budget planning'}</small><h3>{budgetRecommendation || 'Review your planned budget before authorising spend.'}</h3><p>Approval records a plan-only decision. It does not change provider spend or authorise publishing.</p></div><div className="pod-action-row"><button className="button button-primary button-sm" type="button" disabled={Boolean(operationalMutation)} onClick={() => decideBudget('approved')}>Approve recommendation</button><button className="button button-ghost button-sm" type="button" disabled={Boolean(operationalMutation)} onClick={() => decideBudget('rejected')}>Reject</button></div></article>{budgetDecision !== 'pending' && <p className="pod-decision-note">Saved plan-only decision: <strong>{budgetDecision}</strong>. No provider spend changed.</p>}</div>;
       default:
         return null;
     }
