@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const landing = source.split('function LandingPage(')[1].split('function DemoPodPage(')[0];
+const account = readFileSync(new URL('../src/pages/Account.jsx', import.meta.url), 'utf8');
+const testerPreview = readFileSync(new URL('../src/components/TesterPodPreview.jsx', import.meta.url), 'utf8');
 
 // The current Node suite has no JSX/DOM harness. These named source boundaries
 // guard public marketing contracts; browser checks verify the rendered page.
@@ -37,4 +39,31 @@ test('static ecosystem cards cannot claim connected accounts or masquerade as re
   assert.match(ecosystem, /aria-label={`\$\{pod.name\} sample recommended platforms:/);
   assert.match(ecosystem, /Illustrative ecosystem/);
   assert.match(ecosystem, /fictional sample pods/i);
+});
+
+test('pricing, account and preview surfaces sell planning allowances without promising unavailable publishing', () => {
+  const commercialCopy = `${source}\n${account}\n${testerPreview}`;
+  for (const misleading of [
+    /subscribe to publish/i,
+    /posting schedule\s*[—-]\s*upgrade to unlock/i,
+    /\b\d+ campaign posting days per week\b/i,
+    /extra posting days available/i,
+    /connect your own accounts to go live/i,
+    /posting and ads require users? to connect/i,
+  ]) {
+    assert.doesNotMatch(commercialCopy, misleading);
+  }
+
+  for (const days of [2, 3, 6, 7]) {
+    assert.equal(
+      (source.match(new RegExp(`${days} campaign content-planning days per week`, 'g')) || []).length,
+      2,
+      `both public pricing tables must preserve the ${days}-day planning allowance`,
+    );
+    assert.match(account, new RegExp(`${days} campaign content-planning days per week`));
+  }
+
+  assert.match(landing, /Direct provider connections, publishing, and ad actions are not available yet/i);
+  assert.match(account, /Direct social connections and publishing are not available yet/i);
+  assert.match(testerPreview, /provider integrations are not live yet/i);
 });

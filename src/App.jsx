@@ -104,7 +104,7 @@ const LANDING_SECTIONS = [
   },
   {
     heading: "Plan campaigns for the platforms that matter.",
-    body: "Dovroyn recommends the best social, search, content, and community platforms for your campaign. Posting and ads require the user to connect each account and approve permissions first.",
+    body: "Dovroyn recommends the best social, search, content, and community platforms for your campaign and prepares platform-specific drafts and calendars. Direct provider connections, publishing, and ad actions are not available yet.",
   },
 ];
 
@@ -112,7 +112,7 @@ const DASHBOARD_PREVIEW_CARDS = [
   { title: 'Website analysed', metric: 'Ready', description: 'Brand, offer, audience, and tone extracted from the source.' },
   { title: 'Campaign direction', metric: 'Locked', description: 'The approved strategy controls all content, ads, and calendar suggestions.' },
   { title: 'Content calendar', metric: 'Generated', description: 'Posts planned around the pod, selected platforms, paid tier, and target country.' },
-  { title: 'Socials connected', metric: 'Pending', description: 'Connect each platform securely before posting or ad permissions are enabled.' },
+  { title: 'Provider publishing', metric: 'Unavailable', description: 'Platform planning and drafts are available. Direct provider connections and posting are not live.' },
   { title: 'Budget tracker', metric: 'Active', description: 'Track planned spend, used spend, leads, sales, and return.' },
   { title: 'Ad improvement', metric: 'Needs approval', description: 'AI suggestions are shown for review before anything changes.' },
 ];
@@ -249,7 +249,7 @@ const PRICING_TIERS = [
       'Audience and offer direction',
       'Campaign angles — upgrade to unlock',
       'Content calendar — upgrade to unlock',
-      'Posting schedule — upgrade to unlock',
+      'Campaign calendar planning — upgrade to unlock',
       'Budget tracking — upgrade to unlock',
     ],
     stripeKey: null,
@@ -266,7 +266,7 @@ const PRICING_TIERS = [
       'AI brand/tone summary',
       'Audience and offer direction',
       'Campaign angles',
-      '2 campaign posting days per week',
+      '2 campaign content-planning days per week',
       'Manual budget tracking',
       'Core pod workspace',
     ],
@@ -282,11 +282,11 @@ const PRICING_TIERS = [
       'Website/app/image analysis',
       'Campaign strategy',
       'Social platform recommendations',
-      '3 campaign posting days per week',
+      '3 campaign content-planning days per week',
       'Holiday-aware calendar planning',
       'Budget tracking',
       'Ad analysis preview',
-      'Extra posting days available as add-ons',
+      'Extra campaign content-planning days available as add-ons',
     ],
     stripeKey: 'growth',
   },
@@ -300,7 +300,7 @@ const PRICING_TIERS = [
       'Full pod analysis',
       'Launch planning',
       'Content calendar generation',
-      '6 campaign posting days per week',
+      '6 campaign content-planning days per week',
       'Budget dashboard',
       'Ad analysis dashboard',
       'Approval workflow for AI recommendations',
@@ -316,7 +316,7 @@ const PRICING_TIERS = [
       'Up to 12 active pods',
       'Multi-brand campaign planning',
       'Advanced calendar generation',
-      '7 campaign posting days per week',
+      '7 campaign content-planning days per week',
       'Budget and performance tracking',
       'Ad analysis recommendations',
       'Priority support',
@@ -339,7 +339,7 @@ const PRICING_PAGE_TIERS = [
       'Audience and offer direction',
       'Campaign angles — upgrade to unlock',
       'Content calendar — upgrade to unlock',
-      'Posting schedule — upgrade to unlock',
+      'Campaign calendar planning — upgrade to unlock',
       'Budget tracking — upgrade to unlock',
     ],
     stripeKey: null,
@@ -356,7 +356,7 @@ const PRICING_PAGE_TIERS = [
       'AI brand/tone summary',
       'Audience and offer direction',
       'Campaign angles',
-      '2 campaign posting days per week',
+      '2 campaign content-planning days per week',
       'Manual budget tracking',
       'Core pod workspace',
     ],
@@ -372,11 +372,11 @@ const PRICING_PAGE_TIERS = [
       'Website/app/image analysis',
       'Campaign strategy',
       'Social platform recommendations',
-      '3 campaign posting days per week',
+      '3 campaign content-planning days per week',
       'Holiday-aware calendar planning',
       'Budget tracking',
       'Ad analysis preview',
-      'Extra posting days available as add-ons',
+      'Extra campaign content-planning days available as add-ons',
     ],
     stripeKey: 'growth',
   },
@@ -390,7 +390,7 @@ const PRICING_PAGE_TIERS = [
       'Full pod analysis',
       'Launch planning',
       'Content calendar generation',
-      '6 campaign posting days per week',
+      '6 campaign content-planning days per week',
       'Budget dashboard',
       'Ad analysis dashboard',
       'Approval workflow for AI recommendations',
@@ -406,7 +406,7 @@ const PRICING_PAGE_TIERS = [
       'Up to 12 active pods',
       'Multi-brand campaign planning',
       'Advanced calendar generation',
-      '7 campaign posting days per week',
+      '7 campaign content-planning days per week',
       'Budget and performance tracking',
       'Ad analysis recommendations',
       'Priority support',
@@ -633,12 +633,12 @@ function PodTabsView({ pod }) {
                   <p className="subtle">Platform-specific content direction ready</p>
                   <p className="subtle"><strong>Posting permission:</strong> Not connected</p>
                   <p className="subtle"><strong>Ad permission:</strong> Not connected</p>
-                  <button className="button button-ghost button-sm">Connect Account</button>
-                  <p className="subtle" style={{ fontSize: '0.75rem' }}>Posting and ads: Requires connection and user approval</p>
+                  <span className="button button-ghost button-sm" aria-disabled="true">Provider setup unavailable</span>
+                  <p className="subtle" style={{ fontSize: '0.75rem' }}>Direct provider connections, posting, and ads are not available in this release.</p>
                 </article>
               ))}
             </div>
-            <p className="subtle" style={{ marginTop: '0.8rem' }}>Important: Users must connect each platform securely via OAuth. Dovroyn cannot post or run ads until you connect and grant permission. No passwords are stored.</p>
+            <p className="subtle" style={{ marginTop: '0.8rem' }}>Provider OAuth applications and publishing APIs must be implemented and approved before Dovroyn can post or run ads.</p>
           </div>
         );
       case 'Calendar':
@@ -653,8 +653,8 @@ function PodTabsView({ pod }) {
               <button className="button button-primary">Generate Calendar</button>
             </div>
             <p className="subtle" style={{ marginTop: '0.5rem' }}>Calendar will be generated from the pod's analysed website/campaign/images, using the accepted/locked-in tone, selected platforms, paid tier, and target country.</p>
-            <p className="subtle">Content posting to multiple platforms happens on the same campaign day unless you choose otherwise.</p>
-            <p className="subtle">You can preview, edit, approve, or regenerate before anything posts.</p>
+            <p className="subtle">Drafts for multiple platforms can share the same campaign day unless you choose otherwise.</p>
+            <p className="subtle">You can preview, edit, approve, or regenerate drafts. Dovroyn does not publish them.</p>
           </div>
         );
       case 'Holidays':
@@ -952,7 +952,7 @@ const PRODUCT_PRINCIPLES = [
   },
   {
     title: 'You stay in control',
-    body: 'Recommendations are not external actions. Publishing and spend require authorised providers and your approval.',
+    body: 'Recommendations are planning outputs, not external actions. Direct provider publishing and spend changes are not available.',
   },
 ];
 
@@ -1141,10 +1141,10 @@ function LandingPage({ session }) {
       <section className="platforms-section">
         <p className="eyebrow">Platform Planning</p>
         <h2 className="section-title">Plan campaigns for the places your audience already lives.</h2>
-        <p className="lede">Dovroyn can analyse and plan for more than 30 social, search, content, messaging, and community platforms. Posting and ads require users to connect their own approved accounts before anything can go live.</p>
+        <p className="lede">Dovroyn can analyse and plan for more than 30 social, search, content, messaging, and community platforms. Direct provider connections, publishing, and ad actions are not available yet.</p>
         <div className="platforms-legend" aria-hidden="true">
           <span className="platforms-legend-item"><span className="platform-dot" /> Planning-ready</span>
-          <span className="platforms-legend-item">Connect your own accounts to go live</span>
+          <span className="platforms-legend-item">Planning and drafts only — provider connections are not live</span>
         </div>
         <div className="platforms-grid">
           {PLATFORMS.map((platform) => {
@@ -1158,7 +1158,7 @@ function LandingPage({ session }) {
             );
           })}
         </div>
-        <p className="platforms-note">Platform availability may depend on official account connection, permissions, region, and API access.</p>
+        <p className="platforms-note">Official provider integrations, permissions, regional availability, and API access must be completed before direct publishing can be offered.</p>
       </section>
 
       <section className="pricing-section">
