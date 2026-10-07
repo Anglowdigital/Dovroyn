@@ -1552,7 +1552,7 @@ function PrivacyPage() {
           </ul>
 
           <h3 style={{ fontSize: '1rem', margin: '0.8rem 0 0.3rem', color: 'var(--navy)' }}>2.3 Cookies and Tracking Technologies</h3>
-          <p className="subtle">We use cookies and similar tracking technologies to enhance your experience, analyse usage patterns, and remember your preferences. You can control cookie settings through your browser. We use Vercel Analytics for aggregated, privacy-preserving usage statistics.</p>
+          <p className="subtle">We use cookies and similar tracking technologies to enhance your experience, analyse usage patterns, remember your preferences, and measure advertising conversions. You can control cookie settings through your browser. We use Vercel Analytics for aggregated, privacy-preserving usage statistics and Google Ads conversion measurement.</p>
         </section>
 
         <section>
@@ -1572,7 +1572,7 @@ function PrivacyPage() {
           <h2 className="waitlist-heading" style={{ marginBottom: '0.5rem' }}>4. How We Share Your Information</h2>
           <p className="subtle">We do not sell your personal information. We may share information with:</p>
           <ul className="simple-list compact-list" style={{ marginLeft: '1.2rem', marginTop: '0.4rem' }}>
-            <li><strong>Service Providers:</strong> Stripe (payment processing), Supabase (authentication and database), Vercel (hosting and analytics), OpenAI/Claude (AI analysis of your submitted content)</li>
+            <li><strong>Service Providers:</strong> Stripe (payment processing), Supabase (authentication and database), Vercel (hosting and analytics), Google (advertising measurement), OpenAI/Claude (AI analysis of your submitted content)</li>
             <li><strong>Legal Requirements:</strong> When required by law, court order, or governmental regulation</li>
             <li><strong>Business Transfers:</strong> In connection with a merger, acquisition, or sale of assets</li>
           </ul>
