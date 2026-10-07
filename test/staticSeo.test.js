@@ -32,3 +32,19 @@ test('static homepage metadata cannot omit canonical indexability or alter theme
   assert.match(html, /<meta property="og:url" content="https:\/\/dovroyn\.com\/"\s*\/>/);
   assert.match(html, /<meta name="theme-color" content="#07162D"\s*\/>/);
 });
+
+test('Google Ads tag loads once and configures the approved conversion account', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const tagUrl = 'https://www.googletagmanager.com/gtag/js?id=AW-18371036038';
+  assert.equal(html.split(tagUrl).length - 1, 1);
+  assert.match(html, /<script async src="https:\/\/www\.googletagmanager\.com\/gtag\/js\?id=AW-18371036038"><\/script>/);
+  assert.match(html, /window\.dataLayer = window\.dataLayer \|\| \[\];/);
+  assert.match(html, /function gtag\(\) \{ window\.dataLayer\.push\(arguments\); \}/);
+  assert.match(html, /gtag\('config', 'AW-18371036038'\);/);
+});
+
+test('privacy copy discloses Google Ads conversion measurement', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(source, /Google Ads conversion measurement/);
+  assert.match(source, /Google \(advertising measurement\)/);
+});
