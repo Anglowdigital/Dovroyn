@@ -78,9 +78,45 @@ import PodsPage from './pages/Pods';
 import NewPodPage from './pages/NewPod';
 import AccountPage from './pages/Account';
 import PodWorkspace from './pages/PodWorkspace';
+import {
+  GOOGLE_ADS_SIGNUP_LABEL,
+  trackGoogleAdsConversion,
+  updateGoogleConsent,
+} from './lib/googleAds.js';
 
 const APP_NAME = 'Dovroyn';
 const APP_DOMAIN = 'dovroyn.com';
+const GOOGLE_CONSENT_KEY = 'dovroyn-google-consent-v1';
+
+function GoogleConsentBanner() {
+  const [choice, setChoice] = useState(() => window.localStorage.getItem(GOOGLE_CONSENT_KEY));
+
+  useEffect(() => {
+    if (choice === 'granted' || choice === 'denied') {
+      updateGoogleConsent(choice === 'granted', window);
+    }
+  }, [choice]);
+
+  if (choice === 'granted' || choice === 'denied') return null;
+
+  const decide = (nextChoice) => {
+    window.localStorage.setItem(GOOGLE_CONSENT_KEY, nextChoice);
+    setChoice(nextChoice);
+  };
+
+  return (
+    <aside className="consent-banner panel" role="dialog" aria-label="Google measurement consent" aria-live="polite">
+      <div>
+        <strong>Choose your analytics preference</strong>
+        <p>We use Google Ads measurement to understand which campaigns lead people to Dovroyn. Essential account and security features work either way.</p>
+      </div>
+      <div className="consent-actions">
+        <button className="button button-secondary" type="button" onClick={() => decide('denied')}>Decline</button>
+        <button className="button button-primary" type="button" onClick={() => decide('granted')}>Accept analytics</button>
+      </div>
+    </aside>
+  );
+}
 
 const STRIPE_PRICING_LINKS = {
   starter_monthly: import.meta.env.VITE_STRIPE_STARTER_MONTHLY || null,
@@ -889,10 +925,12 @@ function App() {
   return (
     <BrowserRouter>
       <Analytics />
+      <GoogleConsentBanner />
       <Routes>
         <Route path="/" element={<LandingPage session={session} />} />
         <Route path="/login" element={<AuthPage session={session} defaultMode="login" />} />
         <Route path="/signup" element={<AuthPage session={session} defaultMode="signup" />} />
+        <Route path="/signup-success" element={<SignupSuccessPage session={session} />} />
         <Route path="/auth" element={<AuthPage session={session} defaultMode="login" />} />
         <Route path="/pricing" element={<PricingPage session={session} />} />
         <Route path="/privacy" element={<PrivacyPage />} />
@@ -1295,13 +1333,20 @@ function AuthPage({ session, defaultMode = 'login' }) {
     setSubmitting(true); setError(''); setMessage('');
     const action = mode === 'login'
       ? supabase.auth.signInWithPassword({ email, password })
-      : supabase.auth.signUp({ email, password, options: { data: { full_name: name.trim(), company: company.trim() } } });
+      : supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: name.trim(), company: company.trim() },
+          emailRedirectTo: `${window.location.origin}/signup-success`,
+        },
+      });
     const { data, error: authError } = await action;
     if (authError) { setError(authError.message); }
     else if (mode === 'signup') {
       // Some projects return a session immediately — go straight to the app
       // instead of racing two navigations through /login.
-      if (data?.session) navigate('/dashboard', { replace: true });
+      if (data?.session) navigate('/signup-success', { replace: true });
       else { setMessage('Check your inbox to confirm your email.'); navigate('/login', { replace: true }); }
     }
     else { navigate('/dashboard', { replace: true }); }
@@ -1344,6 +1389,27 @@ function AuthPage({ session, defaultMode = 'login' }) {
         <button className="button button-link" type="button" onClick={() => { setError(''); setMessage(''); const next = mode === 'login' ? 'signup' : 'login'; setMode(next); navigate(`/${next}`); }}>
           {mode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Log in'}
         </button>
+      </div>
+    </main>
+  );
+}
+
+function SignupSuccessPage({ session }) {
+  useEffect(() => {
+    if (!session) return;
+    trackGoogleAdsConversion(GOOGLE_ADS_SIGNUP_LABEL, { value: 1, currency: 'AUD' }, window);
+  }, [session]);
+
+  return (
+    <main className="auth-shell">
+      <div className="auth-card panel">
+        <Wordmark />
+        <CheckCircle size={38} aria-hidden="true" />
+        <h1 style={{ fontSize: '1.5rem' }}>Account created</h1>
+        <p>Your Dovroyn account is ready. Continue to your private Pod workspace.</p>
+        <Link className="button button-primary" to={session ? '/dashboard' : '/login'}>
+          {session ? 'Open my Pods' : 'Log in'}
+        </Link>
       </div>
     </main>
   );
@@ -1523,7 +1589,7 @@ function PrivacyPage() {
     <LegalPageShell
       eyebrow="Privacy"
       title="Privacy Policy"
-      description="Last updated: September 2026. This policy explains how Dovroyn collects, uses, and protects your personal information."
+      description="Last updated: October 2026. This policy explains how Dovroyn collects, uses, and protects your personal information."
     >
       <article className="stack" style={{ gap: '1.2rem' }}>
         <section>
@@ -1538,7 +1604,7 @@ function PrivacyPage() {
           <ul className="simple-list compact-list" style={{ marginLeft: '1.2rem', marginTop: '0.4rem' }}>
             <li>Register for an account (name, email address)</li>
             <li>Subscribe to a paid plan (billing information processed by Stripe)</li>
-            <li>Contact us through forms or email</li>
+            <li>Contact us by email</li>
             <li>Submit website URLs or upload images for pod analysis</li>
           </ul>
           
@@ -1552,7 +1618,7 @@ function PrivacyPage() {
           </ul>
 
           <h3 style={{ fontSize: '1rem', margin: '0.8rem 0 0.3rem', color: 'var(--navy)' }}>2.3 Cookies and Tracking Technologies</h3>
-          <p className="subtle">We use cookies and similar tracking technologies to enhance your experience, analyse usage patterns, remember your preferences, and measure advertising conversions. You can control cookie settings through your browser. We use Vercel Analytics for aggregated, privacy-preserving usage statistics and Google Ads conversion measurement.</p>
+          <p className="subtle">We use cookies and similar tracking technologies to enhance your experience, analyse usage patterns, remember your preferences, and measure advertising conversions. The site asks for a Google measurement consent choice, which you can accept or decline. We use Vercel Analytics for aggregated, privacy-preserving usage statistics and Google Ads conversion measurement.</p>
         </section>
 
         <section>
@@ -1756,80 +1822,20 @@ function TermsPage() {
 }
 
 function ContactPage() {
-  const [name, setName] = useState('');
-  const [company, setCompany] = useState('');
-  const [email, setEmail] = useState('');
-  const [message, setMessage] = useState('');
-  const [status, setStatus] = useState('idle');
-  const [errorMsg, setErrorMsg] = useState('');
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    if (!email.trim()) return;
-    setStatus('loading');
-    setErrorMsg('');
-
-    try {
-      if (supabaseConfigured && supabase) {
-        const sourceMeta = `contact-page:${name.trim().slice(0, 40) || 'anonymous'}:${message.trim().slice(0, 120)}`;
-        const { error } = await supabase.from('waitlist').insert({ email: email.trim(), source: sourceMeta });
-        if (error) throw new Error(error.message);
-      }
-      setStatus('success');
-      setName('');
-      setEmail('');
-      setMessage('');
-    } catch (error) {
-      setStatus('error');
-      setErrorMsg(error.message || 'Unable to send your enquiry right now. Please try again.');
-    }
-  };
-
   return (
     <LegalPageShell
       eyebrow="Contact"
       title="Talk to the Dovroyn team"
-      description="Send your enquiry and we will follow up at your email address."
+      description="Dovroyn is live. Contact our team directly for product, account, or billing support."
     >
-      {status === 'success' ? (
-        <div className="waitlist-confirmation">
-          <h2 className="waitlist-heading">Thanks, we received your enquiry.</h2>
-          <p className="lede">Our team will respond to <strong>{email || 'your email address'}</strong> as soon as possible.</p>
+      <div className="stack" style={{ alignItems: 'center', textAlign: 'center' }}>
+        <h2 className="waitlist-heading">Email Dovroyn support</h2>
+        <p className="lede">We will reply directly from <strong>support@dovroyn.com</strong>.</p>
+        <div className="hero-actions">
+          <a className="button button-primary" href="mailto:support@dovroyn.com?subject=Dovroyn%20enquiry">Email support</a>
+          <Link className="button button-secondary" to="/signup">Create an account</Link>
         </div>
-      ) : (
-        <>
-          <form className="waitlist-form" onSubmit={handleSubmit}>
-            <input
-              type="text"
-              placeholder="Your name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              required
-              disabled={status === 'loading'}
-            />
-            <input
-              type="email"
-              placeholder="Your email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-              disabled={status === 'loading'}
-            />
-            <input
-              type="text"
-              placeholder="How can we help?"
-              value={message}
-              onChange={(event) => setMessage(event.target.value)}
-              required
-              disabled={status === 'loading'}
-            />
-            <button className="button button-primary" type="submit" disabled={status === 'loading'}>
-              {status === 'loading' ? 'Sending...' : 'Send Enquiry'}
-            </button>
-          </form>
-          {status === 'error' && <p className="form-error">{errorMsg}</p>}
-        </>
-      )}
+      </div>
     </LegalPageShell>
   );
 }

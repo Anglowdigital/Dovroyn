@@ -1,0 +1,18 @@
+{
+  "project_id": "eeapyxahorqwsmamnugn",
+  "captured_at": "2026-10-08",
+  "normalization": "CRLF converted to LF; trailing LF removed before MD5",
+  "migrations": [
+    { "version": "20260718174417", "name": "gidgeeco_schema_init", "normalized_md5": "e20c5787bda5bea22a33f255b513c492" },
+    { "version": "20260730232949", "name": "dovroyn_base_schema", "normalized_md5": "26d600e6ba52913f57b3759ff156b803" },
+    { "version": "20260730233003", "name": "dovroyn_pod_workspace_ai", "normalized_md5": "1a84c7b36d920352c5f3c99d41db534c" },
+    { "version": "20260730233118", "name": "dovroyn_security_hardening", "normalized_md5": "97a7e5baf8e5b5aa93f486201627d802" },
+    { "version": "20260731020249", "name": "pod_source_lock", "normalized_md5": "ceb1e31e001ef78a8dc3e8139fb6020a" },
+    { "version": "20260802120500", "name": "create_anglow_knowledge_hub_foundation", "normalized_md5": "4b3effc23379781c99abfd24d82f1812" },
+    { "version": "20260802120536", "name": "add_anglow_hub_foreign_key_indexes", "normalized_md5": "839d247e7251426734ac0c678dd9f063" },
+    { "version": "20260802120849", "name": "seed_anglow_initial_knowledge", "normalized_md5": "dba065091cfcb5050c5569f2da42d54f" },
+    { "version": "20260802150920", "name": "remove_temporary_anglow_hub_tables_from_dovroyn", "normalized_md5": "bc59effd50e1246fbf259d519bbdf222" },
+    { "version": "20261001071256", "name": "customer_onboarding_reconciliation", "normalized_md5": "a0e01a37801b6f119bed13c1b065ccc6" },
+    { "version": "20261001071313", "name": "customer_release_expansion", "normalized_md5": "75e833ec3d73427173fba4c4849a432b" }
+  ]
+}

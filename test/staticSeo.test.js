@@ -43,8 +43,43 @@ test('Google Ads tag loads once and configures the approved conversion account',
   assert.match(html, /gtag\('config', 'AW-18371036038'\);/);
 });
 
+test('Google consent defaults are denied before the Ads configuration fires', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const consentIndex = html.indexOf("gtag('consent', 'default'");
+  const configIndex = html.indexOf("gtag('config', 'AW-18371036038')");
+  assert.ok(consentIndex >= 0, 'Google consent default is missing');
+  assert.ok(consentIndex < configIndex, 'Google consent must be set before Ads config');
+  for (const field of ['ad_storage', 'ad_user_data', 'ad_personalization', 'analytics_storage']) {
+    assert.match(html, new RegExp(`'${field}': 'denied'`));
+  }
+});
+
 test('privacy copy discloses Google Ads conversion measurement', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(source, /Google Ads conversion measurement/);
   assert.match(source, /Google \(advertising measurement\)/);
+  assert.match(source, /Last updated: October 2026/);
+  assert.match(source, /consent choice/);
+});
+
+test('live contact route cannot depend on the retired waitlist', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /supabase\.from\('waitlist'\)/);
+  assert.match(source, /href="mailto:support@dovroyn\.com\?subject=Dovroyn%20enquiry"/);
+  assert.match(source, /Contact us by email/);
+});
+
+test('public app offers an explicit Google measurement consent choice', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(source, /GoogleConsentBanner/);
+  assert.match(source, /Accept analytics/);
+  assert.match(source, /Decline/);
+});
+
+test('successful account creation has a dedicated Google Ads confirmation route', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(source, /Route path="\/signup-success"/);
+  assert.match(source, /emailRedirectTo: `\$\{window\.location\.origin\}\/signup-success`/);
+  assert.match(source, /navigate\('\/signup-success', \{ replace: true \}\)/);
+  assert.match(source, /Account created/);
 });
