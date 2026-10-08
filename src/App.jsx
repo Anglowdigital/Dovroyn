@@ -1021,8 +1021,8 @@ function LandingPage({ session }) {
         </div>
         <div className="hero-content-centered">
           <h1>EVERY BRAND GETS ITS OWN AI BRAIN</h1>
-          <p className="hero-gold-line">Drop in your website. Dovroyn builds your campaign direction, content calendar, and next moves — all inside one intelligent pod.</p>
-          <p className="lede">Stop staring at blank content calendars. Each pod learns your brand, locks your strategy, and tells you exactly what to post, where, and when.</p>
+          <p className="hero-gold-line">Drop in your website. Dovroyn analyses your brand and builds your campaign direction — all inside one intelligent pod.</p>
+          <p className="lede">Each pod learns your brand and locks your strategy. Upgrade when you're ready to unlock campaign content planning and calendars.</p>
           <div className="hero-actions">
             <NavLink className="button button-primary button-lg" to="/signup">
               Start Free — No Card Required
