@@ -25,6 +25,21 @@ const trustedExecutionContext = Object.freeze({
   trustedTargetId: 'page-123',
 });
 
+const connectAccountAction = Object.freeze({
+  level: 'execute',
+  actionType: 'connect_account',
+  idempotencyKey: 'connect:instagram:123',
+  requestedProviderKey: 'instagram',
+});
+
+const trustedConnectionContext = Object.freeze({
+  approvedByHuman: true,
+  providerSetupReady: true,
+  trustedProviderKey: 'instagram',
+  actionEntitled: true,
+  subscription: activePaidSubscription,
+});
+
 test('research has no external effect', () => {
   assert.deepEqual(evaluateAgentAction({ level: 'research' }), { allowed: true, level: 'research', externalEffect: false });
 });
@@ -63,6 +78,38 @@ test('execution requires an active provider connection', () => {
     { approvedByHuman: true },
   );
   assert.match(result.reason, /active platform connection/);
+});
+
+test('official provider authorization can begin before an account connection exists', () => {
+  const result = evaluateAgentAction(connectAccountAction, trustedConnectionContext);
+  assert.deepEqual(result, { allowed: true, level: 'execute', externalEffect: true });
+});
+
+test('account connection requires server-confirmed provider setup', () => {
+  const result = evaluateAgentAction(connectAccountAction, { ...trustedConnectionContext, providerSetupReady: false });
+  assert.match(result.reason, /provider setup/);
+});
+
+test('untrusted input cannot replace the configured OAuth provider', () => {
+  const result = evaluateAgentAction(
+    { ...connectAccountAction, requestedProviderKey: 'attacker-provider' },
+    trustedConnectionContext,
+  );
+  assert.match(result.reason, /configured OAuth provider/);
+});
+
+test('account connection cannot bypass paid access or explicit entitlement', () => {
+  const freeResult = evaluateAgentAction(connectAccountAction, {
+    ...trustedConnectionContext,
+    subscription: { tier: 'free', status: 'active', current_period_end: '2099-01-01T00:00:00.000Z' },
+  });
+  assert.match(freeResult.reason, /current paid subscription/);
+
+  const unentitledResult = evaluateAgentAction(connectAccountAction, {
+    ...trustedConnectionContext,
+    actionEntitled: false,
+  });
+  assert.match(unentitledResult.reason, /action entitlement/);
 });
 
 test('execution accepts only allowlisted action types', () => {
