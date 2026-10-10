@@ -36,11 +36,15 @@ function adminHarness({
   pages = { 1: [{ id: 'user-1', email: 'owner@example.test' }] },
   existing = null,
   updateMatches = true,
+  existingSequence,
+  updateMatchSequence,
   insertError = null,
 } = {}) {
   const writes = [];
   const updateAttempts = [];
   const listCalls = [];
+  let loadIndex = 0;
+  let updateIndex = 0;
   const admin = {
     auth: { admin: { async listUsers({ page, perPage }) {
       listCalls.push({ page, perPage });
@@ -57,15 +61,24 @@ function adminHarness({
           if (builder.action !== 'update') return builder;
           const attempt = { operation: 'update', filters: builder.filters, row: builder.row };
           updateAttempts.push(attempt);
-          if (updateMatches) writes.push(attempt);
-          return Promise.resolve({ data: updateMatches ? [{ user_id: 'user-1' }] : [], error: null });
+          const matches = updateMatchSequence
+            ? updateMatchSequence[Math.min(updateIndex, updateMatchSequence.length - 1)]
+            : updateMatches;
+          updateIndex += 1;
+          if (matches) writes.push(attempt);
+          return Promise.resolve({ data: matches ? [{ user_id: 'user-1' }] : [], error: null });
         },
         eq(field, value) {
           builder.filters.push({ operator: 'eq', field, value });
           return builder;
         },
         is(field, value) { builder.filters.push({ operator: 'is', field, value }); return builder; },
-        async maybeSingle() { return { data: existing, error: null }; },
+        async maybeSingle() {
+          const rows = existingSequence || [existing];
+          const data = rows[Math.min(loadIndex, rows.length - 1)];
+          loadIndex += 1;
+          return { data, error: null };
+        },
         update(row) { builder.action = 'update'; builder.row = row; return builder; },
         async insert(row) {
           if (!insertError) writes.push({ operation: 'insert', row });
@@ -274,6 +287,34 @@ test('a stale retried checkout cannot replace a newer stored subscription', asyn
   const newer = response();
   await handler(request(), newer.res);
   assert.deepEqual(newer.result.body, { received: true, tier: 'starter' });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].row.stripe_subscription_id, 'sub_owned');
+});
+
+test('the newest checkout reconciles and retries after losing a guarded write race', async () => {
+  const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_newest', mode: 'subscription' } } };
+  const { stripe } = stripeHarness(event);
+  const created = { sub_owned: 300, sub_prior: 100, sub_concurrent: 200 };
+  stripe.subscriptions.retrieve = async (id) => ({
+    id,
+    status: 'active',
+    created: created[id],
+    current_period_start: created[id],
+    current_period_end: created[id] + 100,
+  });
+  const { admin, writes, updateAttempts } = adminHarness({
+    existingSequence: [
+      { user_id: 'user-1', subscription_started_at: '2026-01-01T00:00:00.000Z', stripe_subscription_id: 'sub_prior' },
+      { user_id: 'user-1', subscription_started_at: '2026-01-01T00:00:00.000Z', stripe_subscription_id: 'sub_concurrent' },
+    ],
+    updateMatchSequence: [false, true],
+  });
+  const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => admin });
+  const { res, result } = response();
+  await handler(request(), res);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { received: true, tier: 'starter' });
+  assert.deepEqual(updateAttempts.map((attempt) => attempt.filters[1].value), ['sub_prior', 'sub_concurrent']);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].row.stripe_subscription_id, 'sub_owned');
 });

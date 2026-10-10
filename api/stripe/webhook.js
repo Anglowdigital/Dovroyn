@@ -150,32 +150,37 @@ export function createStripeWebhookHandler({
         const customerId = objectId(expanded.customer);
         if (!subscriptionId || !customerId) return sendJson(res, 200, { received: true, ignored: 'payment_identity_missing' });
         const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-        const existing = await loadSubscriptionRow(admin, user.id);
-        let replaceDifferentSubscription = false;
-        if (existing?.stripe_subscription_id && existing.stripe_subscription_id !== subscriptionId) {
-          const current = await stripe.subscriptions.retrieve(existing.stripe_subscription_id);
-          if (!Number.isSafeInteger(subscription.created) || !Number.isSafeInteger(current?.created)
-            || subscription.created <= current.created) {
-            return sendJson(res, 200, { received: true, ignored: 'stale_checkout' });
+        let existing = await loadSubscriptionRow(admin, user.id);
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          let replaceDifferentSubscription = false;
+          if (existing?.stripe_subscription_id && existing.stripe_subscription_id !== subscriptionId) {
+            const current = await stripe.subscriptions.retrieve(existing.stripe_subscription_id);
+            if (!Number.isSafeInteger(subscription.created) || !Number.isSafeInteger(current?.created)
+              || subscription.created <= current.created) {
+              return sendJson(res, 200, { received: true, ignored: 'stale_checkout' });
+            }
+            replaceDifferentSubscription = true;
           }
-          replaceDifferentSubscription = true;
+          const outcome = await upsertSubscription(admin, {
+            userId: user.id,
+            tier,
+            status: normalizeSubscriptionStatus(subscription.status),
+            periodEnd: subscription.current_period_end,
+            periodStart: subscription.current_period_start,
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscriptionId,
+            replaceDifferentSubscription,
+            existingRow: existing,
+            now: clock(),
+          });
+          if (outcome !== 'ignored_concurrent_change') {
+            return sendJson(res, 200, { received: true, tier });
+          }
+          // Another delivery changed the row after our read. Reconcile against it so
+          // the newest checkout cannot be acknowledged and then lost permanently.
+          existing = await loadSubscriptionRow(admin, user.id);
         }
-        const outcome = await upsertSubscription(admin, {
-          userId: user.id,
-          tier,
-          status: normalizeSubscriptionStatus(subscription.status),
-          periodEnd: subscription.current_period_end,
-          periodStart: subscription.current_period_start,
-          stripeCustomerId: customerId,
-          stripeSubscriptionId: subscriptionId,
-          replaceDifferentSubscription,
-          existingRow: existing,
-          now: clock(),
-        });
-        if (outcome === 'ignored_concurrent_change') {
-          return sendJson(res, 200, { received: true, ignored: 'concurrent_change' });
-        }
-        return sendJson(res, 200, { received: true, tier });
+        throw new Error('Subscription row kept changing during checkout reconciliation.');
       }
 
       if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
