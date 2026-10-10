@@ -73,6 +73,7 @@ import Header from './components/Header';
 import BrandLogo from './components/BrandLogo';
 import Footer from './components/Footer';
 import { PLAN_ENTITLEMENTS, hasActivePaidAccess } from './lib/plans.js';
+import { verifyPurchase, trackVerifiedPurchase, purchaseLoginPath, purchaseReturnPath } from './lib/purchaseConversion.js';
 import AiPodAssistant from './components/AiPodAssistant';
 import PodsPage from './pages/Pods';
 import NewPodPage from './pages/NewPod';
@@ -930,6 +931,7 @@ function App() {
         <Route path="/login" element={<AuthPage session={session} defaultMode="login" />} />
         <Route path="/signup" element={<AuthPage session={session} defaultMode="signup" />} />
         <Route path="/signup-success" element={<SignupSuccessPage session={session} />} />
+        <Route path="/purchase-success" element={<PurchaseSuccessPage session={session} />} />
         <Route path="/auth" element={<AuthPage session={session} defaultMode="login" />} />
         <Route path="/pricing" element={<PricingPage session={session} />} />
         <Route path="/privacy" element={<PrivacyPage />} />
@@ -1292,6 +1294,8 @@ function DemoPodPage() {
 /* ─── AUTH PAGE ─── */
 function AuthPage({ session, defaultMode = 'login' }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const loginDestination = purchaseReturnPath(location.search);
   const [mode, setMode] = useState(defaultMode);
 
   useEffect(() => {
@@ -1315,7 +1319,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
   // The URL hash is the ground truth — the PASSWORD_RECOVERY event can fire
   // before this component subscribes, so mode alone is not reliable on load.
   const recovering = window.location.hash.includes('type=recovery');
-  useEffect(() => { if (session && mode !== 'recovery' && !recovering) navigate('/dashboard', { replace: true }); }, [navigate, session, mode, recovering]);
+  useEffect(() => { if (session && mode !== 'recovery' && !recovering) navigate(loginDestination, { replace: true }); }, [navigate, session, mode, recovering, loginDestination]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1350,7 +1354,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
       if (data?.session) navigate('/signup-success', { replace: true });
       else { setMessage('Check your inbox to confirm your email.'); navigate('/login', { replace: true }); }
     }
-    else { navigate('/dashboard', { replace: true }); }
+    else { navigate(loginDestination, { replace: true }); }
     setSubmitting(false);
   };
 
@@ -1409,6 +1413,54 @@ function SignupSuccessPage({ session }) {
         <h1 style={{ fontSize: '1.5rem' }}>Account created</h1>
         <p>Your Dovroyn account is ready. Continue to your private Pod workspace.</p>
         <Link className="button button-primary" to={session ? '/dashboard' : '/login'}>
+          {session ? 'Open my Pods' : 'Log in'}
+        </Link>
+      </div>
+    </main>
+  );
+}
+
+function PurchaseSuccessPage({ session }) {
+  const location = useLocation();
+  const sessionId = new URLSearchParams(location.search).get('session_id');
+  const scope = `${session?.user?.id || ''}:${sessionId || ''}`;
+  const [paymentState, setPaymentState] = useState({ scope: null, status: 'checking', message: '' });
+  const status = paymentState.scope === scope ? paymentState.status : 'checking';
+  const message = paymentState.scope === scope ? paymentState.message : '';
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!session?.access_token || !sessionId) return undefined;
+    setPaymentState({ scope, status: 'checking', message: '' });
+    verifyPurchase(sessionId, session.access_token)
+      .then((purchase) => {
+        if (cancelled) return;
+        trackVerifiedPurchase(purchase, undefined, window);
+        setPaymentState({ scope, status: 'confirmed', message: '' });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPaymentState({ scope, status: 'unconfirmed', message: error.message });
+      });
+    return () => { cancelled = true; };
+  }, [session?.access_token, sessionId, retry, scope]);
+
+  return (
+    <main className="auth-shell">
+      <div className="auth-card panel">
+        <Wordmark />
+        {status === 'confirmed' && <CheckCircle size={38} aria-hidden="true" />}
+        <h1 style={{ fontSize: '1.5rem' }}>{status === 'confirmed' ? 'Payment confirmed' : 'Your payment'}</h1>
+        {!session ? <p>Sign in to check your payment. We will return you here after signing in.</p>
+          : !sessionId ? <p>Open the confirmation link from your Stripe checkout to check your payment.</p>
+          : status === 'checking' ? <p role="status">Checking your payment...</p>
+          : status === 'confirmed' ? <p>Your payment has been confirmed. You can continue to your Pods.</p>
+          : <p role="status">{message}</p>}
+        {session && sessionId && status === 'unconfirmed' && (
+          <button className="button button-secondary" type="button" onClick={() => setRetry((value) => value + 1)}>Check again</button>
+        )}
+        <Link className="button button-primary" to={session ? '/dashboard' : purchaseLoginPath(sessionId)}>
           {session ? 'Open my Pods' : 'Log in'}
         </Link>
       </div>
