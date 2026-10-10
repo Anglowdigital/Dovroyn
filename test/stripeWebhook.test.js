@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { readFileSync } from 'node:fs';
+import Stripe from 'stripe';
 import {
   createStripeWebhookHandler, findUserByEmail, normalizeSubscriptionStatus, readRawBody,
 } from '../api/stripe/webhook.js';
@@ -206,6 +207,20 @@ test('raw body reader returns byte-identical webhook payload', async () => {
   const raw = Buffer.from('{"unicode":"✓","spaces": [1, 2]}');
   const req = Readable.from([raw.subarray(0, 8), raw.subarray(8)]);
   assert.deepEqual(await readRawBody(req), raw);
+});
+
+test('real Stripe SDK accepts the streamed payload and generated signature unchanged', async () => {
+  const stripe = new Stripe('sk_test_signature');
+  const raw = '{"id":"evt_signed","type":"unhandled.test","data":{"object":{}}}';
+  const signature = stripe.webhooks.generateTestHeaderString({ payload: raw, secret: env.STRIPE_WEBHOOK_SECRET });
+  const req = request(raw);
+  req.headers['stripe-signature'] = signature;
+  const { admin } = adminHarness();
+  const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => admin });
+  const { res, result } = response();
+  await handler(req, res);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { received: true, ignored: 'unhandled.test' });
 });
 
 test('paid Payment Links require the existing signed-in session without changing destinations', () => {

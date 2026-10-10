@@ -80,7 +80,7 @@ The prepared webhook correction keeps the existing Stripe Payment Link and Supab
 
 Stripe webhook signatures cover the exact request bytes. The correction reads the incoming stream without touching Vercel's parsed `request.body` helper, then supplies that byte-identical Buffer to `stripe.webhooks.constructEvent`. No Supabase schema, RLS policy, service, login call, price, entitlement or Payment Link is changed.
 
-Fresh validation: **259/259 repository tests passed**, including **6/6 Stripe provisioning boundary tests**, and the production build passed (1,902 modules). Tests cover existing-account checkout gating without destination changes, supported paginated user lookup, raw bytes across stream chunks, signature failure, missing users, checkout/customer/subscription ID persistence, update/deletion normalization, preserved start time and error-data minimisation.
+Fresh validation: **260/260 repository tests passed**, including **7/7 Stripe provisioning boundary tests**, and the production build passed (1,902 modules). Tests cover existing-account checkout gating without destination changes, supported paginated user lookup, raw bytes across stream chunks, a signature generated and verified by the real Stripe SDK, signature failure, missing users, checkout/customer/subscription ID persistence, update/deletion normalization, preserved start time and error-data minimisation.
 
 Live dependencies still requiring account evidence:
 
