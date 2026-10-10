@@ -94,7 +94,7 @@ function GoogleConsentBanner() {
   const [editing, setEditing] = useState(false);
 
   if (!editing && (choice === 'granted' || choice === 'denied')) {
-    return <button className="button button-secondary" type="button" onClick={() => setEditing(true)}>Google measurement settings</button>;
+    return <button className="button button-secondary google-consent-settings" type="button" onClick={() => setEditing(true)}>Google measurement settings</button>;
   }
 
   const decide = (nextChoice) => {
