@@ -79,36 +79,35 @@ import NewPodPage from './pages/NewPod';
 import AccountPage from './pages/Account';
 import PodWorkspace from './pages/PodWorkspace';
 import {
-  GOOGLE_ADS_SIGNUP_LABEL,
-  trackGoogleAdsConversion,
-  updateGoogleConsent,
+  readGoogleConsent,
+  saveGoogleConsent,
+  rememberSignupConversion,
+  trackConfirmedSignup,
 } from './lib/googleAds.js';
 
 const APP_NAME = 'Dovroyn';
 const APP_DOMAIN = 'dovroyn.com';
-const GOOGLE_CONSENT_KEY = 'dovroyn-google-consent-v1';
 
 function GoogleConsentBanner() {
-  const [choice, setChoice] = useState(() => window.localStorage.getItem(GOOGLE_CONSENT_KEY));
+  const [choice, setChoice] = useState(() => readGoogleConsent(window));
 
-  useEffect(() => {
-    if (choice === 'granted' || choice === 'denied') {
-      updateGoogleConsent(choice === 'granted', window);
-    }
-  }, [choice]);
+  const [editing, setEditing] = useState(false);
 
-  if (choice === 'granted' || choice === 'denied') return null;
+  if (!editing && (choice === 'granted' || choice === 'denied')) {
+    return <button className="button button-secondary" type="button" onClick={() => setEditing(true)}>Google measurement settings</button>;
+  }
 
   const decide = (nextChoice) => {
-    window.localStorage.setItem(GOOGLE_CONSENT_KEY, nextChoice);
+    saveGoogleConsent(nextChoice, window);
     setChoice(nextChoice);
+    setEditing(false);
   };
 
   return (
     <aside className="consent-banner panel" role="dialog" aria-label="Google measurement consent" aria-live="polite">
       <div>
-        <strong>Choose your analytics preference</strong>
-        <p>We use Google Ads measurement to understand which campaigns lead people to Dovroyn. Essential account and security features work either way.</p>
+        <strong>Choose your Google measurement preference</strong>
+        <p>We use Google Ads measurement to understand which campaigns lead people to Dovroyn. Accepting allows advertising and analytics cookies, advertising data use, and personalised ads. Declining keeps these denied; Google may still receive cookieless measurement signals. Essential account and security features work either way.</p>
       </div>
       <div className="consent-actions">
         <button className="button button-secondary" type="button" onClick={() => decide('denied')}>Decline</button>
@@ -1344,6 +1343,8 @@ function AuthPage({ session, defaultMode = 'login' }) {
     const { data, error: authError } = await action;
     if (authError) { setError(authError.message); }
     else if (mode === 'signup') {
+      rememberSignupConversion(data, window);
+      if (data?.session) trackConfirmedSignup(data.session, undefined, window);
       // Some projects return a session immediately — go straight to the app
       // instead of racing two navigations through /login.
       if (data?.session) navigate('/signup-success', { replace: true });
@@ -1397,7 +1398,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
 function SignupSuccessPage({ session }) {
   useEffect(() => {
     if (!session) return;
-    trackGoogleAdsConversion(GOOGLE_ADS_SIGNUP_LABEL, { value: 1, currency: 'AUD' }, window);
+    trackConfirmedSignup(session, undefined, window);
   }, [session]);
 
   return (

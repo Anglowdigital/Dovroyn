@@ -26,6 +26,17 @@
         'analytics_storage': 'denied',
         'wait_for_update': 500
       });
+      try {
+        const savedConsent = window.localStorage.getItem('dovroyn-google-consent-v1');
+        if (savedConsent === 'granted' || savedConsent === 'denied') {
+          gtag('consent', 'update', {
+            ad_storage: savedConsent,
+            ad_user_data: savedConsent,
+            ad_personalization: savedConsent,
+            analytics_storage: savedConsent
+          });
+        }
+      } catch { /* Storage can be blocked; retain denied defaults. */ }
       gtag('js', new Date());
       gtag('config', 'AW-18371036038');
     </script>
