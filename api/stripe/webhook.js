@@ -13,6 +13,18 @@ function objectId(value) {
   return typeof value === 'string' ? value : value?.id;
 }
 
+function compareSubscriptionOrder(incoming, current) {
+  if (!Number.isSafeInteger(incoming?.created) || !Number.isSafeInteger(current?.created)) return null;
+  if (incoming.created !== current.created) return incoming.created > current.created ? 1 : -1;
+  const incomingId = objectId(incoming);
+  const currentId = objectId(current);
+  if (!incomingId || !currentId) return null;
+  if (incomingId === currentId) return 0;
+  // Stripe creation times are whole seconds. IDs provide a stable tie-breaker so
+  // concurrent same-second checkouts converge instead of replacing each other.
+  return incomingId > currentId ? 1 : -1;
+}
+
 // Stripe sends 'canceled'; the DB CHECK constraint only accepts 'cancelled'.
 export function normalizeSubscriptionStatus(status) {
   if (status === 'canceled') return 'cancelled';
@@ -155,8 +167,9 @@ export function createStripeWebhookHandler({
           let replaceDifferentSubscription = false;
           if (existing?.stripe_subscription_id && existing.stripe_subscription_id !== subscriptionId) {
             const current = await stripe.subscriptions.retrieve(existing.stripe_subscription_id);
-            if (!Number.isSafeInteger(subscription.created) || !Number.isSafeInteger(current?.created)
-              || subscription.created <= current.created) {
+            const order = compareSubscriptionOrder(subscription, current);
+            if (order === null) throw new Error('Stripe subscription ordering data is incomplete.');
+            if (order <= 0) {
               return sendJson(res, 200, { received: true, ignored: 'stale_checkout' });
             }
             replaceDifferentSubscription = true;

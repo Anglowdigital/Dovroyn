@@ -319,6 +319,41 @@ test('the newest checkout reconciles and retries after losing a guarded write ra
   assert.equal(writes[0].row.stripe_subscription_id, 'sub_owned');
 });
 
+test('same-second checkouts converge with a stable subscription ID tie-breaker', async () => {
+  const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_tied', mode: 'subscription' } } };
+  const { stripe } = stripeHarness(event);
+  stripe.subscriptions.retrieve = async (id) => ({
+    id,
+    status: 'active',
+    created: 300,
+    current_period_start: 300,
+    current_period_end: 400,
+  });
+  const { admin, writes } = adminHarness({ existing: {
+    user_id: 'user-1',
+    subscription_started_at: '2026-01-01T00:00:00.000Z',
+    stripe_subscription_id: 'sub_earlier_tiebreak',
+  } });
+  const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => admin });
+  const { res, result } = response();
+  await handler(request(), res);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { received: true, tier: 'starter' });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].row.stripe_subscription_id, 'sub_owned');
+
+  const later = adminHarness({ existing: {
+    user_id: 'user-1',
+    subscription_started_at: '2026-01-01T00:00:00.000Z',
+    stripe_subscription_id: 'sub_z_later_tiebreak',
+  } });
+  const losingHandler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => later.admin });
+  const losing = response();
+  await losingHandler(request(), losing.res);
+  assert.deepEqual(losing.result.body, { received: true, ignored: 'stale_checkout' });
+  assert.deepEqual(later.writes, []);
+});
+
 test('invalid signatures, missing users and provider errors fail closed without leaking details', async () => {
   const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_paid', mode: 'subscription' } } };
   let adminCreated = false;
