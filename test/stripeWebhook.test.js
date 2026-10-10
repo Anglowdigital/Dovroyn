@@ -202,6 +202,34 @@ test('an older subscription event cannot overwrite the currently stored subscrip
   assert.deepEqual(writes, []);
 });
 
+test('a stale retried checkout cannot replace a newer stored subscription', async () => {
+  const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_old', mode: 'subscription' } } };
+  const { stripe } = stripeHarness(event);
+  stripe.subscriptions.retrieve = async (id) => id === 'sub_owned'
+    ? { id, status: 'active', created: 100, current_period_start: 100, current_period_end: 200 }
+    : { id, status: 'active', created: 200, current_period_start: 200, current_period_end: 300 };
+  const { admin, writes } = adminHarness({ existing: {
+    user_id: 'user-1',
+    subscription_started_at: '2026-01-01T00:00:00.000Z',
+    stripe_subscription_id: 'sub_current_growth',
+  } });
+  const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => admin });
+  const { res, result } = response();
+  await handler(request(), res);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { received: true, ignored: 'stale_checkout' });
+  assert.deepEqual(writes, []);
+
+  stripe.subscriptions.retrieve = async (id) => id === 'sub_owned'
+    ? { id, status: 'active', created: 300, current_period_start: 300, current_period_end: 400 }
+    : { id, status: 'active', created: 200, current_period_start: 200, current_period_end: 300 };
+  const newer = response();
+  await handler(request(), newer.res);
+  assert.deepEqual(newer.result.body, { received: true, tier: 'starter' });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].row.stripe_subscription_id, 'sub_owned');
+});
+
 test('invalid signatures, missing users and provider errors fail closed without leaking details', async () => {
   const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_paid', mode: 'subscription' } } };
   let adminCreated = false;

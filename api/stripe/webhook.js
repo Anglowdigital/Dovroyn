@@ -56,9 +56,18 @@ export async function findUserByEmail(admin, email) {
   throw new Error('Supabase user lookup exceeded its pagination limit.');
 }
 
+export async function loadSubscriptionRow(admin, userId) {
+  const { data, error } = await admin.from('subscriptions')
+    .select('user_id,subscription_started_at,stripe_subscription_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
 export async function upsertSubscription(admin, {
   userId, tier, status, periodEnd, periodStart, stripeCustomerId, stripeSubscriptionId,
-  replaceDifferentSubscription = false, now = new Date().toISOString(),
+  replaceDifferentSubscription = false, existingRow, now = new Date().toISOString(),
 }) {
   if (!stripeCustomerId || !stripeSubscriptionId) throw new Error('Stripe payment identity is incomplete.');
   const limits = TIER_LIMITS[tier] || TIER_LIMITS.starter;
@@ -76,8 +85,7 @@ export async function upsertSubscription(admin, {
     current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
     current_period_start: periodStart ? new Date(periodStart * 1000).toISOString() : null,
   };
-  const { data: existing, error: lookupError } = await admin.from('subscriptions').select('user_id,subscription_started_at,stripe_subscription_id').eq('user_id', userId).maybeSingle();
-  if (lookupError) throw lookupError;
+  const existing = existingRow === undefined ? await loadSubscriptionRow(admin, userId) : existingRow;
   if (existing) {
     if (existing.stripe_subscription_id && existing.stripe_subscription_id !== stripeSubscriptionId && !replaceDifferentSubscription) {
       return 'ignored_different_subscription';
@@ -135,6 +143,16 @@ export function createStripeWebhookHandler({
         const customerId = objectId(expanded.customer);
         if (!subscriptionId || !customerId) return sendJson(res, 200, { received: true, ignored: 'payment_identity_missing' });
         const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        const existing = await loadSubscriptionRow(admin, user.id);
+        let replaceDifferentSubscription = false;
+        if (existing?.stripe_subscription_id && existing.stripe_subscription_id !== subscriptionId) {
+          const current = await stripe.subscriptions.retrieve(existing.stripe_subscription_id);
+          if (!Number.isSafeInteger(subscription.created) || !Number.isSafeInteger(current?.created)
+            || subscription.created <= current.created) {
+            return sendJson(res, 200, { received: true, ignored: 'stale_checkout' });
+          }
+          replaceDifferentSubscription = true;
+        }
         await upsertSubscription(admin, {
           userId: user.id,
           tier,
@@ -143,7 +161,8 @@ export function createStripeWebhookHandler({
           periodStart: subscription.current_period_start,
           stripeCustomerId: customerId,
           stripeSubscriptionId: subscriptionId,
-          replaceDifferentSubscription: true,
+          replaceDifferentSubscription,
+          existingRow: existing,
           now: clock(),
         });
         return sendJson(res, 200, { received: true, tier });
