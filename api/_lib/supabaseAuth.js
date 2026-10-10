@@ -62,6 +62,14 @@ export async function finalizePodAnalysis(accessToken, podId, analysis) {
   return response.json();
 }
 
+export async function loadSubscriptionPaymentIdentity(accessToken, userId) {
+  // Existing RLS limits this read to the authenticated user's server-owned row.
+  const response = await supabaseFetch(`/rest/v1/subscriptions?user_id=eq.${encodeURIComponent(userId)}&select=stripe_customer_id,stripe_subscription_id,tier`, accessToken);
+  if (!response.ok) throw new Error('Payment identity is unavailable.');
+  const rows = await response.json();
+  return rows[0] || null;
+}
+
 export async function loadActiveSubscription(accessToken, userId) {
   const response = await supabaseFetch(`/rest/v1/subscriptions?user_id=eq.${encodeURIComponent(userId)}&select=tier,status,current_period_end,monthly_content_days,max_pods,weekly_posting_days`, accessToken);
   if (!response.ok) return null;

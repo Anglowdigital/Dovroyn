@@ -8,10 +8,11 @@ Updated 11 October 2026 Perth. This checklist records supported unfinished work;
 - [x] Prepare and verify signup duplicate prevention, confirmed-account gating and consent fixes (239 tests and build pass).
 - [x] Publish PR #41: https://github.com/Anglowdigital/Dovroyn/pull/41
 - [x] Merge PR #41 under existing authorisation.
-- [ ] Complete the follow-up layout correction from the PR review (persistent measurement-settings control must be outside document flow).
-- [ ] Verify production deployment matches the merged commit. Vercel connector currently requires reauthentication.
+- [x] Merge the fixed-position measurement-settings correction in PR #42; 240 tests and build passed.
+- [x] Verify GitHub reports Vercel deployment success for #41 and #42 merge commits (latest #42: 55427cec7674609d6011d87a947b94ff8606be19). Direct Vercel settings still require reauthentication.
 - [ ] Verify Production signup label, intended Google Ads action/account and live Tag Assistant behavior. Labels are build-time Vite inputs; see google-ads-conversion-review.md.
-- [ ] Verify Stripe Payment Link completion behavior and implement a trusted payment-completion path before enabling purchase conversions. Never count clicks or active subscriptions as payment evidence.
+- [x] Implement and locally verify the trusted purchase-completion route and endpoint (251 tests and build pass), using existing RLS and server-owned Stripe IDs.
+- [ ] Verify/configure intended Stripe Payment Link completion redirects, purchase label and real subscription IDs before claiming live purchase recording. Never count clicks or active subscriptions as payment evidence.
 
 ## Wider authorised launch work
 
@@ -22,7 +23,7 @@ Updated 11 October 2026 Perth. This checklist records supported unfinished work;
 | Live publishing / scheduling | Existing content API generates paid, direction-approved drafts; no actual provider publisher/scheduler found. | Implement against verified connected providers and trusted account targets, paid-period enforcement, idempotency and human approval. Existing platform planning support must not be represented as live publishing. |
 | Tier-based advertising | Canonical paid limits are implemented. No confirmed platform connection quota exists. Ads/spend are currently plan-only; no live execution route found. | Preserve Starter/Growth/Pro/Scale prices and allowances. Use explicit approved campaign/budget authority; do not launch ads or change spend from a saved plan or generic permission to build the app. |
 | API/provider costs | No approved purchasing cap, selected paid provider service, or billable signup requirement was recovered. | Use existing/free authorised access where supported. Surface exact unavoidable paid costs from official current terms before committing to a paid service. Do not purchase every platform in the recommendation catalogue. |
-| Stripe provisioning | Existing webhook invokes getUserByEmail, absent from installed Supabase SDK. | Review/remediate separately with focused verification under auth/setup constraints; do not call live provisioning working while this code path is broken. |
+| Stripe provisioning | Existing webhook invokes getUserByEmail, absent from installed Supabase SDK, and does not populate existing stripe_customer_id/stripe_subscription_id fields required by the verifier. | Review/remediate separately with focused verification under auth/setup constraints; do not call live provisioning working while this code path is broken. |
 
 ## Provider inventory
 
