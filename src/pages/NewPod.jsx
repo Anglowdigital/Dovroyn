@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
 import { canCreatePod, getPlan } from '../lib/plans';
 import { uploadPodAsset } from '../lib/podRepository';
-import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
+import { DOVROYN_POD_PRESET, MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 
 export default function NewPodPage({ session, subscription }) {
   const navigate = useNavigate();
@@ -16,16 +16,41 @@ export default function NewPodPage({ session, subscription }) {
     targetCountry: 'Australia',
   });
   const [logoFile, setLogoFile] = useState(null);
+  const logoInputRef = useRef(null);
   const [photoFiles, setPhotoFiles] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [presetLoading, setPresetLoading] = useState(false);
   const [error, setError] = useState('');
 
   const tier = subscription?.tier || 'free';
   const needsUrl = sourceNeedsUrl(form.sourceType);
   const selectedSource = POD_SOURCE_TYPES.find((source) => source.value === form.sourceType);
 
+  const loadDovroynPreset = async () => {
+    setError('');
+    if (logoInputRef.current) logoInputRef.current.value = '';
+    setLogoFile(null);
+    setPresetLoading(true);
+    setForm((previous) => ({ ...previous, ...DOVROYN_POD_PRESET }));
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}dovroyn-logo.png`);
+      if (!response.ok) throw new Error('Logo unavailable');
+      const blob = await response.blob();
+      setLogoFile(new File([blob], 'dovroyn-logo.png', { type: blob.type || 'image/png' }));
+    } catch {
+      setLogoFile(null);
+      setError('Dovroyn details were loaded. Select the existing Dovroyn logo before creating the pod.');
+    } finally {
+      setPresetLoading(false);
+    }
+  };
+
   const handleCreate = async (e) => {
     e.preventDefault();
+    if (presetLoading) {
+      setError('Wait for the Dovroyn logo to finish loading before creating the pod.');
+      return;
+    }
     if (!form.podName.trim()) {
       setError('Pod name is required.');
       return;
@@ -138,6 +163,12 @@ export default function NewPodPage({ session, subscription }) {
       )}
 
       <form className="card-form panel" onSubmit={handleCreate}>
+        <div className="pod-action-row">
+          <button className="button button-ghost" type="button" disabled={saving || presetLoading} onClick={loadDovroynPreset}>
+            {presetLoading ? 'Loading Dovroyn website...' : 'Load Dovroyn website'}
+          </button>
+          <span className="subtle">Prefills dovroyn.com and the existing approved logo. Review before creating.</span>
+        </div>
         <div className="field-grid">
           <label>
             Pod Name
@@ -188,12 +219,14 @@ export default function NewPodPage({ session, subscription }) {
           <label>
             Brand logo
             <input
+              ref={logoInputRef}
               type="file"
               accept="image/png,image/jpeg,image/webp"
+              disabled={presetLoading}
               onChange={(event) => setLogoFile(event.target.files?.[0] || null)}
-              required
+              required={!logoFile}
             />
-            <span className="subtle">One logo. It becomes part of this pod's locked brand analysis.</span>
+            <span className="subtle">{logoFile ? `${logoFile.name} ready. ` : ''}One logo. It becomes part of this pod's locked brand analysis.</span>
           </label>
 
           <label>
@@ -244,7 +277,7 @@ export default function NewPodPage({ session, subscription }) {
           </label>
         </div>
 
-        <button className="button button-primary" type="submit" disabled={saving}>
+        <button className="button button-primary" type="submit" disabled={saving || presetLoading}>
           {saving ? 'Creating pod...' : 'Create Pod and Review Inputs'}
         </button>
       </form>

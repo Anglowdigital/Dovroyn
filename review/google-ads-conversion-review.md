@@ -82,6 +82,8 @@ Stripe webhook signatures cover the exact request bytes. The correction reads th
 
 Fresh validation: **265/265 repository tests passed**, including **12/12 Stripe provisioning boundary tests**, and the production build passed (1,902 modules). Tests cover existing-account checkout gating on both paid pricing surfaces without destination changes, lookup through page 10 despite the installed SDK's truncated link value, raw bytes across stream chunks, a signature generated and verified by the real Stripe SDK, signature failure, missing users, checkout/customer/subscription ID persistence, stale checkout rejection/newer checkout replacement, old-subscription update/delete isolation, atomic subscription-ID-guarded writes under concurrent replacement, newest-checkout reconciliation after a guarded-write collision, deterministic same-second checkout convergence, status normalization, preserved start time and error-data minimisation.
 
+PR #44 merged as `9b8269f616335b5f55d0b82cdb5ed9457b7d2175` after its exact-head review reported no major issues. GitHub reports the merge commit's Vercel deployment successful. This verifies reviewed repository deployment, not live Stripe provisioning or a Google Ads receipt.
+
 Live dependencies still requiring account evidence:
 
 1. The existing Stripe webhook endpoint must point to `/api/stripe/webhook` and subscribe to `checkout.session.completed`, `customer.subscription.updated` and `customer.subscription.deleted`.
