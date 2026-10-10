@@ -49,14 +49,16 @@ export async function findUserByEmail(admin, email) {
     const users = data?.users || [];
     const match = users.find((user) => String(user.email || '').trim().toLowerCase() === wanted);
     if (match) return match;
-    if (!data?.nextPage) return null;
-    page = data.nextPage;
+    if (users.length < perPage) return null;
+    // The installed SDK truncates multi-digit nextPage link values. Advance locally.
+    page += 1;
   }
   throw new Error('Supabase user lookup exceeded its pagination limit.');
 }
 
 export async function upsertSubscription(admin, {
-  userId, tier, status, periodEnd, periodStart, stripeCustomerId, stripeSubscriptionId, now = new Date().toISOString(),
+  userId, tier, status, periodEnd, periodStart, stripeCustomerId, stripeSubscriptionId,
+  replaceDifferentSubscription = false, now = new Date().toISOString(),
 }) {
   if (!stripeCustomerId || !stripeSubscriptionId) throw new Error('Stripe payment identity is incomplete.');
   const limits = TIER_LIMITS[tier] || TIER_LIMITS.starter;
@@ -74,9 +76,12 @@ export async function upsertSubscription(admin, {
     current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
     current_period_start: periodStart ? new Date(periodStart * 1000).toISOString() : null,
   };
-  const { data: existing, error: lookupError } = await admin.from('subscriptions').select('user_id,subscription_started_at').eq('user_id', userId).maybeSingle();
+  const { data: existing, error: lookupError } = await admin.from('subscriptions').select('user_id,subscription_started_at,stripe_subscription_id').eq('user_id', userId).maybeSingle();
   if (lookupError) throw lookupError;
   if (existing) {
+    if (existing.stripe_subscription_id && existing.stripe_subscription_id !== stripeSubscriptionId && !replaceDifferentSubscription) {
+      return 'ignored_different_subscription';
+    }
     if (existing.subscription_started_at) delete row.subscription_started_at;
     const { error } = await admin.from('subscriptions').update(row).eq('user_id', userId);
     if (error) throw error;
@@ -138,6 +143,7 @@ export function createStripeWebhookHandler({
           periodStart: subscription.current_period_start,
           stripeCustomerId: customerId,
           stripeSubscriptionId: subscriptionId,
+          replaceDifferentSubscription: true,
           now: clock(),
         });
         return sendJson(res, 200, { received: true, tier });
@@ -159,7 +165,7 @@ export function createStripeWebhookHandler({
         const user = await findUserByEmail(admin, email);
         if (!user) return sendJson(res, 200, { received: true, ignored: 'user_not_found' });
         const status = normalizeSubscriptionStatus(event.type === 'customer.subscription.deleted' ? 'canceled' : subscription.status);
-        await upsertSubscription(admin, {
+        const outcome = await upsertSubscription(admin, {
           userId: user.id,
           tier,
           status,
@@ -169,6 +175,9 @@ export function createStripeWebhookHandler({
           stripeSubscriptionId: subscriptionId,
           now: clock(),
         });
+        if (outcome === 'ignored_different_subscription') {
+          return sendJson(res, 200, { received: true, ignored: 'different_subscription' });
+        }
         return sendJson(res, 200, { received: true, tier, status });
       }
 

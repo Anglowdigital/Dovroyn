@@ -102,12 +102,18 @@ function stripeHarness(event, overrides = {}) {
 
 test('Supabase user lookup uses the supported paginated listUsers API and exact normalized email', async () => {
   const fullPage = Array.from({ length: 1000 }, (_, index) => ({ id: `other-${index}`, email: `other-${index}@example.test` }));
-  const { admin, listCalls } = adminHarness({ pages: {
-    1: fullPage,
-    2: [{ id: 'wanted', email: 'Owner@Example.Test' }],
-  } });
+  const listCalls = [];
+  const admin = { auth: { admin: { async listUsers({ page, perPage }) {
+    listCalls.push({ page, perPage });
+    return { data: {
+      users: page === 10 ? [{ id: 'wanted', email: 'Owner@Example.Test' }] : fullPage,
+      // Reproduce the installed SDK's truncated multi-digit link parsing.
+      nextPage: 1,
+    }, error: null };
+  } } } };
   assert.deepEqual(await findUserByEmail(admin, ' owner@example.test '), { id: 'wanted', email: 'Owner@Example.Test' });
-  assert.deepEqual(listCalls, [{ page: 1, perPage: 1000 }, { page: 2, perPage: 1000 }]);
+  assert.deepEqual(listCalls.map((call) => call.page), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.ok(listCalls.every((call) => call.perPage === 1000));
   const failed = adminHarness({ pages: { 1: new Error('admin denied') } });
   await assert.rejects(findUserByEmail(failed.admin, 'owner@example.test'), /admin denied/);
 });
@@ -170,6 +176,30 @@ test('subscription updates and deletions preserve Stripe IDs and normalized stat
     assert.equal(writes[0].row.status, expectedStatus);
   }
   assert.equal(normalizeSubscriptionStatus('incomplete_expired'), 'inactive');
+});
+
+test('an older subscription event cannot overwrite the currently stored subscription', async () => {
+  const subscription = {
+    id: 'sub_old',
+    customer: 'cus_owned',
+    status: 'canceled',
+    current_period_start: 1_600_000_000,
+    current_period_end: 1_602_592_000,
+    items: { data: [{ price: { nickname: 'Dovroyn Starter' } }] },
+  };
+  const event = { type: 'customer.subscription.deleted', data: { object: subscription } };
+  const { stripe } = stripeHarness(event);
+  const { admin, writes } = adminHarness({ existing: {
+    user_id: 'user-1',
+    subscription_started_at: '2026-01-01T00:00:00.000Z',
+    stripe_subscription_id: 'sub_current_growth',
+  } });
+  const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => admin });
+  const { res, result } = response();
+  await handler(request(), res);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { received: true, ignored: 'different_subscription' });
+  assert.deepEqual(writes, []);
 });
 
 test('invalid signatures, missing users and provider errors fail closed without leaking details', async () => {
