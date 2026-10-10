@@ -2,6 +2,19 @@ import { GOOGLE_ADS_PURCHASE_LABEL, trackGoogleAdsConversion } from './googleAds
 
 const sentByTarget = new WeakMap();
 
+function validCheckoutReference(value) {
+  return typeof value === 'string' && value.length <= 255 && /^cs_live_[A-Za-z0-9]+$/.test(value);
+}
+
+export function purchaseLoginPath(sessionId) {
+  return validCheckoutReference(sessionId) ? `/login?purchase_session_id=${encodeURIComponent(sessionId)}` : '/login';
+}
+
+export function purchaseReturnPath(search) {
+  const sessionId = new URLSearchParams(search).get('purchase_session_id');
+  return validCheckoutReference(sessionId) ? `/purchase-success?session_id=${encodeURIComponent(sessionId)}` : '/dashboard';
+}
+
 export function isVerifiedPurchase(purchase) {
   return purchase?.verified === true && /^[a-f0-9]{64}$/.test(purchase.transaction_id || '')
     && Number.isFinite(purchase.value) && purchase.value > 0 && purchase.currency === 'AUD';

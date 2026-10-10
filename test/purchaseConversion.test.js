@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createVerifyPurchaseHandler, verifiedPurchasePayload } from '../api/stripe/verify-purchase.js';
 import { loadSubscriptionPaymentIdentity } from '../api/_lib/supabaseAuth.js';
-import { trackVerifiedPurchase, verifyPurchase } from '../src/lib/purchaseConversion.js';
+import { trackVerifiedPurchase, verifyPurchase, purchaseLoginPath, purchaseReturnPath } from '../src/lib/purchaseConversion.js';
 
 const identity = { stripe_customer_id: 'cus_owned', stripe_subscription_id: 'sub_owned', tier: 'starter' };
 const checkout = {
@@ -12,6 +12,37 @@ const checkout = {
   customer_details: { email: 'must-not-leak@example.test' },
 };
 const purchase = verifiedPurchasePayload(checkout, identity);
+
+test('logged-out checkout retains its reference through login, with no arbitrary return URL', () => {
+  const login = purchaseLoginPath(checkout.id);
+  assert.equal(login, '/login?purchase_session_id=cs_live_paid123');
+  const returnPath = purchaseReturnPath(new URL(login, 'https://dovroyn.com').search);
+  assert.equal(returnPath, '/purchase-success?session_id=cs_live_paid123');
+  assert.equal(new URL(returnPath, 'https://dovroyn.com').searchParams.get('session_id'), checkout.id);
+  for (const invalid of [null, '', 'https://evil.test', '//evil.test', 'cs_live_bad/redirect', 'cs_test_paid123', 'cs_live_' + 'a'.repeat(256)]) {
+    assert.equal(purchaseLoginPath(invalid), '/login');
+    assert.equal(purchaseReturnPath(`?purchase_session_id=${encodeURIComponent(invalid)}`), '/dashboard');
+  }
+  assert.equal(purchaseReturnPath('?returnTo=https://evil.test'), '/dashboard');
+});
+
+test('login success and existing-session redirect resume payment verification; recovery stays on its form', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const auth = source.split('function AuthPage(')[1].split('function SignupSuccessPage(')[0];
+  const redirect = auth.match(/useEffect\(\(\) => \{ (if \(session && mode !== 'recovery' && !recovering\) navigate\(loginDestination, \{ replace: true \}\);) \}/)[1];
+  const calls = [];
+  const destination = purchaseReturnPath('?purchase_session_id=cs_live_paid123');
+  const run = new Function('session', 'mode', 'recovering', 'navigate', 'loginDestination', redirect);
+  run({ user: {} }, 'login', false, (...args) => calls.push(args), destination);
+  run({ user: {} }, 'recovery', false, (...args) => calls.push(args), destination);
+  run({ user: {} }, 'login', true, (...args) => calls.push(args), destination);
+  run(null, 'login', false, (...args) => calls.push(args), destination);
+  assert.deepEqual(calls, [[destination, { replace: true }]]);
+  assert.match(auth, /else \{ navigate\(loginDestination, \{ replace: true \}\); \}/);
+  assert.match(auth, /supabase\.auth\.signInWithPassword\(\{ email, password \}\)/);
+  assert.match(auth, /emailRedirectTo: `\$\{window\.location\.origin\}\/signup-success`/);
+  assert.match(source.split('function PurchaseSuccessPage(')[1], /to=\{session \? '\/dashboard' : purchaseLoginPath\(sessionId\)\}/);
+});
 
 function invoke(handler, body = { sessionId: checkout.id }, token = 'valid', method = 'POST') {
   const result = { headers: {} };

@@ -11,7 +11,8 @@ Updated 11 October 2026 Perth. This checklist records supported unfinished work;
 - [x] Merge the fixed-position measurement-settings correction in PR #42; 240 tests and build passed.
 - [x] Verify GitHub reports Vercel deployment success for #41 and #42 merge commits (latest #42: 55427cec7674609d6011d87a947b94ff8606be19). Direct Vercel settings still require reauthentication.
 - [ ] Verify Production signup label, intended Google Ads action/account and live Tag Assistant behavior. Labels are build-time Vite inputs; see google-ads-conversion-review.md.
-- [x] Implement and locally verify the trusted purchase-completion route and endpoint (251 tests and build pass), using existing RLS and server-owned Stripe IDs.
+- [x] Implement and locally verify the trusted purchase-completion route and endpoint (253 tests and build pass), using existing RLS and server-owned Stripe IDs.
+- [ ] Complete PR #43 review/checks and merge/deploy its verified purchase wiring. Logged-out checkout return-reference review finding is corrected and locally verified.
 - [ ] Verify/configure intended Stripe Payment Link completion redirects, purchase label and real subscription IDs before claiming live purchase recording. Never count clicks or active subscriptions as payment evidence.
 
 ## Wider authorised launch work

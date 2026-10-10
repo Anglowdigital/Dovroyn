@@ -73,7 +73,7 @@ import Header from './components/Header';
 import BrandLogo from './components/BrandLogo';
 import Footer from './components/Footer';
 import { PLAN_ENTITLEMENTS, hasActivePaidAccess } from './lib/plans.js';
-import { verifyPurchase, trackVerifiedPurchase } from './lib/purchaseConversion.js';
+import { verifyPurchase, trackVerifiedPurchase, purchaseLoginPath, purchaseReturnPath } from './lib/purchaseConversion.js';
 import AiPodAssistant from './components/AiPodAssistant';
 import PodsPage from './pages/Pods';
 import NewPodPage from './pages/NewPod';
@@ -1294,6 +1294,8 @@ function DemoPodPage() {
 /* ─── AUTH PAGE ─── */
 function AuthPage({ session, defaultMode = 'login' }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const loginDestination = purchaseReturnPath(location.search);
   const [mode, setMode] = useState(defaultMode);
 
   useEffect(() => {
@@ -1317,7 +1319,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
   // The URL hash is the ground truth — the PASSWORD_RECOVERY event can fire
   // before this component subscribes, so mode alone is not reliable on load.
   const recovering = window.location.hash.includes('type=recovery');
-  useEffect(() => { if (session && mode !== 'recovery' && !recovering) navigate('/dashboard', { replace: true }); }, [navigate, session, mode, recovering]);
+  useEffect(() => { if (session && mode !== 'recovery' && !recovering) navigate(loginDestination, { replace: true }); }, [navigate, session, mode, recovering, loginDestination]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1352,7 +1354,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
       if (data?.session) navigate('/signup-success', { replace: true });
       else { setMessage('Check your inbox to confirm your email.'); navigate('/login', { replace: true }); }
     }
-    else { navigate('/dashboard', { replace: true }); }
+    else { navigate(loginDestination, { replace: true }); }
     setSubmitting(false);
   };
 
@@ -1450,7 +1452,7 @@ function PurchaseSuccessPage({ session }) {
         <Wordmark />
         {status === 'confirmed' && <CheckCircle size={38} aria-hidden="true" />}
         <h1 style={{ fontSize: '1.5rem' }}>{status === 'confirmed' ? 'Payment confirmed' : 'Your payment'}</h1>
-        {!session ? <p>Sign in to check your payment. You can return to this page after signing in.</p>
+        {!session ? <p>Sign in to check your payment. We will return you here after signing in.</p>
           : !sessionId ? <p>Open the confirmation link from your Stripe checkout to check your payment.</p>
           : status === 'checking' ? <p role="status">Checking your payment...</p>
           : status === 'confirmed' ? <p>Your payment has been confirmed. You can continue to your Pods.</p>
@@ -1458,7 +1460,7 @@ function PurchaseSuccessPage({ session }) {
         {session && sessionId && status === 'unconfirmed' && (
           <button className="button button-secondary" type="button" onClick={() => setRetry((value) => value + 1)}>Check again</button>
         )}
-        <Link className="button button-primary" to={session ? '/dashboard' : '/login'}>
+        <Link className="button button-primary" to={session ? '/dashboard' : purchaseLoginPath(sessionId)}>
           {session ? 'Open my Pods' : 'Log in'}
         </Link>
       </div>
