@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
 import { canCreatePod, getPlan } from '../lib/plans';
@@ -16,6 +16,7 @@ export default function NewPodPage({ session, subscription }) {
     targetCountry: 'Australia',
   });
   const [logoFile, setLogoFile] = useState(null);
+  const logoInputRef = useRef(null);
   const [photoFiles, setPhotoFiles] = useState([]);
   const [saving, setSaving] = useState(false);
   const [presetLoading, setPresetLoading] = useState(false);
@@ -27,6 +28,7 @@ export default function NewPodPage({ session, subscription }) {
 
   const loadDovroynPreset = async () => {
     setError('');
+    if (logoInputRef.current) logoInputRef.current.value = '';
     setLogoFile(null);
     setPresetLoading(true);
     setForm((previous) => ({ ...previous, ...DOVROYN_POD_PRESET }));
@@ -217,6 +219,7 @@ export default function NewPodPage({ session, subscription }) {
           <label>
             Brand logo
             <input
+              ref={logoInputRef}
               type="file"
               accept="image/png,image/jpeg,image/webp"
               disabled={presetLoading}
