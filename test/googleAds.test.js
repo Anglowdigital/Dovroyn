@@ -154,3 +154,12 @@ test('unavailable or failing random ID generation cannot interrupt signup', () =
   assert.equal(rememberSignupConversion({ user }, target), false);
   assert.deepEqual(target.calls, []);
 });
+
+test('persistent consent settings do not shift existing page layouts', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
+  assert.match(source, /className="button button-secondary google-consent-settings"/);
+  const rule = css.match(/\.google-consent-settings\s*\{([^}]+)\}/)?.[1];
+  assert.ok(rule);
+  assert.match(rule, /position:\s*fixed/);
+});
