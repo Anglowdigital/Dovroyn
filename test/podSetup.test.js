@@ -28,4 +28,6 @@ test('Dovroyn can be loaded as its own website pod with the existing approved lo
   const source = readFileSync(new URL('../src/pages/NewPod.jsx', import.meta.url), 'utf8');
   assert.match(source, /Load Dovroyn website/);
   assert.match(source, /fetch\(`\$\{import\.meta\.env\.BASE_URL\}dovroyn-logo\.png`\)/);
+  assert.match(source, /if \(presetLoading\) \{\s*setError\('Wait for the Dovroyn logo to finish loading/);
+  assert.match(source, /type="submit" disabled=\{saving \|\| presetLoading\}/);
 });

@@ -27,6 +27,7 @@ export default function NewPodPage({ session, subscription }) {
 
   const loadDovroynPreset = async () => {
     setError('');
+    setLogoFile(null);
     setPresetLoading(true);
     setForm((previous) => ({ ...previous, ...DOVROYN_POD_PRESET }));
     try {
@@ -44,6 +45,10 @@ export default function NewPodPage({ session, subscription }) {
 
   const handleCreate = async (e) => {
     e.preventDefault();
+    if (presetLoading) {
+      setError('Wait for the Dovroyn logo to finish loading before creating the pod.');
+      return;
+    }
     if (!form.podName.trim()) {
       setError('Pod name is required.');
       return;
@@ -269,7 +274,7 @@ export default function NewPodPage({ session, subscription }) {
           </label>
         </div>
 
-        <button className="button button-primary" type="submit" disabled={saving}>
+        <button className="button button-primary" type="submit" disabled={saving || presetLoading}>
           {saving ? 'Creating pod...' : 'Create Pod and Review Inputs'}
         </button>
       </form>
