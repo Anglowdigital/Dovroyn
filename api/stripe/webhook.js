@@ -91,12 +91,19 @@ export async function upsertSubscription(admin, {
       return 'ignored_different_subscription';
     }
     if (existing.subscription_started_at) delete row.subscription_started_at;
-    const { error } = await admin.from('subscriptions').update(row).eq('user_id', userId);
+    let update = admin.from('subscriptions').update(row).eq('user_id', userId);
+    update = existing.stripe_subscription_id
+      ? update.eq('stripe_subscription_id', existing.stripe_subscription_id)
+      : update.is('stripe_subscription_id', null);
+    const { data, error } = await update.select('user_id');
     if (error) throw error;
+    if (!data?.length) return 'ignored_concurrent_change';
   } else {
     const { error } = await admin.from('subscriptions').insert(row);
+    if (error?.code === '23505') return 'ignored_concurrent_change';
     if (error) throw error;
   }
+  return 'written';
 }
 
 export function createStripeWebhookHandler({
@@ -153,7 +160,7 @@ export function createStripeWebhookHandler({
           }
           replaceDifferentSubscription = true;
         }
-        await upsertSubscription(admin, {
+        const outcome = await upsertSubscription(admin, {
           userId: user.id,
           tier,
           status: normalizeSubscriptionStatus(subscription.status),
@@ -165,6 +172,9 @@ export function createStripeWebhookHandler({
           existingRow: existing,
           now: clock(),
         });
+        if (outcome === 'ignored_concurrent_change') {
+          return sendJson(res, 200, { received: true, ignored: 'concurrent_change' });
+        }
         return sendJson(res, 200, { received: true, tier });
       }
 
@@ -194,8 +204,9 @@ export function createStripeWebhookHandler({
           stripeSubscriptionId: subscriptionId,
           now: clock(),
         });
-        if (outcome === 'ignored_different_subscription') {
-          return sendJson(res, 200, { received: true, ignored: 'different_subscription' });
+        if (outcome === 'ignored_different_subscription' || outcome === 'ignored_concurrent_change') {
+          const ignored = outcome === 'ignored_different_subscription' ? 'different_subscription' : 'concurrent_change';
+          return sendJson(res, 200, { received: true, ignored });
         }
         return sendJson(res, 200, { received: true, tier, status });
       }

@@ -32,8 +32,14 @@ function request(raw = '{"id": "evt_test"}') {
   return req;
 }
 
-function adminHarness({ pages = { 1: [{ id: 'user-1', email: 'owner@example.test' }] }, existing = null } = {}) {
+function adminHarness({
+  pages = { 1: [{ id: 'user-1', email: 'owner@example.test' }] },
+  existing = null,
+  updateMatches = true,
+  insertError = null,
+} = {}) {
   const writes = [];
+  const updateAttempts = [];
   const listCalls = [];
   const admin = {
     auth: { admin: { async listUsers({ page, perPage }) {
@@ -46,23 +52,30 @@ function adminHarness({ pages = { 1: [{ id: 'user-1', email: 'owner@example.test
       assert.equal(table, 'subscriptions');
       const builder = {
         action: 'select',
-        select() { return builder; },
+        filters: [],
+        select() {
+          if (builder.action !== 'update') return builder;
+          const attempt = { operation: 'update', filters: builder.filters, row: builder.row };
+          updateAttempts.push(attempt);
+          if (updateMatches) writes.push(attempt);
+          return Promise.resolve({ data: updateMatches ? [{ user_id: 'user-1' }] : [], error: null });
+        },
         eq(field, value) {
-          assert.equal(field, 'user_id');
-          if (builder.action === 'update') {
-            writes.push({ operation: 'update', userId: value, row: builder.row });
-            return Promise.resolve({ error: null });
-          }
+          builder.filters.push({ operator: 'eq', field, value });
           return builder;
         },
+        is(field, value) { builder.filters.push({ operator: 'is', field, value }); return builder; },
         async maybeSingle() { return { data: existing, error: null }; },
         update(row) { builder.action = 'update'; builder.row = row; return builder; },
-        async insert(row) { writes.push({ operation: 'insert', row }); return { error: null }; },
+        async insert(row) {
+          if (!insertError) writes.push({ operation: 'insert', row });
+          return { error: insertError };
+        },
       };
       return builder;
     },
   };
-  return { admin, writes, listCalls };
+  return { admin, writes, updateAttempts, listCalls };
 }
 
 function stripeHarness(event, overrides = {}) {
@@ -145,6 +158,10 @@ test('checkout webhook verifies exact raw bytes and stores trusted Stripe paymen
   assert.equal(writes[0].row.max_pods, 1);
   assert.equal(writes[0].row.monthly_content_days, 10);
   assert.equal(writes[0].row.subscription_started_at, undefined);
+  assert.deepEqual(writes[0].filters, [
+    { operator: 'eq', field: 'user_id', value: 'user-1' },
+    { operator: 'is', field: 'stripe_subscription_id', value: null },
+  ]);
   assert.doesNotMatch(JSON.stringify(result.body), /user-1|cus_owned|sub_owned/);
 });
 
@@ -200,6 +217,37 @@ test('an older subscription event cannot overwrite the currently stored subscrip
   assert.equal(result.status, 200);
   assert.deepEqual(result.body, { received: true, ignored: 'different_subscription' });
   assert.deepEqual(writes, []);
+});
+
+test('a concurrent subscription replacement makes the guarded write a safe no-op', async () => {
+  const subscription = {
+    id: 'sub_owned',
+    customer: 'cus_owned',
+    status: 'active',
+    current_period_start: 1_700_000_000,
+    current_period_end: 1_702_592_000,
+    items: { data: [{ price: { nickname: 'Dovroyn Growth' } }] },
+  };
+  const event = { type: 'customer.subscription.updated', data: { object: subscription } };
+  const { stripe } = stripeHarness(event);
+  const { admin, writes, updateAttempts } = adminHarness({
+    existing: {
+      user_id: 'user-1',
+      subscription_started_at: '2026-01-01T00:00:00.000Z',
+      stripe_subscription_id: 'sub_owned',
+    },
+    updateMatches: false,
+  });
+  const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => admin });
+  const { res, result } = response();
+  await handler(request(), res);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { received: true, ignored: 'concurrent_change' });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(updateAttempts[0].filters, [
+    { operator: 'eq', field: 'user_id', value: 'user-1' },
+    { operator: 'eq', field: 'stripe_subscription_id', value: 'sub_owned' },
+  ]);
 });
 
 test('a stale retried checkout cannot replace a newer stored subscription', async () => {
@@ -283,8 +331,10 @@ test('real Stripe SDK accepts the streamed payload and generated signature uncha
 
 test('paid Payment Links require the existing signed-in session without changing destinations', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  const pricing = source.split('{PRICING_TIERS.map((tier) => (')[1].split('</section>')[0];
-  assert.match(pricing, /session && tier\.stripeKey && STRIPE_PRICING_LINKS/);
-  assert.match(pricing, /href=\{STRIPE_PRICING_LINKS\[`\$\{tier\.stripeKey\}_\$\{billing\}`\]\}/);
-  assert.match(pricing, /!session \? \(\s*<NavLink className="button button-primary" to="\/signup">Create account<\/NavLink>/);
+  for (const marker of ['{PRICING_TIERS.map((tier) => (', '{PRICING_PAGE_TIERS.map((tier) => (']) {
+    const pricing = source.split(marker)[1].split('</section>')[0];
+    assert.match(pricing, /session && tier\.stripeKey && STRIPE_PRICING_LINKS/);
+    assert.match(pricing, /href=\{STRIPE_PRICING_LINKS\[`\$\{tier\.stripeKey\}_\$\{billing\}`\]\}/);
+    assert.match(pricing, /<NavLink className="button button-primary" to="\/signup">Create account<\/NavLink>/);
+  }
 });
