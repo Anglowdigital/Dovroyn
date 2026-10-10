@@ -1226,14 +1226,14 @@ function LandingPage({ session }) {
                   <li key={f} className={f.includes('upgrade to unlock') ? 'locked' : ''}>{f}</li>
                 ))}
               </ul>
-              {tier.stripeKey && STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`] ? (
+              {session && tier.stripeKey && STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`] ? (
                 <a className="button button-primary" href={STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`]}>Subscribe</a>
               ) : tier.name === 'Free' ? (
                 <NavLink className="button button-primary" to="/signup">Start Free</NavLink>
-              ) : session ? (
-                <p className="subtle">Checkout is being configured — please try again shortly.</p>
-              ) : (
+              ) : !session ? (
                 <NavLink className="button button-primary" to="/signup">Create account</NavLink>
+              ) : (
+                <p className="subtle">Checkout is being configured — please try again shortly.</p>
               )}
             </article>
           ))}
@@ -1600,7 +1600,7 @@ function PricingPage({ session }) {
                 <li key={f} className={f.includes('upgrade to unlock') ? 'locked' : ''}>{f}</li>
               ))}
             </ul>
-            {tier.stripeKey && STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`] ? (
+            {session && tier.stripeKey && STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`] ? (
               <a className="button button-primary" href={STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`]}>Subscribe</a>
             ) : tier.name === 'Free' ? (
               <NavLink className="button button-primary" to="/signup">Start Free</NavLink>
