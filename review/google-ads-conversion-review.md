@@ -64,7 +64,7 @@ Only live, complete, paid subscription checkout sessions with positive integer A
 1. Set the intended label-only `VITE_GOOGLE_ADS_PURCHASE_LABEL` for Production and rebuild/redeploy. The empty value remains a no-op.
 2. The existing server-only `STRIPE_SECRET_KEY` must belong to the Stripe account that owns the existing Payment Links.
 3. Configure each intended existing Payment Link's **after completion** redirect to `https://dovroyn.com/purchase-success?session_id={CHECKOUT_SESSION_ID}`. No Payment Link or price was changed in this review.
-4. The existing server-owned subscription row must contain the genuine `stripe_customer_id`, `stripe_subscription_id` and intended paid tier. **The current webhook neither resolves users successfully (`getUserByEmail` is absent) nor populates those two IDs.** Therefore the new verifier safely refuses affected rows until provisioning is separately corrected/verified; no live success is claimed. No schema, RLS policy, auth mechanism or database configuration was changed.
+4. The existing server-owned subscription row must contain the genuine `stripe_customer_id`, `stripe_subscription_id` and intended paid tier. A repository follow-up now replaces the absent `getUserByEmail` call with the supported paginated `listUsers` API and writes both existing Stripe ID columns. It also passes the exact request bytes to Stripe signature verification instead of reconstructing parsed JSON. No schema, RLS policy, auth mechanism or database configuration is changed. This remains unverified live until the correction is merged/deployed and the existing webhook configuration is tested.
 5. Buyers must be signed in to the matching Dovroyn account when returning. A logged-out buyer follows `/login?purchase_session_id=<validated checkout ID>` and returns automatically to the same payment verification route after login. Only a validated live Checkout Session reference is accepted; arbitrary return URLs are never used. Normal login still returns to the dashboard, and signup confirmation/password recovery and Supabase auth calls/configuration are unchanged. Old purchases for a replaced subscription and purchases without a matching row are intentionally unverified; this is not a renewal or offline-conversion implementation.
 6. Verify the Ads action, consent state, exact value/currency/transaction ID and receipt in Tag Assistant/Google Ads on the actual deployed site. GA4 purchase events/imports remain separate and unimplemented here.
 
@@ -72,4 +72,25 @@ Validation of this follow-up: **253/253 repository tests passed**, **13/13 purch
 
 The #41 and #42 merge commits were reported successfully deployed by GitHub's Vercel status on 11 October Perth. That status is build/deployment evidence, not proof of live conversion delivery.
 
-PR #43 review follow-up: addressed the missed logged-out purchase journey by retaining its validated checkout reference through login. Regression checks cover the exact return reference, rejected external/malformed destinations, existing-session login navigation and password-recovery protection. GitHub reported the initial PR preview deployed successfully; the corrected head still requires fresh checks/review before merge.
+PR #43 review follow-up: addressed the missed logged-out purchase journey by retaining its validated checkout reference through login. Regression checks cover the exact return reference, rejected external/malformed destinations, existing-session login navigation and password-recovery protection. PR #43 merged as `4620c5fe0e7a83f5e0d06904ca28035903341fe6`; GitHub's Vercel status reports that merge deployed successfully. This is deployment evidence, not live Google Ads receipt.
+
+## Stripe provisioning follow-up — 11 October 2026 Perth
+
+The prepared webhook correction keeps the existing Stripe Payment Link and Supabase design. Paid Payment Links are exposed only after the existing Dovroyn session is present, preventing checkout before an assignable account exists; the configured link URLs and approved prices are unchanged. It uses the installed SDK's supported server-only `admin.auth.admin.listUsers({ page, perPage })` API with exact case-insensitive email matching, saves Stripe's trusted customer/subscription IDs into the columns already present in `subscriptions`, and preserves the original subscription start on updates. Checkout, subscription-update and subscription-delete events all use the same identity persistence path. External responses no longer expose internal provider errors or a Supabase user ID.
+
+Stripe webhook signatures cover the exact request bytes. The correction reads the incoming stream without touching Vercel's parsed `request.body` helper, then supplies that byte-identical Buffer to `stripe.webhooks.constructEvent`. No Supabase schema, RLS policy, service, login call, price, entitlement or Payment Link is changed.
+
+Fresh validation: **259/259 repository tests passed**, including **6/6 Stripe provisioning boundary tests**, and the production build passed (1,902 modules). Tests cover existing-account checkout gating without destination changes, supported paginated user lookup, raw bytes across stream chunks, signature failure, missing users, checkout/customer/subscription ID persistence, update/deletion normalization, preserved start time and error-data minimisation.
+
+Live dependencies still requiring account evidence:
+
+1. The existing Stripe webhook endpoint must point to `/api/stripe/webhook` and subscribe to `checkout.session.completed`, `customer.subscription.updated` and `customer.subscription.deleted`.
+2. Production must contain matching server-only `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `SUPABASE_SERVICE_ROLE_KEY`, plus the existing Supabase URL. Repository examples contain names only, never secrets.
+3. The Payment Link checkout email must match the existing Dovroyn account email used by the current ownership bridge. No new auth flow or arbitrary client-supplied user ID was introduced.
+4. Subscriptions affected before deployment need a verified Stripe event replay or deliberate reconciliation so their existing rows receive the IDs. No blind backfill is included.
+5. A real signed webhook and resulting row must be observed before claiming provisioning or purchase conversions work live.
+
+Official implementation references:
+- https://supabase.com/docs/reference/javascript/auth-admin-listusers
+- https://docs.stripe.com/webhooks/signature
+- https://vercel.com/kb/guide/how-do-i-get-the-raw-body-of-a-serverless-function
