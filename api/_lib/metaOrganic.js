@@ -5,23 +5,27 @@ import { getSupabaseServiceConfig, rpcWithServiceRole } from './supabaseAuth.js'
 export const META_GRAPH_VERSION = 'v26.0';
 export const META_PROVIDER_KEY = 'instagram';
 export const META_LOGIN_ROUTE = 'facebook_login_for_instagram_api';
-// Meta's Instagram API with Facebook Login is the route that fits the supplied
-// page-linked Instagram business evidence. Keep this read/connect foundation to
-// its least-privilege discovery scopes; publishing scopes remain out of scope.
-// Docs: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started
+// Official scope verification was attempted against Meta docs during this task,
+// but developers.facebook.com returned 429 to the tool. Keep this discovery-only
+// contract narrow and continue treating pages_manage_posts as pending approval.
 export const META_ORGANIC_SCOPES = Object.freeze(['instagram_basic', 'pages_show_list']);
+export const META_ORGANIC_CONTRACT_VERSION = 'meta_organic_facebook_login_v1';
 export const META_STATE_TTL_MS = 10 * 60 * 1000;
+export const META_OAUTH_COOKIE = 'dovroyn_meta_oauth';
 
 const STATE_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
+const COOKIE_NONCE_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const SAFE_ERROR_CODES = new Set([
   'access_denied',
+  'account_ambiguous',
+  'account_unavailable',
   'configuration_required',
   'connection_unavailable',
   'csrf_failed',
   'expired_state',
   'missing_scope',
   'provider_unavailable',
-  'account_unavailable',
+  'storage_unavailable',
 ]);
 
 function base64url(input) {
@@ -32,8 +36,18 @@ function sha256Hex(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function randomState() {
-  return crypto.randomBytes(32).toString('base64url');
+function hmac(value, secret) {
+  return crypto.createHmac('sha256', secret).update(value).digest('base64url');
+}
+
+function timingSafeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function randomToken(bytes = 32) {
+  return crypto.randomBytes(bytes).toString('base64url');
 }
 
 function safeUrl(value) {
@@ -46,7 +60,7 @@ function safeUrl(value) {
 }
 
 function appBaseUrl() {
-  return safeUrl(process.env.DOVROYN_APP_URL || process.env.SITE_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` || 'https://dovroyn.com')
+  return safeUrl(process.env.DOVROYN_APP_URL || process.env.SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`) || 'https://dovroyn.com')
     || 'https://dovroyn.com';
 }
 
@@ -57,7 +71,9 @@ export function getMetaOrganicConfig(env = process.env) {
   const graphVersion = String(env.META_GRAPH_VERSION || META_GRAPH_VERSION).replace(/^\/+/, '');
   const encryptionKey = String(env.META_TOKEN_ENCRYPTION_KEY || '').trim();
   const encryptionKeyVersion = String(env.META_TOKEN_ENCRYPTION_KEY_VERSION || '').trim();
-  const configured = Boolean(appId && appSecret && redirectUri && encryptionKey && encryptionKeyVersion);
+  const cookieSecret = String(env.META_OAUTH_COOKIE_SECRET || encryptionKey || '').trim();
+  const activationEnabled = env.META_ORGANIC_CONNECTIONS_ENABLED === 'true';
+  const configured = Boolean(appId && appSecret && redirectUri && encryptionKey && encryptionKeyVersion && cookieSecret);
   return {
     appId,
     appSecret,
@@ -65,9 +81,12 @@ export function getMetaOrganicConfig(env = process.env) {
     graphVersion,
     encryptionKey,
     encryptionKeyVersion,
+    cookieSecret,
+    activationEnabled,
     configured,
     scopes: [...META_ORGANIC_SCOPES],
     loginRoute: META_LOGIN_ROUTE,
+    contractVersion: META_ORGANIC_CONTRACT_VERSION,
   };
 }
 
@@ -82,8 +101,7 @@ export function buildMetaAuthorizeUrl(config, state) {
 }
 
 export function buildIntegrationRedirect({ podId, status, reason, connectionId }) {
-  const url = new URL('/pods', appBaseUrl());
-  if (podId) url.searchParams.set('podId', podId);
+  const url = new URL(podId ? `/pods/${encodeURIComponent(podId)}` : '/pods', appBaseUrl());
   url.searchParams.set('integration', 'meta');
   url.searchParams.set('status', status);
   if (reason && SAFE_ERROR_CODES.has(reason)) url.searchParams.set('reason', reason);
@@ -91,17 +109,27 @@ export function buildIntegrationRedirect({ podId, status, reason, connectionId }
   return url.toString();
 }
 
-export function createStateRecord({ userId, podId, redirectUri, now = Date.now(), random = randomState } = {}) {
+export function createStateRecord({
+  userId,
+  podId,
+  redirectUri,
+  now = Date.now(),
+  random = randomToken,
+} = {}) {
   if (!userId || !podId || !redirectUri) throw new Error('OAuth state requires user, pod and redirect URI.');
   const state = random();
-  if (!STATE_PATTERN.test(state)) throw new Error('Generated OAuth state is invalid.');
+  const browserNonce = random();
+  if (!STATE_PATTERN.test(state) || !COOKIE_NONCE_PATTERN.test(browserNonce)) throw new Error('Generated OAuth state is invalid.');
   return {
     state,
     stateHash: sha256Hex(state),
+    browserNonce,
+    browserBindingHash: sha256Hex(browserNonce),
     userId,
     podId,
     redirectUri,
     expiresAt: new Date(now + META_STATE_TTL_MS).toISOString(),
+    expiresUnix: Math.floor((now + META_STATE_TTL_MS) / 1000),
   };
 }
 
@@ -111,43 +139,49 @@ export function hashIncomingState(state) {
   return sha256Hex(normalized);
 }
 
+export function buildOAuthCookie(record, config = getMetaOrganicConfig()) {
+  const payload = `${record.stateHash}.${record.browserNonce}.${record.expiresUnix}`;
+  const signature = hmac(payload, config.cookieSecret);
+  return `${META_OAUTH_COOKIE}=v1.${record.browserNonce}.${record.expiresUnix}.${signature}; Max-Age=${Math.ceil(META_STATE_TTL_MS / 1000)}; Path=/api/integrations/callback; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export function clearOAuthCookie() {
+  return `${META_OAUTH_COOKIE}=; Max-Age=0; Path=/api/integrations/callback; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export function parseCookies(header = '') {
+  return Object.fromEntries(String(header).split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const index = part.indexOf('=');
+      return index === -1 ? [part, ''] : [part.slice(0, index), part.slice(index + 1)];
+    }));
+}
+
+export function validateOAuthCookie({ cookieHeader, state, now = Date.now(), config = getMetaOrganicConfig() }) {
+  const stateHash = hashIncomingState(state);
+  if (!stateHash) return null;
+  const value = parseCookies(cookieHeader)[META_OAUTH_COOKIE] || '';
+  const [version, browserNonce, expiresUnixRaw, signature] = value.split('.');
+  const expiresUnix = Number(expiresUnixRaw);
+  if (version !== 'v1' || !COOKIE_NONCE_PATTERN.test(browserNonce) || !Number.isInteger(expiresUnix) || !signature) return null;
+  if (expiresUnix * 1000 <= now) return null;
+  const payload = `${stateHash}.${browserNonce}.${expiresUnix}`;
+  const expected = hmac(payload, config.cookieSecret);
+  if (!timingSafeEqual(signature, expected)) return null;
+  return { stateHash, browserBindingHash: sha256Hex(browserNonce) };
+}
+
 function requireServiceStorage() {
   getSupabaseServiceConfig();
 }
 
-export async function createOAuthState(record, deps = {}) {
-  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
-  if (!deps.rpcWithServiceRole) requireServiceStorage();
-  await rpc('create_instagram_oauth_state', {
-    p_state_hash: record.stateHash,
-    p_user_id: record.userId,
-    p_pod_id: record.podId,
-    p_redirect_uri: record.redirectUri,
-    p_expires_at: record.expiresAt,
-  });
-}
-
-export async function consumeOAuthState(state, deps = {}) {
-  const stateHash = hashIncomingState(state);
-  if (!stateHash) return null;
-  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
-  if (!deps.rpcWithServiceRole) requireServiceStorage();
-  return rpc('consume_instagram_oauth_state', { p_state_hash: stateHash });
-}
-
-export async function storeMetaConnection(connection, deps = {}) {
-  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
-  if (!deps.rpcWithServiceRole) requireServiceStorage();
-  return rpc('store_instagram_connection', {
-    p_user_id: connection.userId,
-    p_pod_id: connection.podId,
-    p_provider_account_id: connection.providerAccountId,
-    p_account_label: connection.accountLabel,
-    p_granted_scopes: connection.grantedScopes,
-    p_expires_at: connection.expiresAt,
-    p_encrypted_access_token: connection.encryptedAccessToken,
-    p_encryption_key_version: connection.encryptionKeyVersion,
-  });
+function readinessError(message = 'Meta connection storage is not ready.') {
+  const error = new Error(message);
+  error.status = 503;
+  error.code = 'storage_unavailable';
+  return error;
 }
 
 export function assertProviderSetupReady(config = getMetaOrganicConfig()) {
@@ -157,6 +191,73 @@ export function assertProviderSetupReady(config = getMetaOrganicConfig()) {
     error.code = 'configuration_required';
     throw error;
   }
+  if (!config.activationEnabled) throw readinessError('Meta connection cutover has not been enabled.');
+}
+
+function validReadiness(payload, config) {
+  return payload?.ready === true
+    && payload.contract_version === config.contractVersion
+    && Array.isArray(payload.required_scopes)
+    && config.scopes.every((scope) => payload.required_scopes.includes(scope));
+}
+
+export async function loadMetaOrganicReadiness(config = getMetaOrganicConfig(), deps = {}) {
+  if (!config.configured || !config.activationEnabled) return { ready: false, reason: 'configuration_required' };
+  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
+  if (!deps.rpcWithServiceRole) requireServiceStorage();
+  try {
+    const payload = await rpc('get_meta_organic_connection_readiness', {});
+    return validReadiness(payload, config) ? { ready: true, contractVersion: payload.contract_version }
+      : { ready: false, reason: 'storage_unavailable' };
+  } catch {
+    return { ready: false, reason: 'storage_unavailable' };
+  }
+}
+
+export async function assertMetaOrganicReady(config = getMetaOrganicConfig(), deps = {}) {
+  assertProviderSetupReady(config);
+  const readiness = await loadMetaOrganicReadiness(config, deps);
+  if (!readiness.ready) throw readinessError();
+  return readiness;
+}
+
+export async function createOAuthState(record, deps = {}) {
+  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
+  if (!deps.rpcWithServiceRole) requireServiceStorage();
+  await rpc('create_meta_organic_oauth_state', {
+    p_state_hash: record.stateHash,
+    p_browser_binding_hash: record.browserBindingHash,
+    p_user_id: record.userId,
+    p_pod_id: record.podId,
+    p_redirect_uri: record.redirectUri,
+    p_expires_at: record.expiresAt,
+  });
+}
+
+export async function consumeOAuthState(state, browserBindingHash, deps = {}) {
+  const stateHash = hashIncomingState(state);
+  if (!stateHash || !browserBindingHash) return null;
+  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
+  if (!deps.rpcWithServiceRole) requireServiceStorage();
+  return rpc('consume_meta_organic_oauth_state', {
+    p_state_hash: stateHash,
+    p_browser_binding_hash: browserBindingHash,
+  });
+}
+
+export async function storeMetaConnection(connection, deps = {}) {
+  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
+  if (!deps.rpcWithServiceRole) requireServiceStorage();
+  return rpc('store_meta_organic_connection', {
+    p_user_id: connection.userId,
+    p_pod_id: connection.podId,
+    p_provider_account_id: connection.providerAccountId,
+    p_account_label: connection.accountLabel,
+    p_granted_scopes: connection.grantedScopes,
+    p_expires_at: connection.expiresAt,
+    p_encrypted_access_token: connection.encryptedAccessToken,
+    p_encryption_key_version: connection.encryptionKeyVersion,
+  });
 }
 
 export function authorizeMetaConnection({ pod, user, subscription, requestedProviderKey = META_PROVIDER_KEY, idempotencyKey }) {
@@ -180,15 +281,9 @@ export function authorizeMetaConnection({ pod, user, subscription, requestedProv
   return result;
 }
 
-async function graphJson(path, params, token, deps = {}) {
+async function providerJson(url, options, deps = {}) {
   const fetchImpl = deps.fetch || fetch;
-  const config = deps.config || getMetaOrganicConfig();
-  const url = new URL(`https://graph.facebook.com/${config.graphVersion}${path}`);
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) url.searchParams.set(key, value);
-  });
-  if (token) url.searchParams.set('access_token', token);
-  const response = await fetchImpl(url);
+  const response = await fetchImpl(url, options);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error('Meta provider request failed.');
@@ -200,21 +295,44 @@ async function graphJson(path, params, token, deps = {}) {
   return payload;
 }
 
+async function graphGet(path, params, token, deps = {}) {
+  const config = deps.config || getMetaOrganicConfig();
+  const url = new URL(`https://graph.facebook.com/${config.graphVersion}${path}`);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) url.searchParams.set(key, value);
+  });
+  return providerJson(url, { headers: { Authorization: `Bearer ${token}` } }, deps);
+}
+
+async function graphPostForm(path, params, deps = {}) {
+  const config = deps.config || getMetaOrganicConfig();
+  const url = new URL(`https://graph.facebook.com/${config.graphVersion}${path}`);
+  const body = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) body.set(key, value);
+  });
+  return providerJson(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  }, deps);
+}
+
 export async function exchangeCodeForUserToken(code, redirectUri, deps = {}) {
   const config = deps.config || getMetaOrganicConfig();
-  const shortToken = await graphJson('/oauth/access_token', {
+  const shortToken = await graphPostForm('/oauth/access_token', {
     client_id: config.appId,
     client_secret: config.appSecret,
     redirect_uri: redirectUri,
     code,
-  }, null, deps);
+  }, deps);
   if (!shortToken?.access_token) throw Object.assign(new Error('Meta token exchange failed.'), { status: 502, code: 'provider_unavailable' });
-  const longToken = await graphJson('/oauth/access_token', {
+  const longToken = await graphPostForm('/oauth/access_token', {
     grant_type: 'fb_exchange_token',
     client_id: config.appId,
     client_secret: config.appSecret,
     fb_exchange_token: shortToken.access_token,
-  }, null, deps);
+  }, deps);
   const accessToken = longToken?.access_token || shortToken.access_token;
   const expiresIn = Number(longToken?.expires_in || shortToken?.expires_in || 0);
   return {
@@ -224,7 +342,7 @@ export async function exchangeCodeForUserToken(code, redirectUri, deps = {}) {
 }
 
 export async function loadGrantedScopes(accessToken, deps = {}) {
-  const payload = await graphJson('/me/permissions', {}, accessToken, deps);
+  const payload = await graphGet('/me/permissions', {}, accessToken, deps);
   return (payload.data || [])
     .filter((item) => item?.status === 'granted' && typeof item.permission === 'string')
     .map((item) => item.permission);
@@ -242,22 +360,47 @@ export function validateGrantedScopes(grantedScopes, requiredScopes = META_ORGAN
   }
 }
 
+function nextAfter(payload) {
+  const next = payload?.paging?.next;
+  if (!next) return '';
+  try {
+    return new URL(next).searchParams.get('after') || '';
+  } catch {
+    return '';
+  }
+}
+
 export async function loadInstagramAccount(accessToken, deps = {}) {
-  const payload = await graphJson('/me/accounts', {
-    fields: 'id,name,instagram_business_account{id,username,name}',
-    limit: 25,
-  }, accessToken, deps);
-  const page = (payload.data || []).find((item) => item?.instagram_business_account?.id);
-  if (!page) {
+  const accounts = [];
+  let after = '';
+  for (let page = 0; page < 10; page += 1) {
+    const payload = await graphGet('/me/accounts', {
+      fields: 'id,name,instagram_business_account{id,username,name}',
+      limit: 25,
+      ...(after ? { after } : {}),
+    }, accessToken, deps);
+    for (const item of payload.data || []) {
+      if (item?.instagram_business_account?.id) accounts.push({ page: item, instagram: item.instagram_business_account });
+    }
+    after = nextAfter(payload);
+    if (!after) break;
+  }
+  if (accounts.length === 0) {
     const error = new Error('No page-linked Instagram professional account is available.');
     error.status = 422;
     error.code = 'account_unavailable';
     throw error;
   }
-  const instagram = page.instagram_business_account;
+  if (accounts.length > 1) {
+    const error = new Error('Multiple Instagram professional accounts are available. Choose one before connecting.');
+    error.status = 409;
+    error.code = 'account_ambiguous';
+    throw error;
+  }
+  const { page, instagram } = accounts[0];
   return {
     providerAccountId: String(instagram.id),
-    accountLabel: instagram.username || instagram.name || page.name || String(instagram.id),
+    accountLabel: sanitizeAccountLabel(instagram.username || instagram.name || page.name || String(instagram.id)),
   };
 }
 
@@ -277,12 +420,37 @@ export function encryptProviderToken(token, config = getMetaOrganicConfig(), iv 
   return base64url(Buffer.concat([iv, tag, ciphertext]));
 }
 
-export async function completeMetaCallback({ code, state, errorCode }, deps = {}) {
+export function sanitizeAccountLabel(label) {
+  const cleaned = String(label || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return cleaned.slice(0, 120) || 'Instagram account';
+}
+
+export function normalizeConnection(connection, now = Date.now()) {
+  const expiresAt = connection.expiresAt || connection.expires_at || null;
+  const rawStatus = String(connection.status || 'error');
+  const expired = expiresAt && Number.isFinite(Date.parse(expiresAt)) && Date.parse(expiresAt) <= now;
+  const status = rawStatus === 'connected' && expired ? 'expired' : rawStatus;
+  return {
+    id: connection.id,
+    provider: connection.provider,
+    providerAccountId: connection.providerAccountId || connection.provider_account_id || null,
+    accountLabel: sanitizeAccountLabel(connection.accountLabel || connection.account_label),
+    status,
+    grantedScopes: Array.isArray(connection.grantedScopes) ? connection.grantedScopes : (connection.granted_scopes || []),
+    connectedAt: connection.connectedAt || connection.connected_at || null,
+    expiresAt,
+    updatedAt: connection.updatedAt || connection.updated_at || null,
+  };
+}
+
+export async function completeMetaCallback({ code, state, errorCode, cookieHeader }, deps = {}) {
   if (errorCode) throw Object.assign(new Error('Meta authorization was denied.'), { status: 403, code: 'access_denied' });
   if (!code || !state) throw Object.assign(new Error('Missing OAuth callback parameters.'), { status: 400, code: 'csrf_failed' });
   const config = deps.config || getMetaOrganicConfig();
   assertProviderSetupReady(config);
-  const consumed = await consumeOAuthState(state, deps);
+  const binding = validateOAuthCookie({ cookieHeader, state, config });
+  if (!binding) throw Object.assign(new Error('OAuth browser binding is invalid or expired.'), { status: 403, code: 'csrf_failed' });
+  const consumed = await consumeOAuthState(state, binding.browserBindingHash, deps);
   if (!consumed?.user_id || !consumed?.pod_id || consumed.redirect_uri !== config.redirectUri) {
     throw Object.assign(new Error('OAuth state is invalid or expired.'), { status: 403, code: 'expired_state' });
   }

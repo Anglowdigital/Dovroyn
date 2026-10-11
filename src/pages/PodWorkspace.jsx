@@ -35,7 +35,7 @@ import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askPodAssistant, requestCompetitorSnapshot, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
-import { initiateMetaOrganicConnection, summarizeMetaConnection } from '../lib/metaOrganic';
+import { initiateMetaOrganicConnection, loadMetaConnectionStatus, summarizeMetaConnection } from '../lib/metaOrganic';
 import {
   approvePodDirection,
   getAssetPreview,
@@ -311,7 +311,7 @@ function LivePodWorkspace({ session, subscription }) {
   const [competitorBusy, setCompetitorBusy] = useState(false);
   const [competitorError, setCompetitorError] = useState('');
   const [learningEvents, setLearningEvents] = useState([]);
-  const [socialConnections, setSocialConnections] = useState([]);
+  const [metaConnectionStatus, setMetaConnectionStatus] = useState({ available: false, connections: [] });
   const [connectionMutation, setConnectionMutation] = useState('');
   const podLifecycle = useRef({ current: null, podId });
   podLifecycle.current.podId = podId;
@@ -373,7 +373,7 @@ function LivePodWorkspace({ session, subscription }) {
     setCompetitorUrls(['', '', '']);
     setCompetitorSnapshot(null);
     setLearningEvents([]);
-    setSocialConnections([]);
+    setMetaConnectionStatus({ available: false, connections: [] });
     setConnectionMutation('');
     setOperationalMutation('');
     setNotice('');
@@ -395,7 +395,6 @@ function LivePodWorkspace({ session, subscription }) {
       setCompetitorSnapshot(savedCompetitors);
       setCompetitorUrls(Array.from({ length: 3 }, (_, index) => savedCompetitors?.competitors?.[index]?.url || ''));
       setLearningEvents(workspace.learningEvents || normalizePodLearning(workspace));
-      setSocialConnections(workspace.connections || []);
       setDirectionApproved(isPodDirectionApprovalCurrent(workspace.pod, workspace.preferences));
       const operational = restoreOperationalState(workspace);
       hasPlatformSelection.current = operational.platformKeys !== null;
@@ -445,6 +444,11 @@ function LivePodWorkspace({ session, subscription }) {
         })));
       if (!loadAction.isCurrent()) return;
       setAssets(persistedAssets);
+      if (session?.access_token) {
+        const status = await loadMetaConnectionStatus({ accessToken: session.access_token, podId }).catch(() => ({ available: false, connections: [] }));
+        if (!loadAction.isCurrent()) return;
+        setMetaConnectionStatus(status);
+      }
       setLoading(false);
     }).catch((error) => {
       if (loadAction?.isCurrent()) { setLoadError(error.message || 'The Pod state could not be loaded.'); setPod(null); setLoading(false); }
@@ -1064,13 +1068,13 @@ function LivePodWorkspace({ session, subscription }) {
               {getPlanningPlatforms().map((platform) => {
                 const selected = selectedPlatformKeys.includes(platform.key);
                 const recommended = recommendedKeys.includes(platform.key);
-                const connectionSummary = platform.key === 'instagram' ? summarizeMetaConnection(socialConnections) : null;
+                const connectionSummary = platform.key === 'instagram' ? summarizeMetaConnection(metaConnectionStatus) : null;
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
                     <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
                     <span className="pod-social-monogram">{platform.name.slice(0, 2)}</span>
                     <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}{connectionSummary?.label || 'Provider setup required for live connection'}</small></div>
-                    {selected && <button className="button button-ghost button-sm" type="button" disabled={connectionMutation === platform.key} onClick={(event) => { event.preventDefault(); connectPlatform(platform); }}>{connectionMutation === platform.key ? 'Opening…' : connectionSummary?.status === 'connected' ? 'Reconnect' : 'Connect account'}</button>}
+                    {selected && <button className="button button-ghost button-sm" type="button" disabled={connectionMutation === platform.key || connectionSummary?.status === 'unavailable'} onClick={(event) => { event.preventDefault(); connectPlatform(platform); }}>{connectionMutation === platform.key ? 'Opening…' : connectionSummary?.status === 'unavailable' ? 'Unavailable' : connectionSummary?.status === 'connected' ? 'Reconnect' : 'Connect account'}</button>}
                   </label>
                 );
               })}

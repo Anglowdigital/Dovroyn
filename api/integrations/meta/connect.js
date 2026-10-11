@@ -1,8 +1,9 @@
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../../_lib/http.js';
 import { loadActiveSubscription, loadOwnedPod, verifySupabaseUser } from '../../_lib/supabaseAuth.js';
 import {
-  assertProviderSetupReady,
+  assertMetaOrganicReady,
   authorizeMetaConnection,
+  buildOAuthCookie,
   buildMetaAuthorizeUrl,
   createOAuthState,
   createStateRecord,
@@ -24,7 +25,7 @@ export default async function handler(req, res) {
     if (!podId) return sendJson(res, 400, { error: 'Choose a pod before connecting Meta.' });
 
     const config = getMetaOrganicConfig();
-    assertProviderSetupReady(config);
+    await assertMetaOrganicReady(config);
 
     const user = await verifySupabaseUser(accessToken);
     if (!user?.id) return sendJson(res, 401, { error: 'Sign in before connecting Meta.' });
@@ -43,6 +44,7 @@ export default async function handler(req, res) {
 
     const stateRecord = createStateRecord({ userId: user.id, podId, redirectUri: config.redirectUri });
     await createOAuthState(stateRecord);
+    res.setHeader('Set-Cookie', buildOAuthCookie(stateRecord, config));
 
     return sendJson(res, 200, {
       authorizationUrl: buildMetaAuthorizeUrl(config, stateRecord.state),

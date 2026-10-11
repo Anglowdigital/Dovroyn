@@ -33,15 +33,21 @@ export async function initiateMetaOrganicConnection({ accessToken, podId, target
 }
 
 export async function loadMetaConnectionStatus({ accessToken, podId }) {
-  if (!accessToken || !podId) return [];
+  if (!accessToken || !podId) return { available: false, connections: [] };
   const response = await fetch(`/api/integrations/meta/status?podId=${encodeURIComponent(podId)}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   const payload = await parseJson(response);
-  return Array.isArray(payload.connections) ? payload.connections : [];
+  return {
+    available: payload.available === true,
+    reason: payload.reason || null,
+    connections: Array.isArray(payload.connections) ? payload.connections : [],
+  };
 }
 
-export function summarizeMetaConnection(connections = []) {
+export function summarizeMetaConnection(status = {}) {
+  const connections = Array.isArray(status) ? status : (status.connections || []);
+  if (!Array.isArray(status) && status.available !== true) return { status: 'unavailable', label: 'Meta connection unavailable' };
   const active = connections.find((connection) => connection.provider === META_ORGANIC_PROVIDER && connection.status === 'connected');
   if (active) return { status: 'connected', label: active.accountLabel || 'Instagram account' };
   const failed = connections.find((connection) => connection.provider === META_ORGANIC_PROVIDER && ['expired', 'revoked', 'error'].includes(connection.status));

@@ -1,7 +1,8 @@
-import { buildIntegrationRedirect, completeMetaCallback } from '../_lib/metaOrganic.js';
+import { buildIntegrationRedirect, clearOAuthCookie, completeMetaCallback } from '../_lib/metaOrganic.js';
 
 function redirect(res, location) {
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Set-Cookie', clearOAuthCookie());
   res.writeHead(302, { Location: location });
   res.end();
 }
@@ -18,6 +19,7 @@ export default async function handler(req, res) {
       code: query.code,
       state: query.state,
       errorCode: query.error || query.error_code,
+      cookieHeader: req.headers?.cookie || '',
     });
     redirect(res, buildIntegrationRedirect({
       podId: result.podId,
@@ -26,6 +28,7 @@ export default async function handler(req, res) {
     }));
   } catch (error) {
     redirect(res, buildIntegrationRedirect({
+      podId: error.podId,
       status: 'error',
       reason: error.code || 'connection_unavailable',
     }));

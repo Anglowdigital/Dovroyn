@@ -1,6 +1,6 @@
 import { getBearerToken, sendJson } from '../../_lib/http.js';
 import { loadOwnedPod, loadSocialConnections, verifySupabaseUser } from '../../_lib/supabaseAuth.js';
-import { META_PROVIDER_KEY } from '../../_lib/metaOrganic.js';
+import { getMetaOrganicConfig, loadMetaOrganicReadiness, META_PROVIDER_KEY, normalizeConnection } from '../../_lib/metaOrganic.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -16,20 +16,16 @@ export default async function handler(req, res) {
     if (!user?.id) return sendJson(res, 401, { error: 'Sign in before viewing connections.' });
     const pod = await loadOwnedPod(accessToken, podId);
     if (!pod) return sendJson(res, 404, { error: 'Pod not found.' });
+    const readiness = await loadMetaOrganicReadiness(getMetaOrganicConfig());
     const connections = await loadSocialConnections(accessToken, podId);
+    const normalizedConnections = connections
+      .filter((connection) => connection.provider === META_PROVIDER_KEY)
+      .map((connection) => normalizeConnection(connection));
     return sendJson(res, 200, {
       provider: META_PROVIDER_KEY,
-      connections: connections.map((connection) => ({
-        id: connection.id,
-        provider: connection.provider,
-        providerAccountId: connection.provider_account_id,
-        accountLabel: connection.account_label,
-        status: connection.status,
-        grantedScopes: connection.granted_scopes || [],
-        connectedAt: connection.connected_at,
-        expiresAt: connection.expires_at,
-        updatedAt: connection.updated_at,
-      })),
+      available: readiness.ready,
+      reason: readiness.ready ? null : 'storage_unavailable',
+      connections: normalizedConnections,
     });
   } catch {
     return sendJson(res, 503, { error: 'Connection status is unavailable.' });
