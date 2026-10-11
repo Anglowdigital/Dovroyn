@@ -64,3 +64,17 @@ Fixed the pod library cover/body overlap by replacing the legacy fixed grid row 
 The first campaign concept now leads with labelled fictional product imagery alongside the actual source-review UI instead of two small-text interface captures. No performance claim was added.
 
 Free-analysis claim checked against repository implementation: `src/lib/plans.js` grants one free pod; `20261001071256_customer_onboarding_reconciliation.sql` replaces the former paid-only pod creation gate with a one-pod default. `api/ai/analyze.js` checks authentication, ownership and unlocked source, with no subscription requirement; `public.finalize_pod_analysis` likewise checks ownership/source rather than paid entitlement. No gates/pricing changed. Applied production migrations and a real free-account analysis remain unverified from this environment.
+
+## Independent security and workflow review
+
+A separate reviewer examined `e23f597` and independently ran 286 tests/build. The review found a release-blocking discrepancy: the newest database finalization function still required a logo. `20261011233000_optional_logo_analysis.sql` removes only that clause from the latest function, retaining owner checks, row locking, source locking, photos-only minimum, valid payload checks, invoker security and grants. **Apply this forward migration before deploying optional-logo intake.** No production migration was applied here.
+
+`verify-optional-logo.cjs` executes the actual migration function in isolated PostgreSQL using PGlite with a minimal schema. Run with `PGLITE_MODULE=/path/to/@electric-sql/pglite node docs/visual-upgrade/verify-optional-logo.cjs`. URL/no-logo success, photos-only minimum, source locks, wrong owner, invalid source type, payload failure atomicity and invoker security passed. This is not a production RLS/deployment smoke test.
+
+The independent review found no additional introduced blocker. Existing page extraction retains pinned DNS, per-redirect checks, encoded/decoded body limits and per-hop timeouts. The pre-existing lack of a total multi-page crawl deadline remains a deployment timeout risk. Source media is observed from markup, not fetched server-side. Uploaded creative snapshots persist storage paths, not signed URLs.
+
+Meta auth/start/callback routes are absent in this branch. Connect opens an explicit provider-setup-unavailable modal without an OAuth request, token write or success state. This branch is safely independent of Meta implementation, but cannot provide working platform connections.
+
+Flow: NewPod saves source inputs and opens Sources. The next primary action is Analyse and lock pod; analysis is not automatic. Success opens AI analysis & review. Content generation retains analysis/direction approval gates. Corrected a pre-existing absolute claim about website photos being used automatically; imagery is explicitly chosen during creative review.
+
+Vercel reported READY for reviewed head `e23f597` at `https://dovroyn-m0y1ih6v8-anglowdigital.vercel.app`. This confirms preview build, not authenticated behavior or database compatibility. A refreshed preview must be checked after the migration fix commit. No production deployment or merge was performed.

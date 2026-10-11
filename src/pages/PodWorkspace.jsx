@@ -956,7 +956,7 @@ function LivePodWorkspace({ session, subscription }) {
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">One pod, one source</p><h2>Brand analysis inputs</h2><p className="subtle">Choose one website, social page, Shopify store, or photos-only source. Optionally add your logo and up to five photos, then analyse and review this pod.</p></div>{sourceLocked && <StatusPill tone="green">Source locked</StatusPill>}</header>
-            <article className="pod-note-card"><strong>Website photos first. Asset folder second.</strong><p>Every post and campaign uses the photos from this website before anything else. The Asset folder is only for extras — a Christmas party, a flash sale, a seasonal push.</p></article>
+            <article className="pod-note-card"><strong>Your source. Your creative choices.</strong><p>Review imagery observed on your website alongside the photos you upload. Choose the image for each creative before approving it; campaign assets can supply additional options.</p></article>
             {sourceLocked ? (
               <article className="pod-lock-card"><LockKeyhole size={22} /><div><strong>This pod is permanently tied to its analysed source.</strong><p>Create another pod for a different website, social page, Shopify store, or brand. This prevents one subscription pod from being reused for multiple businesses.</p></div></article>
             ) : (
@@ -973,7 +973,7 @@ function LivePodWorkspace({ session, subscription }) {
                 <div className="pod-brand-upload-grid">
                   <label className="pod-upload-zone">
                     <Upload size={24} />
-                    <strong>{logoAssets.length ? 'Logo added' : 'Add one brand logo'}</strong>
+                    <strong>{logoAssets.length ? 'Logo added' : 'Add a logo (optional)'}</strong>
                     <span>PNG, JPG, or WebP. One logo per pod.</span>
                     <input type="file" accept="image/png,image/jpeg,image/webp" disabled={logoAssets.length >= 1} onChange={(event) => addAssets(event, 'logo')} />
                   </label>
