@@ -56,20 +56,23 @@ import {
 import PodCommandPalette from '../components/pod/PodCommandPalette';
 import PodModal from '../components/pod/PodModal';
 import './pod-workspace.css';
+import PlatformMark from '../components/PlatformMark';
+import PodJourney from '../components/pod/PodJourney';
+import CreativeReview from '../components/pod/CreativeReview';
 
 const TAB_GROUPS = [
   {
     label: 'Pod brain',
     items: [
       ['sources', 'Website & photos', Globe2],
-      ['direction', 'AI direction', Palette],
+      ['direction', 'AI analysis & review', Palette],
       ['overview', 'Overview', LayoutDashboard],
       ['assistant', 'Pod AI', Bot],
       ['assets', 'Assets', FileImage],
     ],
   },
   {
-    label: 'Create & publish',
+    label: 'Plan & create',
     items: [
       ['socials', 'Social accounts', MessageSquareText],
       ['content', 'Social content', Sparkles],
@@ -200,7 +203,7 @@ function DemoPodShowcase() {
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">Fictional website & photos</p><h2>Brand analysis inputs</h2><p className="subtle">A complete sample of the information a real pod can organise after its owner provides the source.</p></div><StatusPill tone="green">Sample locked</StatusPill></header>
             <article className="pod-lock-card"><LockKeyhole size={22} /><div><strong>{pod.source_url}</strong><p>Reserved demonstration address. It is not a real business or connected website.</p></div></article>
-            <div className="pod-asset-grid"><article className="pod-file-card"><Globe2 /><div><strong>{pod.source_url}</strong><small>Fictional primary website</small></div></article>{[...logoAssets, ...brandPhotos].map((asset) => <article className="pod-file-card" key={asset.id}><img src={asset.preview} alt="" /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample brand logo' : 'Sample brand photo'}</small></div></article>)}</div>
+            <div className="pod-asset-grid pod-source-gallery"><article className="pod-file-card"><Globe2 /><div><strong>{pod.source_url}</strong><small>Fictional primary website</small></div></article>{[...logoAssets, ...brandPhotos].map((asset) => <article className="pod-file-card" key={asset.id}><img src={asset.preview} alt="" /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample brand logo' : 'Sample brand photo'}</small></div></article>)}</div>
           </div>
         );
       case 'direction':
@@ -215,9 +218,9 @@ function DemoPodShowcase() {
       case 'assets':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample library</p><h2>Campaign assets</h2><p className="subtle">Prepared fictional images demonstrate how real pod assets are grouped without allowing public uploads.</p></div><StatusPill>Read-only sample</StatusPill></header><div className="pod-media-grid">{assets.map((asset) => <article key={asset.id}><img src={asset.preview} alt={asset.name} /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample logo' : asset.assetRole === 'brand_photo' ? 'Sample brand photo' : 'Sample campaign creative'}</small></div></article>)}</div></div>;
       case 'socials':
-        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample channel plan</p><h2>Recommended social accounts</h2><p className="subtle">These are example recommendations only. No public demo accounts are connected.</p></div><StatusPill>0 live connections</StatusPill></header><div className="pod-platform-select-grid">{selectedPlatforms.map((platform) => <article key={platform.key} className="pod-platform-select selected"><span className="pod-social-monogram">{platform.name.slice(0, 2)}</span><div><h3>{platform.name}</h3><p>{platform.focus}</p><small>Recommended in this fictional plan</small></div></article>)}</div><p className="pod-honesty-note">Provider connections are not live yet. Future connections would require official provider configuration and owner authorisation. This showcase cannot connect, post, or publish.</p></div>;
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample channel plan</p><h2>Recommended social accounts</h2><p className="subtle">These are example recommendations only. No public demo accounts are connected.</p></div><StatusPill>0 live connections</StatusPill></header><div className="pod-platform-select-grid">{selectedPlatforms.map((platform) => <article key={platform.key} className="pod-platform-select selected"><PlatformMark platform={platform.key} size={28} /><div><h3>{platform.name}</h3><p>{platform.focus}</p><small>Recommended in this fictional plan</small></div></article>)}</div><p className="pod-honesty-note">Provider connections are not live yet. Future connections would require official provider configuration and owner authorisation. This showcase cannot connect, post, or publish.</p></div>;
       case 'content':
-        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample social manager</p><h2>Prepared campaign drafts</h2><p className="subtle">Fictional, read-only examples for each recommended channel.</p></div><StatusPill>{posts.length} sample drafts</StatusPill></header><div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Sample</StatusPill></header><img className="pod-post-photo" src={brandPhotos[0].preview} alt="Fictional Aurora Botanicals campaign" /><small className="pod-photo-source">Fictional sample creative</small><p className="pod-demo-post-copy">{post.content}</p></article>)}</div></div>;
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample social manager</p><h2>Prepared campaign drafts</h2><p className="subtle">Fictional, read-only examples for each recommended channel.</p></div><StatusPill>{posts.length} sample drafts</StatusPill></header><div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Sample</StatusPill></header><img className="pod-post-photo" src={brandPhotos[0].preview} alt="Fictional Aurora Botanicals campaign" /><small className="pod-photo-source">Fictional sample creative</small><p className="pod-demo-post-copy">{post.content}</p></article>)}</div></div>;
       case 'calendar':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample June calendar</p><h2>Content calendar</h2><p className="subtle">A filled example showing the same approved campaign adapted for the selected channels.</p></div><StatusPill>Fictional schedule</StatusPill></header><div className="pod-cal-grid" aria-label="Fictional June content calendar">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day} className="pod-cal-dow">{day}</span>)}{Array.from({ length: 30 }, (_, index) => index + 1).map((date) => <div key={date} className={`pod-cal-day${calendarPostDays.has(date) ? ' pod-cal-post' : ''}`}><span className="pod-cal-date">{date}</span>{calendarPostDays.has(date) && <><span className="pod-cal-thumb"><img src={brandPhotos[0].preview} alt="" /></span><strong>Winter ritual</strong><span className="pod-cal-badges">{selectedPlatforms.slice(0, 2).map((platform) => <span key={platform.key}>{platform.name}</span>)}</span></>}</div>)}</div></div>;
       case 'campaigns':
@@ -243,7 +246,8 @@ function DemoPodShowcase() {
     <section className="pod-workspace pod-showcase" data-pod-mode="showcase">
       <div className="pod-demo-banner" role="note"><Sparkles size={15} /><span>Read-only fictional showcase — explore each section; nothing can be edited, connected, sent, saved, or published.</span><Link to="/signup">Create a working pod →</Link></div>
       <Link to="/" className="pod-back-link">&larr; Back to Dovroyn</Link>
-      <header className="pod-workspace-topbar"><div className="pod-workspace-title"><span className="pod-brand-orb"><Sparkles size={18} /></span><div><p className="eyebrow">{pod.brand_name} · fictional</p><h2>{pod.pod_name}</h2></div></div><div className="pod-workspace-actions"><StatusPill>Showcase only</StatusPill></div></header>
+      <header className="pod-workspace-topbar"><div className="pod-workspace-title"><span className="pod-brand-orb">{logoAssets[0]?.preview ? <img src={logoAssets[0].preview} alt="Brand logo" /> : <Sparkles size={18} />}</span><div><p className="eyebrow">{pod.brand_name} · fictional</p><h2>{pod.pod_name}</h2></div></div><div className="pod-workspace-actions"><StatusPill>Showcase only</StatusPill></div></header>
+      <PodJourney activeTab={activeTab} />
       <div className="pod-workspace-body">
         <aside className="pod-workspace-nav" role="tablist" aria-label="Demo pod sections" aria-orientation="vertical">
           {DEMO_TAB_GROUPS.map((group) => <div key={group.label} role="presentation"><p role="presentation">{group.label}</p>
@@ -274,7 +278,7 @@ function LivePodWorkspace({ session, subscription }) {
   const [pod, setPod] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('sources');
   const [analysis, setAnalysis] = useState(null);
   const [analysisState, setAnalysisState] = useState('idle');
   const [aiMessages, setAiMessages] = useState([]);
@@ -291,6 +295,7 @@ function LivePodWorkspace({ session, subscription }) {
   const [assets, setAssets] = useState([]);
   const [selectedPlatformKeys, setSelectedPlatformKeys] = useState([]);
   const [posts, setPosts] = useState([]);
+  const [creativePreferences, setCreativePreferences] = useState([]);
   const [calendarItems, setCalendarItems] = useState([]);
   const [calendarMonth] = useState(() => {
     const now = new Date();
@@ -337,7 +342,7 @@ function LivePodWorkspace({ session, subscription }) {
     hasPlatformSelection.current = false;
     setPod(null);
     setLoadError('');
-    setActiveTab('overview');
+    setActiveTab('sources');
     setAnalysis(null);
     setAnalysisState('idle');
     setAiMessages([]);
@@ -354,6 +359,7 @@ function LivePodWorkspace({ session, subscription }) {
     setAssets([]);
     setSelectedPlatformKeys([]);
     setPosts([]);
+    setCreativePreferences([]);
     setCalendarItems([]);
     setCampaign(null);
     setObservancesEnabled(false);
@@ -385,6 +391,7 @@ function LivePodWorkspace({ session, subscription }) {
       setSourceType(workspace.pod?.source_type || (workspace.pod?.source_url ? 'website' : 'photos'));
       setSourceUrl(workspace.pod?.source_url || '');
       setSources(workspace.sources || []);
+      setCreativePreferences(workspace.preferences || []);
       setAiMessages(workspace.messages || []);
       const savedCompetitors = normalizePodCompetitorSnapshot(workspace.competitorSnapshot) || selectPodCompetitorSnapshot(workspace.preferences, podId);
       setCompetitorSnapshot(savedCompetitors);
@@ -414,6 +421,7 @@ function LivePodWorkspace({ session, subscription }) {
           pillars: restoredPillars.length ? restoredPillars : INITIAL_ANALYSIS.pillars,
         }, workspace.preferences));
         setAnalysisState('ready');
+        setActiveTab('direction');
       } else {
         setActiveTab('sources');
       }
@@ -946,7 +954,7 @@ function LivePodWorkspace({ session, subscription }) {
       case 'sources':
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">One pod, one source</p><h2>Brand analysis inputs</h2><p className="subtle">Choose one website, social page, Shopify store, or photos-only source. Add one logo and up to five photos, then analyse and lock this pod.</p></div>{sourceLocked && <StatusPill tone="green">Source locked</StatusPill>}</header>
+            <header className="pod-panel-heading"><div><p className="eyebrow">One pod, one source</p><h2>Brand analysis inputs</h2><p className="subtle">Choose one website, social page, Shopify store, or photos-only source. Optionally add your logo and up to five photos, then analyse and review this pod.</p></div>{sourceLocked && <StatusPill tone="green">Source locked</StatusPill>}</header>
             <article className="pod-note-card"><strong>Website photos first. Asset folder second.</strong><p>Every post and campaign uses the photos from this website before anything else. The Asset folder is only for extras — a Christmas party, a flash sale, a seasonal push.</p></article>
             {sourceLocked ? (
               <article className="pod-lock-card"><LockKeyhole size={22} /><div><strong>This pod is permanently tied to its analysed source.</strong><p>Create another pod for a different website, social page, Shopify store, or brand. This prevents one subscription pod from being reused for multiple businesses.</p></div></article>
@@ -978,7 +986,7 @@ function LivePodWorkspace({ session, subscription }) {
                 <div className="pod-analysis-lock-action"><div><strong>Ready to build this pod?</strong><p>Analysis generates the brand direction and permanently locks these inputs to this pod.</p></div><button className="button button-primary" type="button" onClick={runAnalysis} disabled={analysisState === 'running'}><Sparkles size={16} /> {analysisState === 'running' ? 'Analysing…' : 'Analyse and lock pod'}</button></div>
               </>
             )}
-            <div className="pod-asset-grid">
+            <div className="pod-asset-grid pod-source-gallery">
               {sourceUrl && <article className="pod-file-card"><Globe2 /><div><strong>{sourceUrl}</strong><small>{selectedSource?.label || 'Primary source'}</small></div></article>}
               {[...logoAssets, ...brandPhotos].map((asset) => <article className="pod-file-card" key={asset.id}><img src={asset.preview} alt="" /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Brand logo' : `Brand photo · ${Math.ceil(asset.size / 1024)} KB`}</small></div></article>)}
             </div>
@@ -990,6 +998,9 @@ function LivePodWorkspace({ session, subscription }) {
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">AI direction</p><h2>Review before content is generated</h2><p className="subtle">Approve the proposal or teach this pod what to change.</p></div><StatusPill tone={directionApproved ? 'green' : 'gold'}>{directionApproved ? 'Approved' : 'Needs review'}</StatusPill></header>
+            {analysis.source_warnings?.length > 0 && <aside className="pod-honesty-note" role="note"><strong>What we could read</strong>{analysis.source_warnings.map(warning => <p key={warning}>{warning}</p>)}</aside>}
+            {analysis.source_pages?.length > 0 && <article className="pod-rich-card"><small>Source evidence</small><ul>{analysis.source_pages.map(page => <li key={page.url}>{page.title || page.url} — {page.extraction_mode === 'metadata_only' ? 'Metadata only; page content not rendered' : 'Page text read'}</li>)}</ul></article>}
+            {analysis.source_media?.length > 0 && <section className="pod-media-review"><h3>Images found on your source</h3><p className="subtle">Review these before choosing one for a creative. Finding an image does not approve its use.</p><div className="pod-media-grid">{analysis.source_media.map(media => <article key={media.url}><img src={media.url} referrerPolicy="no-referrer" alt={media.alt || 'Image observed on the source website'} /><div><strong>{media.role === 'brand_logo' ? 'Source logo' : 'Source image'}</strong><small>Needs review · {media.source_url}</small></div></article>)}</div></section>}
             <section className="pod-insight-grid">
               {[['Brand summary', analysis.summary], ['Tone', analysis.tone], ['Audience', analysis.audience], ['Offer', analysis.offer], ['Strongest opportunity', analysis.opportunity]].map(([label, value]) => <article key={label}><small>{label}</small><p>{value}</p></article>)}
             </section>
@@ -1046,7 +1057,7 @@ function LivePodWorkspace({ session, subscription }) {
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
                     <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
-                    <span className="pod-social-monogram">{platform.name.slice(0, 2)}</span>
+                    <PlatformMark platform={platform.key} size={28} />
                     <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}Provider setup required for live connection</small></div>
                     {selected && <button className="button button-ghost button-sm" type="button" onClick={(event) => { event.preventDefault(); setModal({ type: 'connect', platform }); }}>Connect account</button>}
                   </label>
@@ -1058,11 +1069,10 @@ function LivePodWorkspace({ session, subscription }) {
         );
       }
       case 'content': {
-        const contentPhoto = [...brandPhotos, ...assets.filter((asset) => asset.assetRole === 'campaign_asset')][0] || null;
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign, posted everywhere</h2><p className="subtle">The same approved campaign goes to every selected platform on the same day — with photos from the website gallery first, the asset folder second.</p></div><button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={generateContent}><Sparkles size={16} /> {contentGenerating ? 'Generating…' : 'Generate content'}</button></header>
-            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>)}</div>}
+            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign. A creative for every channel.</h2><p className="subtle">Generate channel-specific copy, choose your imagery, then edit and approve the visual creative. Nothing is published from this screen.</p></div><button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={generateContent}><Sparkles size={16} /> {contentGenerating ? 'Generating…' : 'Generate content'}</button></header>
+            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header><CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /><p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>)}</div>}
           </div>
         );
       }
@@ -1073,7 +1083,7 @@ function LivePodWorkspace({ session, subscription }) {
         const calThumb = brandPhotos[0]?.preview || assets.find((asset) => asset.assetRole === 'campaign_asset')?.preview || '';
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Visible month · {calendarMonth}</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. Saved calendar entries remain drafts until approved; provider publishing is unavailable.</p></div><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
+            <header className="pod-panel-heading"><div><p className="eyebrow">Visible month · {calendarMonth}</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. Calendar entries are draft captions; visual creative approvals are saved separately. Provider publishing is unavailable.</p></div><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
             <label className="pod-toggle"><input type="checkbox" checked={observancesEnabled} disabled={Boolean(operationalMutation)} onChange={(event) => saveObservances(event.target.checked)} /><span /><div><strong>Include selected religious observances</strong><small>Off by default. Dovroyn will never guess a user's religion. No observances are selected unless you supply them.</small></div></label>
             {monthItems.length ? (
               <div className="pod-cal-grid" aria-label={`Saved content calendar for ${calendarMonth}`}>
@@ -1131,9 +1141,10 @@ function LivePodWorkspace({ session, subscription }) {
         </div>
       )}
       <Link to="/pods" className="pod-back-link">&larr; Pods</Link><header className="pod-workspace-topbar">
-        <div className="pod-workspace-title"><span className="pod-brand-orb"><Sparkles size={18} /></span><div><p className="eyebrow">{pod.brand_name || pod.pod_type}</p><h1>{pod.pod_name}</h1></div></div>
+        <div className="pod-workspace-title"><span className="pod-brand-orb">{logoAssets[0]?.preview ? <img src={logoAssets[0].preview} alt="Brand logo" /> : <Sparkles size={18} />}</span><div><p className="eyebrow">{pod.brand_name || pod.pod_type}</p><h1>{pod.pod_name}</h1></div></div>
         <div className="pod-workspace-actions"><StatusPill tone={directionApproved ? 'green' : 'gold'}>{directionApproved ? 'Direction approved' : 'AI brain ready'}</StatusPill><button className="pod-command-trigger" type="button" onClick={() => setPaletteOpen(true)}><Command size={15} /> Commands <kbd>Ctrl K</kbd></button></div>
       </header>
+      <PodJourney activeTab={activeTab} />
       <div className="pod-workspace-body">
         <aside className="pod-workspace-nav" aria-label="Pod sections">{TAB_GROUPS.map((group) => <div key={group.label}><p>{group.label}</p>{group.items.map(([key, label, Icon]) => <button key={key} className={activeTab === key ? 'active' : ''} type="button" onClick={() => setActiveTab(key)}><Icon size={16} /><span>{label}</span></button>)}</div>)}</aside>
         <main className="pod-workspace-panel">{renderPanel()}</main>
@@ -1142,10 +1153,10 @@ function LivePodWorkspace({ session, subscription }) {
       <PodCommandPalette open={paletteOpen} commands={commands} onClose={() => setPaletteOpen(false)} />
       <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => { if (!actionPending('direction')) setModal(null); }}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} disabled={Boolean(directionMutation) || contentGenerating} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim() || Boolean(directionMutation) || contentGenerating} onClick={saveOverride}>{directionMutation === 'override' ? 'Saving direction…' : 'Save and readjust'}</button><button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal(null)}>Cancel</button></div></PodModal>
       <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in needs the provider app ID, permissions, redirect URL, token encryption, and platform approval before this button can safely open OAuth.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
-      <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, one logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
+      <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, an optional logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
       <PodModal open={modal?.type === 'analysis-first'} title="Run the analysis first" description="Content must come from this pod's website, photos, and approved direction." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Go to AI direction</button></PodModal>
       <PodModal open={modal?.type === 'approval-first'} title="Approve the direction first" description="This prevents the AI from filling the pod with content based on a direction you do not want." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Review direction</button></PodModal>
-      <PodModal open={modal?.type === 'content-first'} title="Generate content first" description="The calendar schedules approved platform-specific drafts." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('content'); }}>Open social content</button></PodModal>
+      <PodModal open={modal?.type === 'content-first'} title="Generate content first" description="The calendar organises platform-specific draft captions on the same campaign dates." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('content'); }}>Open social content</button></PodModal>
       <PodModal open={modal?.type === 'invite'} title="Invite a collaborator" description="Invitations will be sent only after private pod-membership policies and email delivery are enabled." onClose={() => setModal(null)}><label className="pod-modal-field">Email address<input type="email" placeholder="collaborator@example.com" /></label><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Invite saved as pending setup; no email was sent.')}>Save pending invite</button></PodModal>
       <PodModal open={modal?.type === 'launch'} title="Coming-soon draft created" description="The page stays private until publishing infrastructure and its address are configured." onClose={() => setModal(null)}><div className="pod-provider-message"><Mail /><div><strong>Draft ready inside this pod</strong><p>The page uses the approved brand direction and stores email captures separately from marketing content.</p></div></div><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Coming-soon page draft saved.')}>Save page draft</button></PodModal>
     </section>

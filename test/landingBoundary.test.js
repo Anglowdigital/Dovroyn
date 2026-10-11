@@ -9,10 +9,12 @@ const testerPreview = readFileSync(new URL('../src/components/TesterPodPreview.j
 
 // The current Node suite has no JSX/DOM harness. These named source boundaries
 // guard public marketing contracts; browser checks verify the rendered page.
-test('public hero cannot regress to a different headline or omit a primary launch route', () => {
-  assert.match(landing, /<h1>EVERY BRAND GETS ITS OWN AI BRAIN<\/h1>/);
-  const hero = landing.split('<div className="hero-actions">')[1].split('</div>')[0];
-  for (const route of ['/signup', '/demo-pod', '/pricing']) {
+test('public editorial hero preserves the primary launch routes and labels fictional creative', () => {
+  const hero = readFileSync(new URL('../src/components/MarketingHero.jsx', import.meta.url), 'utf8');
+  assert.match(landing, /<MarketingHero \/>/);
+  assert.match(hero, /<h1[^>]*>/);
+  assert.match(hero, /Fictional demo creative/);
+  for (const route of ['/signup', '/demo-pod']) {
     assert.ok(hero.includes('to="' + route + '"'), 'missing primary route ' + route);
   }
 });

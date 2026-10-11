@@ -260,6 +260,34 @@ function discoverDocumentLinks(html, baseUrl) {
   return links;
 }
 
+// Only expose observed same-origin image URLs. Never fetch arbitrary image URLs
+// through the server, and never treat a site's demo artwork as customer assets.
+export function extractSourceMedia(html, finalUrl) {
+  const base = new URL(finalUrl);
+  const ownSite = ['dovroyn.com', 'www.dovroyn.com'].includes(base.hostname);
+  const media = new Map();
+  for (const tag of stripInertContent(html).match(/<(?:img|meta|link)\b[^>]*>/gi) || []) {
+    const property = getAttribute(tag, 'property').toLowerCase();
+    const rel = getAttribute(tag, 'rel').toLowerCase();
+    const raw = /^<img/i.test(tag) ? getAttribute(tag, 'src')
+      : property === 'og:image' ? getAttribute(tag, 'content')
+        : /(?:^|\s)(?:icon|apple-touch-icon)(?:\s|$)/.test(rel) ? getAttribute(tag, 'href') : '';
+    if (!raw) continue;
+    try {
+      const url = new URL(raw, base);
+      if (url.origin !== base.origin || url.username || url.password || !['https:', 'http:'].includes(url.protocol)) continue;
+      if (!/\.(?:png|jpe?g|webp|avif|gif)$/i.test(url.pathname)) continue;
+      if (ownSite && url.pathname !== '/dovroyn-logo.png') continue;
+      const alt = cleanInlineText(getAttribute(tag, 'alt'), 300);
+      if (/aurora|fictional|demo|placeholder/i.test(`${url.pathname} ${alt}`)) continue;
+      if (!media.has(url.href)) media.set(url.href, { url: url.href, alt, source_url: base.href,
+        role: /logo|icon/i.test(`${url.pathname} ${alt} ${rel}`) ? 'brand_logo' : 'source_image', approval_status: 'needs_review' });
+      if (media.size >= 12) break;
+    } catch { /* Invalid page markup is not a source. */ }
+  }
+  return [...media.values()];
+}
+
 function extractDocumentMetadata(html, finalUrl) {
   const documentHtml = stripInertContent(html);
   const titleMatch = documentHtml.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
@@ -270,6 +298,7 @@ function extractDocumentMetadata(html, finalUrl) {
     canonicalUrl: findCanonicalUrl(documentHtml, finalUrl),
     h1: cleanInlineText(h1Match?.[1], 1000),
     links: discoverDocumentLinks(documentHtml, finalUrl),
+    media: extractSourceMedia(documentHtml, finalUrl),
   };
 }
 
@@ -375,12 +404,18 @@ export async function fetchWebsiteText(rawUrl, options = {}) {
 
       const body = await readBoundedResponse(response, maxPageBytes);
       const isPlainText = contentType.includes('text/plain');
-      const text = isPlainText ? body.trim().slice(0, maxReadableChars) : extractReadableText(body).slice(0, maxReadableChars);
+      const metadata = isPlainText ? { title: '', description: '', canonicalUrl: '', h1: '', links: [], media: [] } : extractDocumentMetadata(body, currentUrl);
+      const bodyText = isPlainText ? body.trim() : extractReadableText(body.replace(/<head\b[^>]*>[\s\S]*?<\/head>/i, ''));
+      // A client-rendered shell can still provide genuine metadata. Label that
+      // limited evidence explicitly rather than inventing rendered page content.
+      const metadataOnly = !bodyText && Boolean(metadata.title || metadata.description);
+      const text = (metadataOnly ? [metadata.title, metadata.description].filter(Boolean).join('\n') : bodyText).slice(0, maxReadableChars);
       if (!text) throw Object.assign(new Error('Dovroyn could not find readable text on that page.'), { status: 422 });
       return {
         url: currentUrl.toString(),
         text,
-        ...(isPlainText ? { title: '', description: '', canonicalUrl: '', h1: '', links: [] } : extractDocumentMetadata(body, currentUrl)),
+        ...metadata,
+        extraction_mode: metadataOnly ? 'metadata_only' : 'page_text',
       };
     } catch (error) {
       if (error?.status) throw error;

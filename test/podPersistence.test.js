@@ -259,6 +259,9 @@ async function workspaceHarness(workspace, services = {}) {
     ...services,
   };
   const modules = {
+    '../components/pod/CreativeReview': { default: () => null },
+    '../components/PlatformMark': { default: () => null },
+    '../components/pod/PodJourney': { default: () => null },
     react: hooks, 'react-router-dom': { Link: ({ children }) => h('a', {}, children), useParams: () => ({ podId: currentPodId }) },
     'lucide-react': new Proxy({}, { get: () => () => null }),
     '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction,
@@ -574,7 +577,7 @@ test('empty Pod B clears A analysis, drafts, photos and unsaved fields before ca
   const podB = savedWorkspace({ pod: { id: 'two', pod_name: 'Empty Pod B', target_country: 'Australia' }, analysis: null, preferences: [] });
   const db = database();
   const ui = await workspaceHarness(podA, { loadPodWorkspace: async (id) => id === 'one' ? podA : podB, saveCalendarItems: (id, items) => state.persistCalendarItems(db.client, id, items) });
-  await ui.tab('AI direction');
+  await ui.tab('AI analysis & review');
   assert.match(ui.text(), /PRIVATE A ANALYSIS/);
   ui.button('Override AI choice').props.onClick(); await ui.flush();
   ui.nodes().find((node) => node.type === 'textarea' && node.props.rows === 5).props.onChange({ target: { value: 'PRIVATE A UNSAVED OVERRIDE' } });
@@ -583,7 +586,7 @@ test('empty Pod B clears A analysis, drafts, photos and unsaved fields before ca
   await ui.navigate('two');
   assert.match(ui.text(), /Empty Pod B/);
   assert.doesNotMatch(ui.text(), /PRIVATE A|Source locked|Teach this pod/);
-  await ui.tab('AI direction'); assert.match(ui.text(), /No analysis yet/);
+  await ui.tab('AI analysis & review'); assert.match(ui.text(), /No analysis yet/);
   await ui.tab('Social content'); assert.match(ui.text(), /No content drafts yet/);
   assert.equal(ui.nodes().some((node) => node.type === 'textarea'), false);
   await ui.tab('Assets'); assert.match(ui.text(), /No campaign assets yet/);
@@ -640,7 +643,7 @@ test('malformed newer rich website intelligence falls back to valid legacy data 
       assert.equal(loaded.restoredAnalysis.summary, 'CANONICAL BRAND');
       assert.deepEqual(loaded.restoredAnalysis.seo_opportunities, validOlder ? ['Older valid SEO'] : undefined);
       const ui = await workspaceHarness(loaded);
-      await ui.tab('AI direction');
+      await ui.tab('AI analysis & review');
       assert.match(ui.text(), /CANONICAL BRAND|Canonical pillar/);
       assert.doesNotMatch(ui.text(), /Legacy .*string|Not text/);
       if (validOlder) assert.match(ui.text(), /Older valid SEO/);
@@ -694,9 +697,9 @@ const asyncActionCases = [
     start: (ui) => ui.button('Analyse and lock pod').props.onClick(), result: analyzedResult },
   { name: 'rich analysis snapshot save', tab: 'Website & photos', service: 'saveWebsiteIntelligenceSnapshot', unanalyzed: true,
     start: (ui) => ui.button('Analyse and lock pod').props.onClick(), result: true },
-  { name: 'direction approval', tab: 'AI direction', service: 'approvePodDirection',
+  { name: 'direction approval', tab: 'AI analysis & review', service: 'approvePodDirection',
     start: (ui) => ui.button('Approve direction').props.onClick(), result: { id: 'one', pod_name: 'STALE APPROVED A', status: 'direction_locked' } },
-  { name: 'direction override', tab: 'AI direction', service: 'savePodDirectionOverride',
+  { name: 'direction override', tab: 'AI analysis & review', service: 'savePodDirectionOverride',
     start: async (ui) => { ui.button('Override AI choice').props.onClick(); await ui.flush(); ui.nodes().find((node) => node.type === 'textarea').props.onChange({ target: { value: 'STALE OVERRIDE A' } }); await ui.flush(); return ui.button('Save and readjust').props.onClick(); },
     result: { pod: { id: 'one', pod_name: 'STALE OVERRIDE A', status: 'awaiting_direction' } } },
   { name: 'content request', tab: 'Social content', service: 'requestSocialContent', ai: true,
@@ -750,7 +753,7 @@ for (const actionCase of asyncActionCases) {
 test('Pod route change hides A before effect cleanup or the B load completes', async () => {
   const a = actionableWorkspace(); const pending = deferred();
   const ui = await workspaceHarness(a, { loadPodWorkspace: (id) => id === 'one' ? Promise.resolve(a) : pending.promise });
-  await ui.tab('AI direction'); assert.match(ui.text(), /Brand one/);
+  await ui.tab('AI analysis & review'); assert.match(ui.text(), /Brand one/);
   ui.renderPod('two');
   assert.match(ui.text(), /Opening this pod/);
   assert.doesNotMatch(ui.text(), /Brand one|Tone one|Pod one/);
@@ -798,7 +801,7 @@ test('old page-draft and pending-invite actions cannot close a newer Pod modal o
       await ui.tab(action.tab); ui.button(action.open).props.onClick(); await ui.flush();
       const oldSave = ui.button(action.save).props.onClick;
       await ui.navigate('two'); if (finish === 'A') await ui.navigate('one');
-      await ui.tab('AI direction'); ui.button('Override AI choice').props.onClick(); await ui.flush();
+      await ui.tab('AI analysis & review'); ui.button('Override AI choice').props.onClick(); await ui.flush();
       const before = ui.snapshot(); oldSave();
       assert.deepEqual(ui.snapshot(), before, `${action.save} from A closed or changed ${finish}'s state`);
     }
@@ -836,7 +839,7 @@ test('late direction, generation, source and chat completion cannot unlock a new
 
 test('malformed cached rich fields are normalized again before the live component renders', async () => {
   const ui = await workspaceHarness(savedWorkspace({ restoredAnalysis: { seo_opportunities: 'Legacy SEO string', best_landing_pages: 'Legacy pages', visual_style: { toString: null }, products_services: ['Usable service'] } }));
-  await ui.tab('AI direction');
+  await ui.tab('AI analysis & review');
   assert.match(ui.text(), /Our brand|Usable service/);
   assert.doesNotMatch(ui.text(), /Legacy SEO|Legacy pages/);
 });

@@ -158,7 +158,7 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
       }]);
     }
     if (target === 'https://8.8.8.8/' || target === 'https://8.8.8.8') {
-      return new Response('<title>Aurora home</title><meta name="description" content="Barrier care"><h1>Calm skin</h1><p>Home source text</p><a href="/products">Products</a>', { headers: { 'content-type': 'text/html' } });
+      return new Response('<title>Aurora home</title><meta name="description" content="Barrier care"><h1>Calm skin</h1><p>Home source text</p><img src="/product.png" alt="Brand product"><a href="/products">Products</a>', { headers: { 'content-type': 'text/html' } });
     }
     if (target === 'https://8.8.8.8/products') {
       return new Response('<title>Products</title><h1>Barrier cream</h1><p>Product source text</p>', { headers: { 'content-type': 'text/html' } });
@@ -194,6 +194,11 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
 
     assert.equal(result.status, 200);
     assert.deepEqual(result.body.analysis.products_services, ['Barrier cream', 'Skin consultation']);
+    assert.equal(result.body.analysis.source_pages[0].url, 'https://8.8.8.8/');
+    assert.equal(result.body.analysis.source_pages[0].extraction_mode, 'page_text');
+    assert.equal(result.body.analysis.source_media[0].url, 'https://8.8.8.8/product.png');
+    assert.equal(result.body.analysis.source_media[0].approval_status, 'needs_review');
+    assert.deepEqual(result.body.analysis.source_warnings, []);
     assert.equal('pages' in result.body, false);
     assert.equal('website' in result.body, false);
     assert.deepEqual(finalizedPayload.p_analysis, result.body.analysis);

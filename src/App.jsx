@@ -68,6 +68,9 @@ import {
 import { SiGoogleads, SiApplenews, SiNextdoor, SiBluesky, SiSubstack } from 'react-icons/si';
 import { Analytics } from '@vercel/analytics/react';
 import './index.css';
+import DovroynAdExamples from './components/DovroynAdExamples';
+import MarketingHero from './components/MarketingHero';
+import PlatformMark from './components/PlatformMark';
 import { supabase, supabaseConfigured } from './lib/supabaseClient';
 import Header from './components/Header';
 import BrandLogo from './components/BrandLogo';
@@ -1016,30 +1019,11 @@ function LandingPage({ session }) {
         <span>Free plan now available — 1 pod, AI analysis, no credit card required.</span>
       </div>
 
-      <section className="hero-block panel hero-block-v2">
-        <div className="hero-badge-row">
-          <span className="hero-badge"><Sparkles size={14} /> AI Marketing Pods</span>
-        </div>
-        <div className="hero-content-centered">
-          <h1>EVERY BRAND GETS ITS OWN AI BRAIN</h1>
-          <p className="hero-gold-line">Drop in your website. Dovroyn analyses your brand and builds your campaign direction — all inside one intelligent pod.</p>
-          <p className="lede">Each pod learns your brand and locks your strategy. Upgrade when you're ready to unlock campaign content planning and calendars.</p>
-          <div className="hero-actions">
-            <NavLink className="button button-primary button-lg" to="/signup">
-              Start Free — No Card Required
-            </NavLink>
-            <NavLink className="button button-ghost" to="/demo-pod">See Demo Pod</NavLink>
-            <NavLink className="button button-ghost" to="/pricing">View Pricing</NavLink>
-          </div>
-          <div className="hero-trust-row">
-            <span className="hero-trust-item"><CheckCircle size={14} /> Free plan available</span>
-            <span className="hero-trust-item"><CheckCircle size={14} /> Cancel anytime</span>
-            <span className="hero-trust-item"><CheckCircle size={14} /> 30+ platforms</span>
-          </div>
-        </div>
-      </section>
+      <MarketingHero />
 
       <PodWorkspace demo />
+
+      <DovroynAdExamples />
 
       {/* Product principles — not customer testimonials */}
       <section className="social-proof-section">
@@ -1107,6 +1091,7 @@ function LandingPage({ session }) {
             <div className="multipod-grid">
               {MULTI_POD_CARDS.map((pod) => (
                 <article key={pod.name} className="multipod-card">
+                  <span className="multipod-fiction-label">Illustrative pod · sample data</span>
                   <div className="multipod-card-chrome" aria-hidden="true">
                     <span className="multipod-chrome-dots">
                       <i />
@@ -1132,7 +1117,7 @@ function LandingPage({ session }) {
                         const PlatformIcon = platform.icon;
                         return (
                           <span key={platform.name} className="multipod-platform-dot" title={platform.name} style={{ color: platform.color }}>
-                            <PlatformIcon size={12} strokeWidth={1.9} />
+                            <PlatformIcon size={12} strokeWidth={1.9} aria-hidden="true" />
                           </span>
                         );
                       })}
@@ -1190,7 +1175,7 @@ function LandingPage({ session }) {
             const PlatformIcon = platform.icon;
             return (
               <article key={platform.name} className="platform-tile">
-                <span className="platform-icon" aria-hidden="true"><PlatformIcon size={15} /></span>
+                <PlatformMark platform={platform.name} size={26} />
                 <span className="platform-name">{platform.name}</span>
                 <span className="platform-focus"><span className="platform-dot" aria-hidden="true" />{platform.focus}</span>
               </article>

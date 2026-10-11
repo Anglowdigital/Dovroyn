@@ -48,6 +48,7 @@ export function selectWebsiteIntelligenceSnapshot(preferences = [], podId) {
 const WEBSITE_INTELLIGENCE_FIELDS = [
   'brand_colours', 'geography', 'products_services', 'visual_style', 'site_structure', 'best_landing_pages',
   'weak_pages', 'seo_opportunities', 'content_opportunities', 'audience_fit',
+  'source_pages', 'source_media', 'source_warnings',
 ];
 
 function isRecord(value) {
@@ -59,6 +60,11 @@ function stringList(value) {
 }
 
 function validIntelligenceField(field, value) {
+  if (field === 'source_pages') return Array.isArray(value) && value.every((item) => isRecord(item)
+    && typeof item.url === 'string' && typeof item.title === 'string' && ['page_text', 'metadata_only'].includes(item.extraction_mode));
+  if (field === 'source_media') return Array.isArray(value) && value.every((item) => isRecord(item)
+    && typeof item.url === 'string' && /^https?:\/\//i.test(item.url) && typeof item.source_url === 'string'
+    && typeof item.alt === 'string' && ['brand_logo', 'source_image'].includes(item.role) && item.approval_status === 'needs_review');
   if (['visual_style', 'audience_fit'].includes(field)) return typeof value === 'string';
   if (field === 'brand_colours') return Array.isArray(value) && value.every((item) => isRecord(item)
     && typeof item.name === 'string' && typeof item.hex === 'string' && /^#(?:[a-f\d]{3}|[a-f\d]{6}|[a-f\d]{8})$/i.test(item.hex));
