@@ -1047,7 +1047,7 @@ function LivePodWorkspace({ session, subscription }) {
       case 'assets':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Library</p><h2>Campaign assets</h2><p className="subtle">Add working campaign images without changing the logo and brand sources locked during analysis.</p></div></header><label className="pod-upload-zone"><Upload size={24} /><strong>Add campaign assets</strong><span>These files stay inside this pod and do not replace its locked analysis source.</span><input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => addAssets(event, 'campaign_asset')} /></label>{assets.length ? <div className="pod-media-grid">{assets.map((asset) => <article key={asset.id}><img src={asset.preview} alt={asset.name} /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Locked logo' : asset.assetRole === 'brand_photo' ? 'Locked brand photo' : 'Campaign asset'}</small></div></article>)}</div> : <EmptyState icon={FileImage} title="No campaign assets yet" body="Upload images for campaigns and social content after this pod's brand source has been analysed." />}</div>;
       case 'socials': {
-        const recommendedKeys = analysis?.platforms || ['instagram', 'facebook', 'tiktok', 'email'];
+        const recommendedKeys = analysis?.platforms || [];
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">Recommended channels</p><h2>Connect social accounts</h2><p className="subtle">The pod recommends the best platforms — tick or untick any of them. Your selection controls what content is generated and where it posts.</p></div></header>
