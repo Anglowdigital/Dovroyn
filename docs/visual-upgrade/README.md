@@ -56,3 +56,11 @@ Both branches also extend the existing UI test harness module maps; keep the add
 ## Reproduce the local browser checks
 
 Start `npm run dev -- --host 0.0.0.0 --port 4173`. With Playwright, Chromium and axe-core available, run `node docs/visual-upgrade/browser-check.cjs` and `node docs/visual-upgrade/intake-check.cjs` from the repository root. Optional `PLAYWRIGHT_MODULE`, `CHROMIUM_PATH` and `AXE_SCRIPT` environment variables select existing tool installations without changing package dependencies. The development-only fixture files use explicitly intercepted I/O in these scripts; they are not a live-login bypass or production route.
+
+## Follow-up review
+
+Fixed the pod library cover/body overlap by replacing the legacy fixed grid row with automatic sizing. Brand and pod names now appear inside the cover and the pod title remains visible below; an 88px mark/initials fallback avoids an anonymous empty cover. Browser assertions check title bounds, mark size and mobile overflow. See `screenshots/pod-library-mobile-fixture.png` as well as the updated desktop capture.
+
+The first campaign concept now leads with labelled fictional product imagery alongside the actual source-review UI instead of two small-text interface captures. No performance claim was added.
+
+Free-analysis claim checked against repository implementation: `src/lib/plans.js` grants one free pod; `20261001071256_customer_onboarding_reconciliation.sql` replaces the former paid-only pod creation gate with a one-pod default. `api/ai/analyze.js` checks authentication, ownership and unlocked source, with no subscription requirement; `public.finalize_pod_analysis` likewise checks ownership/source rather than paid entitlement. No gates/pricing changed. Applied production migrations and a real free-account analysis remain unverified from this environment.

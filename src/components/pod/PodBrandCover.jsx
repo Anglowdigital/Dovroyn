@@ -26,6 +26,7 @@ export default function PodBrandCover({ pod }) {
   return <div className={`pod-library-cover ${media.brand_photo ? 'has-brand-photo' : ''}`}>
     {media.brand_photo && <img className="pod-library-cover-photo" src={media.brand_photo} alt="" onError={() => setMedia(current => ({ ...current, brand_photo: '' }))} />}
     <span className="pod-library-brandmark">{media.logo ? <img src={media.logo} alt={`${pod.brand_name || pod.pod_name} logo`} onError={() => setMedia(current => ({ ...current, logo: '' }))} /> : initials}</span>
+    <div className="pod-library-cover-identity"><strong>{pod.brand_name || pod.pod_name || 'Your brand'}</strong><span>{pod.pod_name || 'Marketing pod'}</span></div>
     <span className="status-tag">{String(pod.status || 'created').replaceAll('_', ' ')}</span>
   </div>;
 }

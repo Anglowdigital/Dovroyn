@@ -11,7 +11,7 @@ export default function DovroynAdExamples() {
         <p className="promo-kicker">AI MARKETING. YOUR WAY.</p>
         <h3>Your next campaign<br />starts with <em>your brand.</em></h3>
         <p className="promo-description">One website. One dedicated AI pod.<br />A clearer direction for what comes next.</p>
-        <div className="promo-product-previews"><img src="/demo/pod-analysis-preview.png" alt="Actual Dovroyn AI analysis interface displaying a clearly fictional Aurora sample" /><img src="/demo/pod-source-preview.png" alt="Actual Dovroyn source review interface with fictional demonstration assets" /></div>
+        <div className="promo-product-previews"><div className="promo-media-story"><img src="/demo/aurora-products.png" alt="Fictional Aurora product imagery demonstrating a brand-led creative" /><span>Fictional demo creative</span><strong>A little ritual.<br />A brighter day.</strong></div><img src="/demo/pod-source-preview.png" alt="Actual Dovroyn source review interface with fictional demonstration assets" /></div>
         <footer><span>Start with free AI analysis <ArrowUpRight size={18} /></span><strong>dovroyn.com</strong></footer>
         <small>Campaign concept · Interface shown with fictional demo data</small>
       </article>

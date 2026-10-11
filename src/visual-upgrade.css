@@ -230,3 +230,19 @@ body { background: #F7F2E8; }
 .calendar-artwork-preview { max-width:380px; margin:16px 0; padding:24px; border-radius:16px; background:#f3e9d8; color:#07162d; }
 .calendar-artwork-preview img { width:100%; max-height:240px; object-fit:contain; }
 .calendar-artwork-preview h3 { font-family:'Playfair Display',serif; font-size:28px; }
+
+/* Auto rows prevent the taller cover from obscuring the actual pod title. */
+.pod-library-card { grid-template-rows:auto 1fr; }
+.pod-library-cover { min-height:184px; display:grid; grid-template-columns:88px 1fr; align-content:end; gap:16px; background:radial-gradient(ellipse at top right,#d8b86780,transparent 65%),#f3e9d8; }
+.pod-library-cover > span.pod-library-brandmark { width:88px; height:88px; display:grid; place-items:center; font-size:36px; }
+.pod-library-cover-identity { position:relative; min-width:0; color:#07162d; }
+.pod-library-cover-identity strong { display:block; font:700 28px/1.15 'Playfair Display',serif; overflow-wrap:anywhere; }
+.pod-library-cover-identity > span { display:block; margin-top:8px; font-size:14px; }
+.pod-library-cover .status-tag { position:absolute; top:18px; left:22px; }
+.pod-library-cover.has-brand-photo:after { content:''; position:absolute; inset:0; z-index:-1; background:linear-gradient(transparent,#fffdf8ee 85%); }
+.promo-product-previews { position:relative; min-height:220px; }
+.promo-media-story { position:relative; width:67%; flex-shrink:0; height:100%; min-height:220px; border:5px solid #07162d; border-radius:18px; transform:rotate(-7deg); overflow:hidden; box-shadow:0 8px 25px #07162d26; background:#e5dbbc; }
+.promo-media-story > img { width:100%; height:100%; border:0; border-radius:0; transform:none; object-fit:cover; object-position:center; }
+.promo-media-story > span { position:absolute; top:10px; left:10px; padding:5px 8px; background:#fffdf8; color:#07162d; font-size:9px; border-radius:8px; }
+.promo-media-story > strong { position:absolute; bottom:0; left:0; right:0; padding:30px 14px 18px; background:linear-gradient(transparent,#fffdf8 70%); color:#07162d; font:700 25px/1.1 'Playfair Display',serif; }
+.promo-product-previews > img { width:48%; margin:28px 0 0 -28px; transform:rotate(8deg); }
