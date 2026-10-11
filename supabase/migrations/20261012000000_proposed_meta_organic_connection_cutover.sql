@@ -3,6 +3,8 @@
 -- with PR48 plus any stalled release branches. This migration intentionally does
 -- not enable Instagram publishing or request/use pages_manage_posts.
 
+BEGIN;
+
 CREATE SCHEMA IF NOT EXISTS private;
 REVOKE ALL ON SCHEMA private FROM PUBLIC, anon, authenticated;
 
@@ -11,7 +13,31 @@ REVOKE ALL ON SCHEMA private FROM PUBLIC, anon, authenticated;
 -- status through RLS, but cannot forge connected state.
 GRANT SELECT ON TABLE public.social_connections TO authenticated;
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.social_connections FROM authenticated;
+REVOKE INSERT, UPDATE, DELETE ON TABLE public.social_connections FROM anon;
+REVOKE INSERT, UPDATE, DELETE ON TABLE public.social_connections FROM PUBLIC;
 REVOKE ALL ON TABLE private.social_credentials FROM PUBLIC, anon, authenticated;
+
+ALTER TABLE public.social_connections
+  ADD COLUMN IF NOT EXISTS provider_verified_source TEXT,
+  ADD COLUMN IF NOT EXISTS provider_verified_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS provider_contract_version TEXT;
+
+CREATE INDEX IF NOT EXISTS social_connections_provider_provenance_idx
+  ON public.social_connections (provider, provider_verified_source, provider_contract_version);
+
+-- Data effect on approval/application: legacy browser-writable connected rows
+-- are preserved, including credential records, but no longer count as connected
+-- until the owner reconnects through the reviewed server-side Meta flow.
+UPDATE public.social_connections
+SET status = 'expired',
+    last_error = 'Reconnect required to verify Meta provider connection.',
+    updated_at = now()
+WHERE provider = 'instagram'
+  AND status = 'connected'
+  AND (
+    provider_verified_source IS DISTINCT FROM 'meta_organic_server_v1'
+    OR provider_contract_version IS DISTINCT FROM 'meta_organic_facebook_login_v1'
+  );
 
 CREATE TABLE IF NOT EXISTS private.meta_organic_oauth_states (
   state_hash TEXT PRIMARY KEY CHECK (state_hash ~ '^[a-f0-9]{64}$'),
@@ -35,13 +61,43 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = ''
 AS $$
+  WITH checks AS (
+    SELECT
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'social_connections'
+          AND column_name IN ('provider_verified_source', 'provider_verified_at', 'provider_contract_version')
+        GROUP BY table_schema, table_name
+        HAVING count(*) = 3
+      ) AS provenance_columns_ready,
+      COALESCE(has_function_privilege('service_role', to_regprocedure('public.get_meta_organic_connection_readiness()'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.create_meta_organic_oauth_state(text,text,uuid,uuid,text,timestamp with time zone)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.consume_meta_organic_oauth_state(text,text)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.store_meta_organic_connection(uuid,uuid,text,text,text[],timestamp with time zone,text,text)'), 'EXECUTE'), false)
+        AS service_execute_ready,
+      NOT COALESCE(has_table_privilege('authenticated', 'public.social_connections', 'INSERT'), false)
+        AND NOT COALESCE(has_table_privilege('authenticated', 'public.social_connections', 'UPDATE'), false)
+        AND NOT COALESCE(has_table_privilege('authenticated', 'public.social_connections', 'DELETE'), false)
+        AND NOT COALESCE(has_table_privilege('anon', 'public.social_connections', 'INSERT'), false)
+        AND NOT COALESCE(has_table_privilege('anon', 'public.social_connections', 'UPDATE'), false)
+        AND NOT COALESCE(has_table_privilege('anon', 'public.social_connections', 'DELETE'), false)
+        AS browser_writes_denied
+  )
   SELECT jsonb_build_object(
-    'ready', true,
+    'ready', provenance_columns_ready AND service_execute_ready AND browser_writes_denied,
     'contract_version', 'meta_organic_facebook_login_v1',
     'provider', 'instagram',
     'login_route', 'facebook_login_for_instagram_api',
-    'required_scopes', ARRAY['instagram_basic','pages_show_list']
-  );
+    'required_scopes', ARRAY['instagram_basic','pages_show_list'],
+    'provider_verified_source', 'meta_organic_server_v1',
+    'checks', jsonb_build_object(
+      'provenance_columns_ready', provenance_columns_ready,
+      'service_execute_ready', service_execute_ready,
+      'browser_writes_denied', browser_writes_denied
+    )
+  )
+  FROM checks;
 $$;
 
 CREATE OR REPLACE FUNCTION public.create_meta_organic_oauth_state(
@@ -180,11 +236,13 @@ BEGIN
 
   INSERT INTO public.social_connections (
     pod_id, provider, provider_account_id, account_label, status,
-    granted_scopes, connected_at, expires_at, last_error, updated_at
+    granted_scopes, connected_at, expires_at, last_error, updated_at,
+    provider_verified_source, provider_verified_at, provider_contract_version
   )
   VALUES (
     p_pod_id, 'instagram', p_provider_account_id, trim(p_account_label), 'connected',
-    p_granted_scopes, now(), p_expires_at, NULL, now()
+    p_granted_scopes, now(), p_expires_at, NULL, now(),
+    'meta_organic_server_v1', now(), 'meta_organic_facebook_login_v1'
   )
   ON CONFLICT (pod_id, provider, provider_account_id)
   DO UPDATE SET
@@ -194,7 +252,10 @@ BEGIN
     connected_at = now(),
     expires_at = EXCLUDED.expires_at,
     last_error = NULL,
-    updated_at = now()
+    updated_at = now(),
+    provider_verified_source = EXCLUDED.provider_verified_source,
+    provider_verified_at = EXCLUDED.provider_verified_at,
+    provider_contract_version = EXCLUDED.provider_contract_version
   RETURNING id INTO target_connection_id;
 
   INSERT INTO private.social_credentials (
@@ -240,3 +301,5 @@ GRANT EXECUTE ON FUNCTION public.store_meta_organic_connection(
 
 -- Publisher functions and constraints from customer_release_expansion remain
 -- unchanged and are intentionally not granted/enabled by this discovery cutover.
+
+COMMIT;

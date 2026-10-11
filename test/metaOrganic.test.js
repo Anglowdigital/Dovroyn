@@ -19,6 +19,8 @@ import {
   loadInstagramAccount,
   loadMetaOrganicReadiness,
   META_OAUTH_COOKIE,
+  META_ORGANIC_CONTRACT_VERSION,
+  META_ORGANIC_PROVENANCE,
   META_ORGANIC_SCOPES,
   normalizeConnection,
   validateGrantedScopes,
@@ -197,8 +199,16 @@ test('readiness gate fails closed until explicit activation and compatible RPC c
   assert.deepEqual(await loadMetaOrganicReadiness(config, {
     rpcWithServiceRole: async () => ({ ready: true, contract_version: 'wrong', required_scopes: META_ORGANIC_SCOPES }),
   }), { ready: false, reason: 'storage_unavailable' });
-  assert.equal((await assertMetaOrganicReady(config, {
+  assert.deepEqual(await loadMetaOrganicReadiness(config, {
     rpcWithServiceRole: async () => ({ ready: true, contract_version: config.contractVersion, required_scopes: META_ORGANIC_SCOPES }),
+  }), { ready: false, reason: 'storage_unavailable' });
+  assert.equal((await assertMetaOrganicReady(config, {
+    rpcWithServiceRole: async () => ({
+      ready: true,
+      contract_version: config.contractVersion,
+      provider_verified_source: META_ORGANIC_PROVENANCE,
+      required_scopes: META_ORGANIC_SCOPES,
+    }),
   })).ready, true);
 });
 
@@ -281,9 +291,17 @@ test('account selection handles pagination and rejects ambiguous linked Instagra
       { name: 'B', instagram_business_account: { id: '2', username: 'b' } },
     ] } },
   ]).fetch }), /Multiple Instagram/);
+
+  const tooManyPages = Array.from({ length: 10 }, (_, index) => ({
+    payload: {
+      data: index === 0 ? [{ name: 'A', instagram_business_account: { id: '1', username: 'a' } }] : [],
+      paging: { next: `https://graph.facebook.com/v26.0/me/accounts?after=cursor-${index}` },
+    },
+  }));
+  await assert.rejects(() => loadInstagramAccount('long-token', { config, fetch: mockFetch(tooManyPages).fetch }), /enumerate all/);
 });
 
-test('status normalization handles labels and expired credentials', () => {
+test('status normalization handles labels, provenance, and expired or invalid credentials', () => {
   assert.deepEqual(normalizeConnection({
     id: 'c1',
     provider: 'instagram',
@@ -292,13 +310,31 @@ test('status normalization handles labels and expired credentials', () => {
     status: 'connected',
     granted_scopes: META_ORGANIC_SCOPES,
     expires_at: '2099-01-01T00:00:00.000Z',
+    provider_verified_source: META_ORGANIC_PROVENANCE,
+    provider_contract_version: META_ORGANIC_CONTRACT_VERSION,
   }, Date.parse('2026-01-01T00:00:00.000Z')).accountLabel, 'Meet Millie Ai');
   assert.equal(normalizeConnection({
     provider: 'instagram',
     accountLabel: 'Meet Millie Ai',
     status: 'connected',
     expiresAt: '2020-01-01T00:00:00.000Z',
+    providerVerifiedSource: META_ORGANIC_PROVENANCE,
+    providerContractVersion: META_ORGANIC_CONTRACT_VERSION,
   }, Date.parse('2026-01-01T00:00:00.000Z')).status, 'expired');
+  assert.equal(normalizeConnection({
+    provider: 'instagram',
+    accountLabel: 'Meet Millie Ai',
+    status: 'connected',
+    expiresAt: 'not-a-date',
+    providerVerifiedSource: META_ORGANIC_PROVENANCE,
+    providerContractVersion: META_ORGANIC_CONTRACT_VERSION,
+  }, Date.parse('2026-01-01T00:00:00.000Z')).status, 'expired');
+  assert.equal(normalizeConnection({
+    provider: 'instagram',
+    accountLabel: 'Meet Millie Ai',
+    status: 'connected',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, Date.parse('2026-01-01T00:00:00.000Z')).status, 'reconnect_required');
 });
 
 test('AES-GCM token encryption is decryptable with mock key and does not expose raw token', () => {
@@ -321,14 +357,43 @@ test('callback redirects to the pod route when state identifies a trusted pod', 
   assert.equal(new URL(failure).searchParams.get('reason'), 'csrf_failed');
 });
 
+test('callback post-state provider failures preserve trusted pod context', async () => {
+  const record = stateRecord();
+  await assert.rejects(async () => completeMetaCallback({
+    code: 'mock-code',
+    state: record.state,
+    cookieHeader: buildOAuthCookie(record, config),
+  }, {
+    config,
+    rpcWithServiceRole: async (name) => (name === 'consume_meta_organic_oauth_state'
+      ? { user_id: 'u', pod_id: 'trusted-pod', redirect_uri: config.redirectUri }
+      : assert.fail('storage must not run after provider failure')),
+    fetch: mockFetch([{ payload: { error: { message: 'raw-token' } }, status: 500 }]).fetch,
+  }), (error) => {
+    assert.equal(error.podId, 'trusted-pod');
+    assert.equal(error.code, 'provider_unavailable');
+    return true;
+  });
+});
+
 test('proposed migration source aligns discovery-only contract and leaves publisher disabled', () => {
   const sql = readFileSync(new URL('../supabase/migrations/20261012000000_proposed_meta_organic_connection_cutover.sql', import.meta.url), 'utf8');
   assert.match(sql, /PROPOSED ONLY/);
+  assert.match(sql, /BEGIN;/);
+  assert.match(sql, /COMMIT;/);
   assert.match(sql, /get_meta_organic_connection_readiness/);
   assert.match(sql, /create_meta_organic_oauth_state/);
   assert.match(sql, /consume_meta_organic_oauth_state/);
   assert.match(sql, /store_meta_organic_connection/);
   assert.match(sql, /browser_binding_hash/);
+  assert.match(sql, /provider_verified_source/);
+  assert.match(sql, /provider_contract_version/);
+  assert.match(sql, /Reconnect required to verify Meta provider connection/);
+  assert.match(sql, /provider_verified_source IS DISTINCT FROM 'meta_organic_server_v1'/);
+  assert.match(sql, /has_function_privilege\('service_role'/);
+  assert.match(sql, /has_table_privilege\('authenticated', 'public\.social_connections', 'INSERT'\)/);
+  assert.match(sql, /has_table_privilege\('anon', 'public\.social_connections', 'DELETE'\)/);
+  assert.match(sql, /'provider_verified_source', 'meta_organic_server_v1'/);
   assert.match(sql, /REVOKE INSERT, UPDATE, DELETE ON TABLE public\.social_connections FROM authenticated/);
   assert.match(sql, /GRANT EXECUTE ON FUNCTION public\.store_meta_organic_connection/);
   assert.match(sql, /'instagram_basic','pages_show_list'/);

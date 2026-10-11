@@ -24,7 +24,7 @@ export default async function handler(req, res) {
     return sendJson(res, 200, {
       provider: META_PROVIDER_KEY,
       available: readiness.ready,
-      reason: readiness.ready ? null : 'storage_unavailable',
+      reason: readiness.ready ? null : readiness.reason || 'storage_unavailable',
       connections: normalizedConnections,
     });
   } catch {

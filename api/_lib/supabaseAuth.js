@@ -82,7 +82,7 @@ export async function loadOwnedPod(accessToken, podId) {
 }
 
 export async function loadSocialConnections(accessToken, podId) {
-  const response = await supabaseFetch(`/rest/v1/social_connections?pod_id=eq.${encodeURIComponent(podId)}&select=id,provider,provider_account_id,account_label,status,granted_scopes,connected_at,expires_at,last_error,updated_at&order=updated_at.desc`, accessToken);
+  const response = await supabaseFetch(`/rest/v1/social_connections?pod_id=eq.${encodeURIComponent(podId)}&select=*&order=updated_at.desc`, accessToken);
   if (!response.ok) throw new Error('Connection status is unavailable.');
   const rows = await response.json();
   return Array.isArray(rows) ? rows : [];

@@ -10,6 +10,7 @@ export const META_LOGIN_ROUTE = 'facebook_login_for_instagram_api';
 // contract narrow and continue treating pages_manage_posts as pending approval.
 export const META_ORGANIC_SCOPES = Object.freeze(['instagram_basic', 'pages_show_list']);
 export const META_ORGANIC_CONTRACT_VERSION = 'meta_organic_facebook_login_v1';
+export const META_ORGANIC_PROVENANCE = 'meta_organic_server_v1';
 export const META_STATE_TTL_MS = 10 * 60 * 1000;
 export const META_OAUTH_COOKIE = 'dovroyn_meta_oauth';
 
@@ -197,6 +198,7 @@ export function assertProviderSetupReady(config = getMetaOrganicConfig()) {
 function validReadiness(payload, config) {
   return payload?.ready === true
     && payload.contract_version === config.contractVersion
+    && payload.provider_verified_source === META_ORGANIC_PROVENANCE
     && Array.isArray(payload.required_scopes)
     && config.scopes.every((scope) => payload.required_scopes.includes(scope));
 }
@@ -385,6 +387,12 @@ export async function loadInstagramAccount(accessToken, deps = {}) {
     after = nextAfter(payload);
     if (!after) break;
   }
+  if (after) {
+    const error = new Error('Unable to safely enumerate all linked Instagram professional accounts.');
+    error.status = 409;
+    error.code = 'account_ambiguous';
+    throw error;
+  }
   if (accounts.length === 0) {
     const error = new Error('No page-linked Instagram professional account is available.');
     error.status = 422;
@@ -428,8 +436,14 @@ export function sanitizeAccountLabel(label) {
 export function normalizeConnection(connection, now = Date.now()) {
   const expiresAt = connection.expiresAt || connection.expires_at || null;
   const rawStatus = String(connection.status || 'error');
-  const expired = expiresAt && Number.isFinite(Date.parse(expiresAt)) && Date.parse(expiresAt) <= now;
-  const status = rawStatus === 'connected' && expired ? 'expired' : rawStatus;
+  const expiresMillis = Date.parse(expiresAt);
+  const hasValidFutureExpiry = Boolean(expiresAt) && Number.isFinite(expiresMillis) && expiresMillis > now;
+  const provenance = connection.providerVerifiedSource || connection.provider_verified_source || null;
+  const contractVersion = connection.providerContractVersion || connection.provider_contract_version || null;
+  const hasVerifiedProvenance = provenance === META_ORGANIC_PROVENANCE && contractVersion === META_ORGANIC_CONTRACT_VERSION;
+  const status = rawStatus === 'connected'
+    ? (!hasVerifiedProvenance ? 'reconnect_required' : (!hasValidFutureExpiry ? 'expired' : 'connected'))
+    : rawStatus;
   return {
     id: connection.id,
     provider: connection.provider,
@@ -440,7 +454,14 @@ export function normalizeConnection(connection, now = Date.now()) {
     connectedAt: connection.connectedAt || connection.connected_at || null,
     expiresAt,
     updatedAt: connection.updatedAt || connection.updated_at || null,
+    providerVerifiedSource: provenance,
+    providerContractVersion: contractVersion,
   };
+}
+
+function throwWithPodContext(error, podId) {
+  if (podId && error && typeof error === 'object' && !error.podId) error.podId = podId;
+  throw error;
 }
 
 export async function completeMetaCallback({ code, state, errorCode, cookieHeader }, deps = {}) {
@@ -454,20 +475,24 @@ export async function completeMetaCallback({ code, state, errorCode, cookieHeade
   if (!consumed?.user_id || !consumed?.pod_id || consumed.redirect_uri !== config.redirectUri) {
     throw Object.assign(new Error('OAuth state is invalid or expired.'), { status: 403, code: 'expired_state' });
   }
-  const token = await exchangeCodeForUserToken(code, consumed.redirect_uri, deps);
-  const grantedScopes = await loadGrantedScopes(token.accessToken, deps);
-  validateGrantedScopes(grantedScopes, config.scopes);
-  const account = await loadInstagramAccount(token.accessToken, deps);
-  const encryptedAccessToken = (deps.encryptProviderToken || encryptProviderToken)(token.accessToken, config);
-  const connectionId = await storeMetaConnection({
-    userId: consumed.user_id,
-    podId: consumed.pod_id,
-    providerAccountId: account.providerAccountId,
-    accountLabel: account.accountLabel,
-    grantedScopes,
-    expiresAt: token.expiresAt,
-    encryptedAccessToken,
-    encryptionKeyVersion: config.encryptionKeyVersion,
-  }, deps);
-  return { podId: consumed.pod_id, connectionId, accountLabel: account.accountLabel, grantedScopes };
+  try {
+    const token = await exchangeCodeForUserToken(code, consumed.redirect_uri, deps);
+    const grantedScopes = await loadGrantedScopes(token.accessToken, deps);
+    validateGrantedScopes(grantedScopes, config.scopes);
+    const account = await loadInstagramAccount(token.accessToken, deps);
+    const encryptedAccessToken = (deps.encryptProviderToken || encryptProviderToken)(token.accessToken, config);
+    const connectionId = await storeMetaConnection({
+      userId: consumed.user_id,
+      podId: consumed.pod_id,
+      providerAccountId: account.providerAccountId,
+      accountLabel: account.accountLabel,
+      grantedScopes,
+      expiresAt: token.expiresAt,
+      encryptedAccessToken,
+      encryptionKeyVersion: config.encryptionKeyVersion,
+    }, deps);
+    return { podId: consumed.pod_id, connectionId, accountLabel: account.accountLabel, grantedScopes };
+  } catch (error) {
+    throwWithPodContext(error, consumed.pod_id);
+  }
 }

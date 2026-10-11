@@ -448,6 +448,15 @@ function LivePodWorkspace({ session, subscription }) {
         const status = await loadMetaConnectionStatus({ accessToken: session.access_token, podId }).catch(() => ({ available: false, connections: [] }));
         if (!loadAction.isCurrent()) return;
         setMetaConnectionStatus(status);
+        const search = typeof window.location?.search === 'string' ? window.location.search : '';
+        const query = new URLSearchParams(search);
+        if (search && query.get('integration') === 'meta') {
+          const outcome = query.get('status') === 'connected'
+            ? 'Meta account connected.'
+            : 'Meta connection could not be completed.';
+          showNotice(outcome);
+          window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
+        }
       }
       setLoading(false);
     }).catch((error) => {

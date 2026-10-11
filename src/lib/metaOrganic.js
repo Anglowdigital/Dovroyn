@@ -50,7 +50,7 @@ export function summarizeMetaConnection(status = {}) {
   if (!Array.isArray(status) && status.available !== true) return { status: 'unavailable', label: 'Meta connection unavailable' };
   const active = connections.find((connection) => connection.provider === META_ORGANIC_PROVIDER && connection.status === 'connected');
   if (active) return { status: 'connected', label: active.accountLabel || 'Instagram account' };
-  const failed = connections.find((connection) => connection.provider === META_ORGANIC_PROVIDER && ['expired', 'revoked', 'error'].includes(connection.status));
+  const failed = connections.find((connection) => connection.provider === META_ORGANIC_PROVIDER && ['expired', 'revoked', 'error', 'reconnect_required'].includes(connection.status));
   if (failed) return { status: failed.status, label: 'Reconnect required' };
   return { status: 'setup-ready', label: 'Official Meta sign-in available' };
 }

@@ -7,6 +7,7 @@ import { TIER_LIMITS } from '../lib/stripe';
 export default function PodsPage({ session, subscription }) {
   const [pods, setPods] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [callbackNotice, setCallbackNotice] = useState('');
 
   useEffect(() => {
     if (!supabaseConfigured || !session?.user?.id) {
@@ -23,6 +24,16 @@ export default function PodsPage({ session, subscription }) {
         setLoading(false);
       });
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    const search = typeof window.location?.search === 'string' ? window.location.search : '';
+    const query = new URLSearchParams(search);
+    if (!search || query.get('integration') !== 'meta') return;
+    setCallbackNotice(query.get('status') === 'connected'
+      ? 'Meta account connected.'
+      : 'Meta connection could not be completed.');
+    window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
+  }, []);
 
   const tier = subscription?.tier || 'free';
   const maxPods = TIER_LIMITS[tier]?.maxPods || 0;
@@ -42,6 +53,7 @@ export default function PodsPage({ session, subscription }) {
           Create Pod
         </NavLink>
       </header>
+      {callbackNotice && <div className="panel" role="status">{callbackNotice}</div>}
 
 
       <section className="pod-library-grid">
