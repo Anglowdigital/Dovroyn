@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
 import { canCreatePod, getPlan } from '../lib/plans';
@@ -20,6 +20,7 @@ export default function NewPodPage({ session, subscription }) {
   const [logoFile, setLogoFile] = useState(null);
   const logoInputRef = useRef(null);
   const [photoFiles, setPhotoFiles] = useState([]);
+  const previewFiles = useMemo(() => [logoFile, ...photoFiles].filter(Boolean), [logoFile, photoFiles]);
   const [saving, setSaving] = useState(false);
   const [presetLoading, setPresetLoading] = useState(false);
   const [error, setError] = useState('');
@@ -280,7 +281,7 @@ export default function NewPodPage({ session, subscription }) {
           </label>
         </div>
 
-        <SelectedFilePreview logoFile={logoFile} files={[logoFile, ...photoFiles].filter(Boolean)} />
+        <SelectedFilePreview logoFile={logoFile} files={previewFiles} />
         <button className="button button-primary" type="submit" disabled={saving || presetLoading}>
           {saving ? 'Creating pod...' : 'Create Pod and Review Inputs'}
         </button>
