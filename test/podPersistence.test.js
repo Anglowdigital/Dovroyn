@@ -265,6 +265,7 @@ async function workspaceHarness(workspace, services = {}) {
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
     '../lib/aiClient': services.ai || {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/podLearning': learning,
+    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, summarizeMetaConnection: () => ({ status: 'setup-ready', label: 'Official Meta sign-in available' }) },
     '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let commandItems = [];
