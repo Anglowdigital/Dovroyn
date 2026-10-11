@@ -36,6 +36,7 @@ import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askPodAssistant, requestCompetitorSnapshot, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
+import { initiateMetaOrganicConnection, loadMetaConnectionStatus, summarizeMetaConnection } from '../lib/metaOrganic';
 import {
   approvePodDirection,
   getAssetPreview,
@@ -316,6 +317,8 @@ function LivePodWorkspace({ session, subscription }) {
   const [competitorBusy, setCompetitorBusy] = useState(false);
   const [competitorError, setCompetitorError] = useState('');
   const [learningEvents, setLearningEvents] = useState([]);
+  const [metaConnectionStatus, setMetaConnectionStatus] = useState({ available: false, connections: [] });
+  const [connectionMutation, setConnectionMutation] = useState('');
   const podLifecycle = useRef({ current: null, podId });
   podLifecycle.current.podId = podId;
   const hasPlatformSelection = useRef(false);
@@ -377,6 +380,8 @@ function LivePodWorkspace({ session, subscription }) {
     setCompetitorUrls(['', '', '']);
     setCompetitorSnapshot(null);
     setLearningEvents([]);
+    setMetaConnectionStatus({ available: false, connections: [] });
+    setConnectionMutation('');
     setOperationalMutation('');
     setNotice('');
     if (!supabaseConfigured || !podId) {
@@ -448,6 +453,18 @@ function LivePodWorkspace({ session, subscription }) {
         })));
       if (!loadAction.isCurrent()) return;
       setAssets(persistedAssets);
+      if (session?.access_token) {
+        const status = await loadMetaConnectionStatus({ accessToken: session.access_token, podId }).catch(() => ({ available: false, connections: [] }));
+        if (!loadAction.isCurrent()) return;
+        setMetaConnectionStatus(status);
+        const search = typeof window.location?.search === 'string' ? window.location.search : '';
+        const query = new URLSearchParams(search);
+        if (search && query.get('integration') === 'meta') {
+          const outcome = 'Meta sign-in returned. Check your account connection status.';
+          showNotice(outcome);
+          window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
+        }
+      }
       setLoading(false);
     }).catch((error) => {
       if (loadAction?.isCurrent()) { setLoadError(error.message || 'The Pod state could not be loaded.'); setPod(null); setLoading(false); }
@@ -465,6 +482,21 @@ function LivePodWorkspace({ session, subscription }) {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  async function connectPlatform(platform) {
+    if (platform?.key !== 'instagram') {
+      setModal({ type: 'connect', platform });
+      return;
+    }
+    try {
+      if (!session?.access_token) throw new Error('Sign in again before connecting Meta.');
+      setConnectionMutation(platform.key);
+      await initiateMetaOrganicConnection({ accessToken: session.access_token, podId });
+    } catch (error) {
+      setConnectionMutation('');
+      setModal({ type: 'connect-error', platform, message: error.message || 'Meta connection is unavailable.' });
+    }
+  }
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -1055,17 +1087,18 @@ function LivePodWorkspace({ session, subscription }) {
               {getPlanningPlatforms().map((platform) => {
                 const selected = selectedPlatformKeys.includes(platform.key);
                 const recommended = recommendedKeys.includes(platform.key);
+                const connectionSummary = platform.key === 'instagram' ? summarizeMetaConnection(metaConnectionStatus) : null;
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
                     <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
                     <PlatformMark platform={platform.key} size={28} />
-                    <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}Provider setup required for live connection</small></div>
-                    {selected && <button className="button button-ghost button-sm" type="button" onClick={(event) => { event.preventDefault(); setModal({ type: 'connect', platform }); }}>Connect account</button>}
+                    <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}{connectionSummary?.label || 'Provider setup required for live connection'}</small></div>
+                    {selected && <button className="button button-ghost button-sm" type="button" disabled={connectionMutation === platform.key || connectionSummary?.status === 'unavailable'} onClick={(event) => { event.preventDefault(); connectPlatform(platform); }}>{connectionMutation === platform.key ? 'Opening…' : connectionSummary?.status === 'unavailable' ? 'Unavailable' : connectionSummary?.status === 'connected' ? 'Reconnect' : 'Connect account'}</button>}
                   </label>
                 );
               })}
             </div>
-            <p className="pod-honesty-note">Dovroyn can plan for 30+ platforms. Live sign-in and publishing become available one provider at a time after its developer app, permissions, and API review are configured.</p>
+            <p className="pod-honesty-note">Instagram uses Meta's Facebook Login route for page-linked professional accounts. Publishing remains unavailable until separate permissions, review, and approval are complete.</p>
           </div>
         );
       }
@@ -1159,7 +1192,8 @@ function LivePodWorkspace({ session, subscription }) {
       {notice && <div className="pod-toast" role="status"><Check size={16} />{notice}</div>}
       <PodCommandPalette open={paletteOpen} commands={commands} onClose={() => setPaletteOpen(false)} />
       <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => { if (!actionPending('direction')) setModal(null); }}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} disabled={Boolean(directionMutation) || contentGenerating} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim() || Boolean(directionMutation) || contentGenerating} onClick={saveOverride}>{directionMutation === 'override' ? 'Saving direction…' : 'Save and readjust'}</button><button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal(null)}>Cancel</button></div></PodModal>
-      <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in needs the provider app ID, permissions, redirect URL, token encryption, and platform approval before this button can safely open OAuth.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
+      <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in will become available for each provider after its developer app, permissions, redirect URL, token encryption, and platform approval are configured.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
+      <PodModal open={modal?.type === 'connect-error'} title={`Connect ${modal?.platform?.name || 'account'}`} description="The connection did not start." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Meta connection unavailable</strong><p>{modal?.message || 'Check the server configuration and try again.'}</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Close</button></PodModal>
       <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, an optional logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
       <PodModal open={modal?.type === 'analysis-first'} title="Run the analysis first" description="Content must come from this pod's website, photos, and approved direction." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Go to AI direction</button></PodModal>
       <PodModal open={modal?.type === 'approval-first'} title="Approve the direction first" description="This prevents the AI from filling the pod with content based on a direction you do not want." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Review direction</button></PodModal>

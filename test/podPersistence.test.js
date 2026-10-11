@@ -269,6 +269,7 @@ async function workspaceHarness(workspace, services = {}) {
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
     '../lib/aiClient': services.ai || {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
+    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }) },
     '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let commandItems = [];

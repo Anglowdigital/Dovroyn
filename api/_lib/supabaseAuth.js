@@ -10,6 +10,13 @@ function getSupabaseServerConfig() {
   return { url: url.replace(/\/$/, ''), publishableKey };
 }
 
+export function getSupabaseServiceConfig() {
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) throw new Error('Supabase service storage is not configured.');
+  return { url: url.replace(/\/$/, ''), serviceRoleKey };
+}
+
 async function supabaseFetch(path, accessToken) {
   const { url, publishableKey } = getSupabaseServerConfig();
   return fetch(`${url}${path}`, {
@@ -34,6 +41,32 @@ async function supabasePost(path, accessToken, body, prefer) {
   });
 }
 
+async function supabaseServicePost(path, body) {
+  const { url, serviceRoleKey } = getSupabaseServiceConfig();
+  return fetch(`${url}${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function rpcWithServiceRole(functionName, body) {
+  const response = await supabaseServicePost(`/rest/v1/rpc/${encodeURIComponent(functionName)}`, body);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    const error = new Error(payload.message || 'Server-side provider storage is unavailable.');
+    error.status = response.status;
+    throw error;
+  }
+  if (response.status === 204) return null;
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
+}
+
 export async function verifySupabaseUser(accessToken) {
   if (!accessToken) return null;
   const response = await supabaseFetch('/auth/v1/user', accessToken);
@@ -46,6 +79,13 @@ export async function loadOwnedPod(accessToken, podId) {
   if (!response.ok) return null;
   const rows = await response.json();
   return rows[0] || null;
+}
+
+export async function loadSocialConnections(accessToken, podId) {
+  const response = await supabaseFetch(`/rest/v1/social_connections?pod_id=eq.${encodeURIComponent(podId)}&select=*&order=updated_at.desc`, accessToken);
+  if (!response.ok) throw new Error('Connection status is unavailable.');
+  const rows = await response.json();
+  return Array.isArray(rows) ? rows : [];
 }
 
 export async function finalizePodAnalysis(accessToken, podId, analysis) {
