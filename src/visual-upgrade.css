@@ -222,3 +222,11 @@ body { background: #F7F2E8; }
 
 .landing-shell .eyebrow, .dashboard-preview .preview-metric { color: #7a571d; }
 @font-face { font-family: 'Playfair Display'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/playfair-display-latin-400-normal.woff2') format('woff2'); }
+
+.calendar-artwork-list { display:grid; gap:12px; }
+.calendar-artwork-list details { background:#fffdf8; border:1px solid #d8cbb5; border-radius:16px; padding:16px; }
+.calendar-artwork-list summary { cursor:pointer; font-weight:600; }
+.calendar-artwork-list summary:focus-visible { outline:3px solid #b88a32; outline-offset:4px; }
+.calendar-artwork-preview { max-width:380px; margin:16px 0; padding:24px; border-radius:16px; background:#f3e9d8; color:#07162d; }
+.calendar-artwork-preview img { width:100%; max-height:240px; object-fit:contain; }
+.calendar-artwork-preview h3 { font-family:'Playfair Display',serif; font-size:28px; }

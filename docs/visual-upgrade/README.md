@@ -14,7 +14,7 @@ Scope expanded by the parent during implementation from visual-only work to opti
 
 ## Evidence
 
-Production build succeeds. `npm test`: **281 passing, 0 failing**. `git diff --check` clean.
+Production build succeeds. `npm test`: **286 passing, 0 failing**. `git diff --check` clean.
 
 [Browser results](browser-checks.json): all eight linked public routes rendered; all 15 demo tabs and wrapping arrow/Home navigation worked; no browser JavaScript errors; no page overflow at 1440px/390px. Axe WCAG 2 A/AA + 2.1 AA checks report zero violations on the homepage and pod-platform screen at both widths. This is an automated scan, not a claim of complete accessibility certification.
 
@@ -42,9 +42,10 @@ Both branches also extend the existing UI test harness module maps; keep the add
 ## Remaining blockers and tracked gaps
 
 - **Not merged or deployed.** Parent reconciliation/review and verified production smoke test remain required.
-- **Reference pixels unreviewed.** Library `libfile_31af108c90ec819198b8c6a0f9aadcd1` was prepared with a consumer-local destination, but its supported transfer failed to download readable bytes. No claim of pixel fidelity to `44386.jpg` is made.
+- **Native screenshot delivery blocked.** The supported Library batch-upload helper failed before preparation with `hosted apps tools/list request failed: network`, including a retry with additional permissions. No upload sessions or Library file IDs were created. Parent can upload the committed PNGs from a functioning Library environment.
+- **Reference pixels unreviewed.** Library `libfile_31af108c90ec819198b8c6a0f9aadcd1` was prepared with a consumer-local destination, but its supported transfer failed to download readable bytes. A fresh-helper retry, including additional permissions, again returned `library file transfer failed: download failed`. No claim of pixel fidelity to `44386.jpg` is made.
 - **Live own-site run unverified.** No authenticated Dovroyn session or configured local app environment was supplied. Container requests to dovroyn.com and its logo were denied with proxy HTTP 403; this does not establish that production extraction is blocked. Parent must create a real Dovroyn URL pod, run server-side AI analysis, review actual source details, save/restore creative and verify tier behavior in the live account after integration.
-- **Calendar still stores draft captions.** Creative approvals are saved separately; approved artwork snapshots are not yet linked into calendar entries or provider execution. Same-date and tier scheduling rules are preserved and tested.
+- **Calendar artwork linkage:** newly generated entries preserve matching saved artwork approvals in the existing `creative_note` field, with a resolvable image reference, headline, CTA and approval timestamp. No signed storage URL is persisted. Dates, counts and draft publishing status stay unchanged. Expandable entries show the saved snapshot or explicitly say caption only. Existing calendars are not rewritten; refreshing old entries and provider execution remain outside this change. Five additional tests cover scope, stale captions, missing media, chronology and same-date counts.
 - **Video generation and real coming-soon publishing remain absent.** Existing photos-only input is preserved. No new image/video provider call, OAuth grant, spend, social publishing or recurring promotion is performed.
 - URL-only pod cards use initials until a logo is uploaded; observed source imagery is available for review/creative selection inside the pod. No guessed logo is substituted.
 

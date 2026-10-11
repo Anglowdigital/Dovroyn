@@ -9,6 +9,7 @@ import * as direction from '../src/lib/podDirection.js';
 import * as setup from '../src/lib/podSetup.js';
 import * as demo from '../src/lib/demoPod.js';
 import * as state from '../src/lib/podState.js';
+import * as calendarCreative from '../src/lib/calendarCreative.js';
 import * as learning from '../src/lib/podLearning.js';
 import * as lifecycle from '../src/lib/podLifecycle.js';
 
@@ -267,7 +268,7 @@ async function workspaceHarness(workspace, services = {}) {
     '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction,
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
-    '../lib/aiClient': services.ai || {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/podLearning': learning,
+    '../lib/aiClient': services.ai || {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
     '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let commandItems = [];

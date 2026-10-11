@@ -28,6 +28,7 @@ import {
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
 import { buildCalendarItems, restoreOperationalState } from '../lib/podState';
+import { attachApprovedCalendarCreatives, resolveCalendarCreative } from '../lib/calendarCreative';
 import { capturePodAction, isPodActionPending, startPodLifecycle } from '../lib/podLifecycle';
 import { normalizePodCompetitorSnapshot, normalizePodLearning, selectPodCompetitorSnapshot } from '../lib/podLearning';
 import { getPlan } from '../lib/plans';
@@ -833,7 +834,7 @@ function LivePodWorkspace({ session, subscription }) {
       const items = buildCalendarItems({ month: calendarMonth, posts, platformKeys: selectedPlatformKeys,
         weeklyPostingDays: plan.weeklyPostingDays, monthlyContentDays: plan.monthlyContentDays });
       if (!items.length) throw new Error('No calendar days are available. Check your plan allowance and selected platform drafts.');
-      const saved = await saveCalendarItems(pod.id, items);
+      const saved = await saveCalendarItems(pod.id, attachApprovedCalendarCreatives(items, { podId: pod.id, posts, preferences: creativePreferences, assets, sourceMedia: analysis?.source_media || [] }));
       if (!isCurrent()) return;
       setCalendarItems((current) => [...current.filter((item) => !item.scheduled_date.startsWith(calendarMonth)), ...saved]);
       showNotice('Calendar drafts saved for this month. Nothing was approved or published.');
@@ -1080,10 +1081,9 @@ function LivePodWorkspace({ session, subscription }) {
         const [year, month] = calendarMonth.split('-').map(Number);
         const startOffset = (new Date(year, month - 1, 1).getDay() + 6) % 7;
         const daysInMonth = new Date(year, month, 0).getDate();
-        const calThumb = brandPhotos[0]?.preview || assets.find((asset) => asset.assetRole === 'campaign_asset')?.preview || '';
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Visible month · {calendarMonth}</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. Calendar entries are draft captions; visual creative approvals are saved separately. Provider publishing is unavailable.</p></div><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
+            <header className="pod-panel-heading"><div><p className="eyebrow">Visible month · {calendarMonth}</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. New entries include a snapshot of matching approved artwork. Entries remain drafts; provider publishing is unavailable. Existing calendars are not rewritten when artwork changes.</p></div><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
             <label className="pod-toggle"><input type="checkbox" checked={observancesEnabled} disabled={Boolean(operationalMutation)} onChange={(event) => saveObservances(event.target.checked)} /><span /><div><strong>Include selected religious observances</strong><small>Off by default. Dovroyn will never guess a user's religion. No observances are selected unless you supply them.</small></div></label>
             {monthItems.length ? (
               <div className="pod-cal-grid" aria-label={`Saved content calendar for ${calendarMonth}`}>
@@ -1093,13 +1093,14 @@ function LivePodWorkspace({ session, subscription }) {
                   const date = index + 1;
                   const dateItems = monthItems.filter((item) => item.scheduled_date === `${calendarMonth}-${String(date).padStart(2, '0')}`);
                   const isPostDay = dateItems.length > 0;
+                  const artwork = resolveCalendarCreative(dateItems[0], { podId: pod.id, assets, sourceMedia: analysis?.source_media || [] });
                   return (
                     <div key={date} className={`pod-cal-day${isPostDay ? ' pod-cal-post' : ''}`}>
                       <span className="pod-cal-date">{date}</span>
                       {isPostDay && (
                         <>
-                          <span className="pod-cal-thumb">{calThumb ? <img src={calThumb} alt="" /> : <Sparkles size={14} />}</span>
-                          <strong>{dateItems[0].caption || dateItems[0].content_type}</strong>
+                          <span className="pod-cal-thumb">{artwork?.imageUrl ? <img src={artwork.imageUrl} alt="" /> : <Sparkles size={14} />}</span>
+                          <strong>{artwork?.snapshot.headline || dateItems[0].caption || dateItems[0].content_type}</strong>
                           <small>{[...new Set(dateItems.map((item) => item.status))].join(' · ')}</small>
                           <span className="pod-cal-badges">{[...new Set(dateItems.map((item) => item.platform))].map((key) => <span key={key}>{getPlatform(key)?.name || key}</span>)}</span>
                         </>
@@ -1109,6 +1110,12 @@ function LivePodWorkspace({ session, subscription }) {
                 })}
               </div>
             ) : <EmptyState icon={CalendarDays} title="Calendar not generated" body="Generate content drafts first, then the pod can place them within the paid allowance period." />}
+            {monthItems.length > 0 && <section className="calendar-artwork-list" aria-label="Saved calendar artwork">{monthItems.map((item, index) => {
+              const creative = resolveCalendarCreative(item, { podId: pod.id, assets, sourceMedia: analysis?.source_media || [] });
+              return <details key={item.id || index}><summary>{item.scheduled_date} · {getPlatform(item.platform)?.name || item.platform} · {creative ? 'Saved artwork' : 'Caption only'}</summary>
+                {creative ? <><div className="calendar-artwork-preview">{creative.imageUrl && <img src={creative.imageUrl} alt={creative.imageAlt} />}<h3>{creative.snapshot.headline}</h3><p>{creative.snapshot.call_to_action}</p></div><small>Artwork snapshot approved {new Date(creative.snapshot.approved_at).toLocaleDateString()}. Calendar status: {item.status}. This does not authorise publishing.</small></> : <p>No matching approved artwork snapshot is available for this entry.</p>}
+                <p>{item.caption}</p></details>;
+            })}</section>}
           </div>
         );
       }

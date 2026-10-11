@@ -6,6 +6,7 @@ import * as lifecycle from '../src/lib/podLifecycle.js';
 import { createClient } from '@supabase/supabase-js';
 import * as direction from '../src/lib/podDirection.js';
 import * as state from '../src/lib/podState.js';
+import * as calendarCreative from '../src/lib/calendarCreative.js';
 import * as platforms from '../src/lib/platforms.js';
 import * as setup from '../src/lib/podSetup.js';
 import * as demo from '../src/lib/demoPod.js';
@@ -121,7 +122,7 @@ async function uiHarness(first, { request, load = async () => first, demoMode = 
     '../components/pod/PodJourney': { default: () => null },
     '../components/pod/CreativeReview': { default: () => null },
     react: hooks, 'react-router-dom': { Link: ({ children }) => h('a', {}, children), useParams: () => ({ podId }) }, 'lucide-react': new Proxy({}, { get: () => () => null }),
-    '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction, '../lib/podState': state, '../lib/podLearning': learning,
+    '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup, '../lib/demoPod': demo,
     '../lib/aiClient': { requestCompetitorSnapshot: async (...args) => { requests++; return request(...args); } },
