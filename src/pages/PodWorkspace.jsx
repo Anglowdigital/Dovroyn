@@ -451,9 +451,7 @@ function LivePodWorkspace({ session, subscription }) {
         const search = typeof window.location?.search === 'string' ? window.location.search : '';
         const query = new URLSearchParams(search);
         if (search && query.get('integration') === 'meta') {
-          const outcome = query.get('status') === 'connected'
-            ? 'Meta account connected.'
-            : 'Meta connection could not be completed.';
+          const outcome = 'Meta sign-in returned. Check your account connection status.';
           showNotice(outcome);
           window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
         }

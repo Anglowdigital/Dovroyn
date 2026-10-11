@@ -29,9 +29,7 @@ export default function PodsPage({ session, subscription }) {
     const search = typeof window.location?.search === 'string' ? window.location.search : '';
     const query = new URLSearchParams(search);
     if (!search || query.get('integration') !== 'meta') return;
-    setCallbackNotice(query.get('status') === 'connected'
-      ? 'Meta account connected.'
-      : 'Meta connection could not be completed.');
+    setCallbackNotice('Meta sign-in returned. Check your account connection status.');
     window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
   }, []);
 
