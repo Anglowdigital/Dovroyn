@@ -10,12 +10,16 @@ import {
 } from '../api/_lib/metaOrganicPublisher.js';
 import {
   buildMetaOrganicArtworkExportRequest,
+  buildMetaOrganicCreativeApprovalAttestationPayload,
   computeMetaOrganicArtworkManifestHash,
+  createMetaOrganicCreativeApprovalAttestation,
   createRpcMetaOrganicArtworkExportStore,
   exportApprovedMetaOrganicArtwork,
+  normalizeMetaOrganicSourceEvidenceForAttestation,
 } from '../api/_lib/metaOrganicArtworkExport.js';
 
 const pgliteModule = process.env.PGLITE_MODULE;
+process.env.META_ARTWORK_REVIEW_TOKEN_SECRET ||= 'pglite-local-attestation-secret';
 if (!pgliteModule) {
   console.error('PGLITE_MODULE is required. Example: PGLITE_MODULE=/tmp/dovroyn-pr48-sqlcheck/node_modules/@electric-sql/pglite/dist/index.js node docs/meta-organic-publisher-pglite-check.mjs');
   process.exit(1);
@@ -273,7 +277,137 @@ async function setupDb() {
       'synthetic-source.jpg', 'image/jpeg', ${syntheticSourceBytes.byteLength}, 'campaign_asset'
     );
   `);
+  const approvalRow = (await db.query(
+    'SELECT id, pod_id, preference_type, preference_value, active, created_at FROM public.pod_preferences WHERE id = $1',
+    [ids.creativeApproval],
+  )).rows[0];
+  const draftRow = (await db.query('SELECT id, platform, body, status FROM public.social_posts WHERE id = $1', [ids.draft])).rows[0];
+  const approval = approvalRow.preference_value;
+  const normalized = {
+    post: {
+      id: ids.draft,
+      userId: ids.user,
+      podId: ids.pod,
+      provider: draftRow.platform,
+      status: draftRow.status,
+      caption: draftRow.body,
+      contentVersion: crypto.createHash('md5').update(draftRow.body).digest('hex'),
+      contentHash: crypto.createHash('sha256').update(Buffer.from(draftRow.body)).digest('hex'),
+    },
+    approval: {
+      id: approvalRow.id,
+      rowCreatedAt: approvalRow.created_at,
+      approvedAt: approval.approved_at,
+      contentSnapshot: approval.content_snapshot,
+      sourceEvidence: normalizeMetaOrganicSourceEvidenceForAttestation(approval.source_evidence),
+      finalRenderEvidence: approval.final_render_evidence,
+      composition: {
+        version: approval.composition.version,
+        layout: approval.composition.layout,
+        fontContract: approval.composition.font_contract,
+        brandName: approval.composition.brand_name,
+        imageRole: approval.composition.image_role,
+        typographyOnly: approval.composition.typography_only,
+        headline: approval.composition.headline,
+        callToAction: approval.composition.call_to_action,
+      },
+    },
+  };
+  const attestationPayload = buildMetaOrganicCreativeApprovalAttestationPayload({
+    approvalRow,
+    approval,
+    normalized,
+  });
+  const attestation = createMetaOrganicCreativeApprovalAttestation({
+    approvalRow,
+    approval,
+    normalized,
+    env: process.env,
+  });
+  await db.query(
+    "UPDATE public.pod_preferences SET preference_value = jsonb_set(preference_value, '{server_attestation}', $1::jsonb) WHERE id = $2",
+    [JSON.stringify(attestation), ids.creativeApproval],
+  );
+  await db.query(
+    'SELECT public.persist_meta_organic_creative_approval_attestation($1::jsonb)',
+    [JSON.stringify({
+      approvalId: ids.creativeApproval,
+      userId: ids.user,
+      podId: ids.pod,
+      postId: ids.draft,
+      contentHash: normalized.post.contentHash,
+      sourceHash: syntheticSourceHash,
+      outputHash: approval.final_render_evidence.hash,
+      payloadHash: attestation.payloadHash,
+      signature: attestation.signature,
+      version: attestation.version,
+      payload: attestationPayload,
+    })],
+  );
   return db;
+}
+
+async function attestCurrentCreativeApproval(db) {
+  const approvalRow = (await db.query(
+    'SELECT id, pod_id, preference_type, preference_value, active, created_at FROM public.pod_preferences WHERE id = $1',
+    [ids.creativeApproval],
+  )).rows[0];
+  const draftRow = (await db.query('SELECT id, platform, body, status FROM public.social_posts WHERE id = $1', [ids.draft])).rows[0];
+  const approval = approvalRow.preference_value;
+  const normalized = {
+    post: {
+      id: ids.draft,
+      userId: ids.user,
+      podId: ids.pod,
+      provider: draftRow.platform,
+      status: draftRow.status,
+      caption: draftRow.body,
+      contentVersion: crypto.createHash('md5').update(draftRow.body).digest('hex'),
+      contentHash: crypto.createHash('sha256').update(Buffer.from(draftRow.body)).digest('hex'),
+    },
+    approval: {
+      id: approvalRow.id,
+      rowCreatedAt: approvalRow.created_at,
+      approvedAt: approval.approved_at,
+      contentSnapshot: approval.content_snapshot,
+      sourceEvidence: normalizeMetaOrganicSourceEvidenceForAttestation(approval.source_evidence),
+      finalRenderEvidence: approval.final_render_evidence,
+      composition: {
+        version: approval.composition.version,
+        layout: approval.composition.layout,
+        fontContract: approval.composition.font_contract,
+        brandName: approval.composition.brand_name,
+        imageRole: approval.composition.image_role,
+        typographyOnly: approval.composition.typography_only,
+        headline: approval.composition.headline,
+        callToAction: approval.composition.call_to_action,
+      },
+    },
+  };
+  const payload = buildMetaOrganicCreativeApprovalAttestationPayload({ approvalRow, approval, normalized });
+  const attestation = createMetaOrganicCreativeApprovalAttestation({ approvalRow, approval, normalized, env: process.env });
+  await db.query(
+    "UPDATE public.pod_preferences SET preference_value = jsonb_set(preference_value, '{server_attestation}', $1::jsonb) WHERE id = $2",
+    [JSON.stringify(attestation), ids.creativeApproval],
+  );
+  await db.query('DELETE FROM private.meta_organic_creative_approval_attestations WHERE approval_id = $1', [ids.creativeApproval]);
+  await db.query(
+    'SELECT public.persist_meta_organic_creative_approval_attestation($1::jsonb)',
+    [JSON.stringify({
+      approvalId: ids.creativeApproval,
+      userId: ids.user,
+      podId: ids.pod,
+      postId: ids.draft,
+      contentHash: normalized.post.contentHash,
+      sourceHash: normalized.approval.sourceEvidence.hash || null,
+      outputHash: approval.final_render_evidence.hash,
+      payloadHash: attestation.payloadHash,
+      signature: attestation.signature,
+      version: attestation.version,
+      payload,
+    })],
+  );
+  return { approval, normalized, payload, attestation };
 }
 
 async function seedApprovalAndExport(db, p = proposal()) {
@@ -386,6 +520,7 @@ function rpcFor(db) {
       mark_meta_organic_reconciliation_inconclusive: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_receipt],
       get_meta_organic_artwork_export_context: [params.p_request],
       persist_meta_organic_artwork_export_manifest: [params.p_manifest],
+      persist_meta_organic_creative_approval_attestation: [params.p_attestation],
     };
     if (!argsByName[name]) throw new Error(`Unhandled RPC ${name}`);
     try {
@@ -438,6 +573,56 @@ async function checkDurableArtworkExportStoreContract() {
     },
   };
   const renderer = async (composition) => Buffer.from(`synthetic-jpeg-${composition.caption}`);
+  const debugAtt = await db.query(`
+    SELECT
+      att.approved_payload->'sourceEvidence' AS att_source,
+      CASE coalesce(approval.preference_value->'source_evidence', approval.preference_value->'sourceEvidence')->>'kind'
+        WHEN 'upload' THEN jsonb_build_object(
+          'kind', 'upload',
+          'identity', coalesce(approval.preference_value->'source_evidence'->'storage_path', approval.preference_value->'source_evidence'->'storagePath', approval.preference_value->'source_evidence'->'identity'),
+          'hash', coalesce(approval.preference_value->'source_evidence'->'hash', approval.preference_value->'source_evidence'->'sha256', 'null'::jsonb),
+          'mediaType', coalesce(approval.preference_value->'source_evidence'->'media_type', approval.preference_value->'source_evidence'->'mediaType', approval.preference_value->'source_evidence'->'content_type', approval.preference_value->'source_evidence'->'contentType', 'null'::jsonb),
+          'byteLength', coalesce(approval.preference_value->'source_evidence'->'byte_length', approval.preference_value->'source_evidence'->'byteLength', '0'::jsonb),
+          'objectVersion', coalesce(approval.preference_value->'source_evidence'->'object_version', approval.preference_value->'source_evidence'->'objectVersion', approval.preference_value->'source_evidence'->'revision', 'null'::jsonb))
+        ELSE '{}'::jsonb
+      END AS expected_source
+    FROM private.meta_organic_creative_approval_attestations att
+    JOIN public.pod_preferences approval ON approval.id = att.approval_id
+    WHERE approval.id = '${ids.creativeApproval}'
+  `);
+  assert.deepEqual(debugAtt.rows[0].att_source, debugAtt.rows[0].expected_source);
+  const debugAttChecks = await db.query(`
+    SELECT
+      att.user_id = pod.user_id AS user_ok,
+      att.pod_id = pod.id AS pod_ok,
+      att.draft_id = draft.id AS draft_ok,
+      att.version = 'meta_organic_creative_approval_attestation_v1' AS version_ok,
+      att.content_hash = encode(sha256(convert_to(draft.body, 'UTF8')), 'hex') AS content_ok,
+      att.output_hash = approval.preference_value->'final_render_evidence'->>'hash' AS output_ok,
+      att.payload_hash = approval.preference_value->'server_attestation'->>'payloadHash' AS payload_hash_ok,
+      att.signature = approval.preference_value->'server_attestation'->>'signature' AS signature_ok,
+      encode(sha256(convert_to(private.meta_organic_canonical_json(att.approved_payload), 'UTF8')), 'hex') = att.payload_hash AS sql_hash_ok,
+      att.approved_payload->'authority'->>'contentHash' = encode(sha256(convert_to(draft.body, 'UTF8')), 'hex') AS authority_hash_ok,
+      att.approved_payload->'authority'->>'contentVersion' = md5(draft.body) AS authority_version_ok,
+      (att.approved_payload->'authority'->>'approvedAt')::timestamptz = (approval.preference_value->>'approved_at')::timestamptz AS approved_at_ok,
+      att.approved_payload->'image' IS NOT DISTINCT FROM coalesce(approval.preference_value->'image', 'null'::jsonb) AS image_ok,
+      att.approved_payload->'finalRenderEvidence' IS NOT DISTINCT FROM approval.preference_value->'final_render_evidence' AS render_ok,
+      att.approved_payload->'composition' IS NOT DISTINCT FROM jsonb_build_object(
+        'version', approval.preference_value->'composition'->'version',
+        'layout', approval.preference_value->'composition'->'layout',
+        'fontContract', approval.preference_value->'composition'->'font_contract',
+        'brandName', approval.preference_value->'composition'->'brand_name',
+        'imageRole', approval.preference_value->'composition'->'image_role',
+        'typographyOnly', approval.preference_value->'composition'->'typography_only',
+        'headline', approval.preference_value->'composition'->'headline',
+        'callToAction', approval.preference_value->'composition'->'call_to_action') AS composition_ok
+    FROM private.meta_organic_creative_approval_attestations att
+    JOIN public.pod_preferences approval ON approval.id = att.approval_id
+    JOIN public.social_posts draft ON draft.id = att.draft_id
+    JOIN public.pods pod ON pod.id = att.pod_id
+    WHERE approval.id = '${ids.creativeApproval}'
+  `);
+  assert.deepEqual(Object.values(debugAttChecks.rows[0]).filter((value) => value !== true), []);
   const first = await exportApprovedMetaOrganicArtwork({
     request: buildMetaOrganicArtworkExportRequest({
       userId: ids.user,
@@ -469,8 +654,8 @@ async function checkDurableArtworkExportStoreContract() {
     now: new Date('2026-10-12T00:00:00Z'),
   });
 
-  assert.equal(first.status, 'exported');
-  assert.equal(second.status, 'exported');
+  assert.equal(first.status, 'exported', first.reason);
+  assert.equal(second.status, 'exported', second.reason);
   assert.equal(first.manifest.authority.creativeApprovalId, ids.creativeApproval);
   assert.equal(first.manifest.authority.approvalId, undefined);
   assert.notEqual(first.manifest.manifestHash, second.manifest.manifestHash);
@@ -497,8 +682,15 @@ async function checkDurableArtworkExportStoreContract() {
   for (const mutate of [
     (m) => { m.output.hash = 'f'.repeat(64); m.output.objectPath = m.output.objectPath.replace(first.manifest.output.hash, m.output.hash); },
     (m) => { m.source.hash = 'f'.repeat(64); m.authority.sourceHash = m.source.hash; },
-    (m) => { m.composition.headline = 'Changed without new approval'; },
     (m) => { m.authority.contentHash = 'f'.repeat(64); },
+  ]) {
+    const changed = structuredClone(first.manifest);
+    mutate(changed);
+    changed.manifestHash = computeMetaOrganicArtworkManifestHash(changed);
+    await assert.rejects(() => persistDirect(changed), /EXPORT_APPROVAL_ATTESTATION_REQUIRED/);
+  }
+  for (const mutate of [
+    (m) => { m.composition.headline = 'Changed without new approval'; },
     (m) => { m.output.byteLength += 1; },
     (m) => { m.output.dimensions.width = 900; },
   ]) {
@@ -522,7 +714,7 @@ async function checkDurableArtworkExportStoreContract() {
     const changed = structuredClone(originalReview);
     mutate(changed);
     await db.query('UPDATE public.pod_preferences SET preference_value = $1::jsonb WHERE id = $2', [JSON.stringify(changed), ids.creativeApproval]);
-    await assert.rejects(() => persistDirect(first.manifest), /EXPORT_REVIEWED_ARTWORK_CHANGED/);
+    await assert.rejects(() => persistDirect(first.manifest), /EXPORT_APPROVAL_ATTESTATION_REQUIRED/);
     await db.query('UPDATE public.pod_preferences SET preference_value = $1::jsonb WHERE id = $2', [JSON.stringify(originalReview), ids.creativeApproval]);
   }
   const helperAcl = await db.query("SELECT has_function_privilege('authenticated', 'private.meta_organic_canonical_json(jsonb)', 'EXECUTE') AS browser, has_function_privilege('service_role', 'private.meta_organic_canonical_json(jsonb)', 'EXECUTE') AS service");
@@ -530,6 +722,56 @@ async function checkDurableArtworkExportStoreContract() {
   assert.equal(helperAcl.rows[0].service, false);
 
   await assert.rejects(() => store.persistExportManifest(first.manifest), /EXPORT_MANIFEST_IMMUTABLE/);
+}
+
+async function checkCreativeApprovalSourceKindSqlSuccess() {
+  for (const variant of ['source', 'typography_only']) {
+    const db = await setupDb();
+    const originalReview = (await db.query('SELECT preference_value FROM public.pod_preferences WHERE id = $1', [ids.creativeApproval])).rows[0].preference_value;
+    const changed = structuredClone(originalReview);
+    if (variant === 'source') {
+      changed.image = { kind: 'source', url: 'https://example.com/source.jpg', source_url: 'https://example.com/' };
+      changed.source_evidence = {
+        kind: 'source',
+        url: 'https://example.com/source.jpg',
+        source_url: 'https://example.com/',
+        identity: 'https://example.com/source.jpg',
+        hash: syntheticSourceHash,
+        revision: syntheticSourceHash,
+        media_type: 'image/jpeg',
+        byte_length: syntheticSourceBytes.byteLength,
+      };
+      changed.composition.image_role = 'image';
+      changed.composition.typography_only = false;
+    } else {
+      changed.image = null;
+      changed.source_evidence = {
+        kind: 'typography_only',
+        identity: 'typography-only',
+        hash: null,
+        mediaType: null,
+        byteLength: 0,
+      };
+      changed.composition.image_role = 'typography';
+      changed.composition.typography_only = true;
+    }
+    await db.query('UPDATE public.pod_preferences SET preference_value = $1::jsonb WHERE id = $2', [JSON.stringify(changed), ids.creativeApproval]);
+    const attested = await attestCurrentCreativeApproval(db);
+    assert.equal(attested.normalized.approval.sourceEvidence.kind, variant);
+    const context = await db.query(
+      'SELECT public.get_meta_organic_artwork_export_context($1::jsonb) AS context',
+      [JSON.stringify(buildMetaOrganicArtworkExportRequest({
+        userId: ids.user,
+        podId: ids.pod,
+        postId: ids.draft,
+        provider: 'facebook',
+        accountConnectionId: ids.account,
+        providerAccountId: '101',
+        creativeApprovalId: ids.creativeApproval,
+      }))],
+    );
+    assert.equal(context.rows[0].context.approvalRow.preference_value.source_evidence.kind, variant);
+  }
 }
 
 async function checkLeaseAndPrivilegeFences() {
@@ -739,6 +981,7 @@ async function checkAllowanceWindowRolloverAndReservations() {
 
 await checkExecutableQueueAndContext();
 await checkDurableArtworkExportStoreContract();
+await checkCreativeApprovalSourceKindSqlSuccess();
 await checkLeaseAndPrivilegeFences();
 await checkUnknownTransition();
 await checkReapprovalDedupe();

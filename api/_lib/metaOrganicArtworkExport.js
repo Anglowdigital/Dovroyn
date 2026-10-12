@@ -10,6 +10,7 @@ export const META_ORGANIC_CREATIVE_COMPOSITION_VERSION = 'meta_organic_creative_
 export const META_ORGANIC_CREATIVE_LAYOUT = 'meta-organic-portrait-v1';
 export const META_ORGANIC_CREATIVE_FONT_CONTRACT = 'system-ui-safe-v1';
 export const META_ORGANIC_ARTWORK_RENDERER_VERSION = 'sharp_svg_jpeg_2026_10_12_v1';
+export const META_ORGANIC_CREATIVE_APPROVAL_ATTESTATION_VERSION = 'meta_organic_creative_approval_attestation_v1';
 export const META_ORGANIC_EXPORT_URL_MIN_TTL_SECONDS = 4 * 60 * 60;
 export const META_ORGANIC_EXPORT_URL_MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const META_ORGANIC_EXPORT_WIDTH = 1080;
@@ -54,6 +55,63 @@ function canonicalJson(value) {
 
 function hashJson(value) {
   return sha256Hex(Buffer.from(canonicalJson(value)));
+}
+
+function hmac(value, secret) {
+  return crypto.createHmac('sha256', secret).update(value).digest('base64url');
+}
+
+function attestationSecret(env = process.env) {
+  return env.META_ARTWORK_REVIEW_TOKEN_SECRET || env.META_OAUTH_COOKIE_SECRET || env.META_TOKEN_ENCRYPTION_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '';
+}
+
+export function buildMetaOrganicCreativeApprovalAttestationPayload({ approvalRow, approval, normalized }) {
+  return {
+    version: META_ORGANIC_CREATIVE_APPROVAL_ATTESTATION_VERSION,
+    row: {
+      id: cleanString(approvalRow?.id, 120),
+      createdAt: iso(approvalRow?.created_at || approvalRow?.createdAt),
+      preferenceType: cleanString(approvalRow?.preference_type || approvalRow?.preferenceType, 80),
+      active: approvalRow?.active !== false,
+    },
+    authority: {
+      userId: normalized.post.userId,
+      podId: normalized.post.podId,
+      postId: normalized.post.id,
+      provider: normalized.post.provider,
+      contentHash: normalized.post.contentHash,
+      contentVersion: normalized.post.contentVersion,
+      approvedAt: iso(normalized.approval.approvedAt),
+    },
+    composition: normalized.approval.composition,
+    image: approval.image || null,
+    sourceEvidence: normalized.approval.sourceEvidence,
+    finalRenderEvidence: normalized.approval.finalRenderEvidence,
+  };
+}
+
+export function createMetaOrganicCreativeApprovalAttestation({ approvalRow, approval, normalized, env = process.env }) {
+  const secret = attestationSecret(env);
+  if (!secret) throw Object.assign(new Error('Creative approval attestation is not configured.'), { code: 'EXPORT_APPROVAL_ATTESTATION_UNAVAILABLE' });
+  const payload = buildMetaOrganicCreativeApprovalAttestationPayload({ approvalRow, approval, normalized });
+  const payloadHash = hashJson(payload);
+  return {
+    version: META_ORGANIC_CREATIVE_APPROVAL_ATTESTATION_VERSION,
+    payloadHash,
+    signature: hmac(payloadHash, secret),
+  };
+}
+
+function verifyMetaOrganicCreativeApprovalAttestation({ approvalRow, approval, normalized }) {
+  const attestation = approval.server_attestation || approval.serverAttestation;
+  const secret = attestationSecret();
+  if (!secret || attestation?.version !== META_ORGANIC_CREATIVE_APPROVAL_ATTESTATION_VERSION) return false;
+  const expected = createMetaOrganicCreativeApprovalAttestation({ approvalRow, approval, normalized });
+  const left = Buffer.from(cleanString(attestation.signature, 200));
+  const right = Buffer.from(expected.signature);
+  return attestation.payloadHash === expected.payloadHash
+    && left.length === right.length
+    && crypto.timingSafeEqual(left, right);
 }
 
 function manifestHashPayload(manifest) {
@@ -248,6 +306,31 @@ function normalizeSourceEvidence(evidence, reference) {
   return { ok: true, evidence: { kind: 'source', identity: url, sourceUrl: reference.sourceUrl, hash, mediaType: type, byteLength, revision } };
 }
 
+export function normalizeMetaOrganicSourceEvidenceForAttestation(evidence = {}) {
+  if (evidence.kind === 'upload') {
+    return {
+      kind: 'upload',
+      identity: cleanString(evidence.storage_path || evidence.storagePath || evidence.identity, 700),
+      hash: cleanString(evidence.hash || evidence.sha256, 80).toLowerCase(),
+      mediaType: mediaType(evidence.media_type || evidence.mediaType || evidence.content_type || evidence.contentType),
+      byteLength: Number(evidence.byte_length ?? evidence.byteLength ?? 0),
+      objectVersion: cleanString(evidence.object_version || evidence.objectVersion || evidence.revision, 200),
+    };
+  }
+  if (evidence.kind === 'source') {
+    return {
+      kind: 'source',
+      identity: cleanString(evidence.url || evidence.identity, 1000),
+      sourceUrl: cleanString(evidence.source_url || evidence.sourceUrl, 1000) || null,
+      hash: cleanString(evidence.hash || evidence.sha256, 80).toLowerCase(),
+      mediaType: mediaType(evidence.media_type || evidence.mediaType || evidence.content_type || evidence.contentType),
+      byteLength: Number(evidence.byte_length ?? evidence.byteLength ?? 0),
+      revision: cleanString(evidence.revision || evidence.source_revision || evidence.sourceRevision, 200),
+    };
+  }
+  return { kind: 'typography_only', identity: 'typography-only', hash: null, mediaType: null, byteLength: 0 };
+}
+
 function normalizeFinalRenderEvidence(evidence) {
   const hash = cleanString(evidence?.hash || evidence?.outputHash, 80).toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(hash)
@@ -341,9 +424,7 @@ function normalizeApprovedContext(context = {}, request) {
       && cleanString(media.approval_status || media.approvalStatus, 40) !== 'rejected');
     if (!source) return { ok: false, reason: 'EXPORT_SOURCE_NOT_APPROVED' };
   }
-  return {
-    ok: true,
-    normalized: {
+  const normalized = {
       request,
       post: { id: postId, userId, podId, provider, status, caption: rawCaption, contentVersion: md5Hex(rawCaption), contentHash: sha256Hex(Buffer.from(rawCaption)) },
       approval: {
@@ -363,8 +444,9 @@ function normalizeApprovedContext(context = {}, request) {
       pod: {
         brandName: composition.composition.brandName || cleanString(context.pod?.brand_name || context.pod?.brandName || context.pod?.pod_name || context.pod?.podName, 120) || 'Dovroyn Pod',
       },
-    },
   };
+  if (!verifyMetaOrganicCreativeApprovalAttestation({ approvalRow, approval, normalized })) return { ok: false, reason: 'EXPORT_APPROVAL_ATTESTATION_REQUIRED' };
+  return { ok: true, normalized };
 }
 
 function assertSourceBytes(source) {

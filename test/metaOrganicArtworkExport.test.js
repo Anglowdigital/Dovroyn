@@ -8,9 +8,11 @@ import { createRequire } from 'node:module';
 import {
   buildMetaOrganicArtworkExportRequest,
   computeMetaOrganicArtworkManifestHash,
+  createMetaOrganicCreativeApprovalAttestation,
   createRpcMetaOrganicArtworkExportStore,
   createInMemoryMetaOrganicArtworkExportStore,
   exportApprovedMetaOrganicArtwork,
+  normalizeMetaOrganicSourceEvidenceForAttestation,
   prepareMetaOrganicArtworkReviewEvidence,
   renderMetaOrganicArtworkJpeg,
   META_ORGANIC_ARTWORK_RENDERER_VERSION,
@@ -22,6 +24,7 @@ const require = createRequire(import.meta.url);
 const sharp = require('sharp');
 
 const now = new Date('2026-10-12T04:00:00.000Z');
+process.env.META_ARTWORK_REVIEW_TOKEN_SECRET = process.env.META_ARTWORK_REVIEW_TOKEN_SECRET || 'test-artwork-review-secret';
 const userId = 'user-export-1';
 const podId = 'pod-export-1';
 const postId = 'post-export-1';
@@ -64,7 +67,7 @@ function context(overrides = {}) {
   const sourceEvidence = overrides.sourceEvidence === undefined
     ? (image ? { kind: image.kind, storage_path: image.storage_path, url: image.url, source_url: image.source_url || null, hash: sourceHash, object_version: 'object-version-a', revision: 'source-revision-a', media_type: 'image/png', byte_length: overrides.sourceBytes?.byteLength || 0 } : { kind: 'typography_only', identity: 'typography-only' })
     : overrides.sourceEvidence;
-  return {
+  const value = {
     request: request(overrides.request),
     pod: { brand_name: 'Dovroyn Synthetic' },
     post: {
@@ -122,6 +125,39 @@ function context(overrides = {}) {
     }] : overrides.assets,
     sourceMedia: overrides.sourceMedia || [],
   };
+  const approval = value.approvalRow.preference_value;
+  if (approval.status === 'approved' && !approval.server_attestation && approval.final_render_evidence) {
+    const contentVersion = crypto.createHash('md5').update(String(value.post.body)).digest('hex');
+    const contentHash = crypto.createHash('sha256').update(Buffer.from(value.post.body)).digest('hex');
+    const sourceEvidence = normalizeMetaOrganicSourceEvidenceForAttestation(approval.source_evidence || {});
+    approval.server_attestation = createMetaOrganicCreativeApprovalAttestation({
+      approvalRow: value.approvalRow,
+      approval,
+      normalized: {
+        post: { id: value.post.id, userId: value.post.userId, podId: value.post.podId, provider: value.post.platform, status: value.post.status, caption: value.post.body, contentVersion, contentHash },
+        approval: {
+          id: value.approvalRow.id,
+          rowCreatedAt: value.approvalRow.created_at,
+          approvedAt: approval.approved_at,
+          contentSnapshot: approval.content_snapshot,
+          sourceEvidence,
+          finalRenderEvidence: approval.final_render_evidence,
+          composition: {
+            version: approval.composition.version,
+            layout: approval.composition.layout,
+            fontContract: approval.composition.font_contract,
+            brandName: approval.composition.brand_name,
+            imageRole: approval.composition.image_role,
+            typographyOnly: approval.composition.typography_only,
+            headline: approval.composition.headline,
+            callToAction: approval.composition.call_to_action,
+          },
+        },
+      },
+      env: process.env,
+    });
+  }
+  return value;
 }
 
 async function preparedContext(sourceBytes, overrides = {}) {
@@ -292,6 +328,21 @@ test('tenant, approval version and account-target mismatches are blocked before 
     assert.equal(result.status, 'blocked');
     assert.equal(storage.puts.length, 0);
   }
+});
+
+test('browser-forged creative approval evidence without server attestation cannot export', async () => {
+  const sourceBytes = await fixtureImage();
+  const forged = await preparedContext(sourceBytes);
+  delete forged.approvalRow.preference_value.server_attestation;
+  const storage = memoryStorage({ sourceBytes });
+  const result = await exportApprovedMetaOrganicArtwork({
+    request: request(),
+    store: createInMemoryMetaOrganicArtworkExportStore([forged]),
+    storage,
+    now,
+  });
+  assert.equal(result.reason, 'EXPORT_APPROVAL_ATTESTATION_REQUIRED');
+  assert.equal(storage.puts.length, 0);
 });
 
 test('newer draft review supersedes older approved export and manifest tampering is rejected', async () => {
@@ -531,5 +582,5 @@ test('signed URL and expiry are bound, and rehashed exports must match the revie
   }
   const changedApproval = structuredClone(approved);
   changedApproval.approvalRow.preference_value.final_render_evidence.hash = 'c'.repeat(64);
-  await assert.rejects(() => createInMemoryMetaOrganicArtworkExportStore([changedApproval]).persistExportManifest(exported.manifest), /EXPORT_CONTEXT_CHANGED/);
+  await assert.rejects(() => createInMemoryMetaOrganicArtworkExportStore([changedApproval]).persistExportManifest(exported.manifest), /EXPORT_APPROVAL_ATTESTATION_REQUIRED/);
 });

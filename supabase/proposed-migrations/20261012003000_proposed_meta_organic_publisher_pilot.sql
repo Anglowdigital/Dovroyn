@@ -105,6 +105,148 @@ CREATE TABLE IF NOT EXISTS private.meta_organic_publish_exports (
   exported_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS private.meta_organic_creative_approval_attestations (
+  approval_id UUID PRIMARY KEY REFERENCES public.pod_preferences(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  pod_id UUID NOT NULL REFERENCES public.pods(id) ON DELETE RESTRICT,
+  draft_id UUID NOT NULL,
+  content_hash TEXT NOT NULL CHECK (content_hash ~ '^[a-f0-9]{64}$'),
+  source_hash TEXT,
+  output_hash TEXT NOT NULL CHECK (output_hash ~ '^[a-f0-9]{64}$'),
+  payload_hash TEXT NOT NULL CHECK (payload_hash ~ '^[a-f0-9]{64}$'),
+  signature TEXT NOT NULL,
+  version TEXT NOT NULL DEFAULT 'meta_organic_creative_approval_attestation_v1',
+  approved_payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION public.persist_meta_organic_creative_approval_attestation(p_attestation JSONB)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = ''
+AS $$
+DECLARE
+  inserted private.meta_organic_creative_approval_attestations%ROWTYPE;
+  pod public.pods%ROWTYPE;
+  draft public.social_posts%ROWTYPE;
+  pref public.pod_preferences%ROWTYPE;
+  approved JSONB;
+  source_evidence JSONB;
+  expected_source JSONB;
+  expected_composition JSONB;
+BEGIN
+  IF p_attestation->>'version' IS DISTINCT FROM 'meta_organic_creative_approval_attestation_v1'
+    OR btrim(coalesce(p_attestation->>'approvalId', '')) = ''
+    OR btrim(coalesce(p_attestation->>'userId', '')) = ''
+    OR btrim(coalesce(p_attestation->>'podId', '')) = ''
+    OR btrim(coalesce(p_attestation->>'postId', '')) = ''
+    OR coalesce(p_attestation->>'contentHash', '') !~ '^[a-f0-9]{64}$'
+    OR coalesce(p_attestation->>'outputHash', '') !~ '^[a-f0-9]{64}$'
+    OR coalesce(p_attestation->>'payloadHash', '') !~ '^[a-f0-9]{64}$'
+    OR btrim(coalesce(p_attestation->>'signature', '')) = ''
+    OR jsonb_typeof(p_attestation->'payload') IS DISTINCT FROM 'object'
+    OR encode(sha256(convert_to(private.meta_organic_canonical_json(p_attestation->'payload'), 'UTF8')), 'hex') IS DISTINCT FROM p_attestation->>'payloadHash' THEN
+    RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_REQUIRED';
+  END IF;
+
+  SELECT * INTO pod FROM public.pods
+  WHERE id = (p_attestation->>'podId')::uuid
+    AND user_id = (p_attestation->>'userId')::uuid;
+  IF NOT FOUND THEN RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_CONTEXT_CHANGED'; END IF;
+
+  SELECT * INTO draft FROM public.social_posts
+  WHERE id = (p_attestation->>'postId')::uuid
+    AND pod_id = pod.id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_CONTEXT_CHANGED'; END IF;
+
+  SELECT * INTO pref FROM public.pod_preferences
+  WHERE id = (p_attestation->>'approvalId')::uuid
+    AND pod_id = pod.id
+    AND preference_type = 'creative_review'
+    AND active IS TRUE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_CONTEXT_CHANGED'; END IF;
+
+  approved := pref.preference_value;
+  source_evidence := coalesce(approved->'source_evidence', approved->'sourceEvidence');
+  expected_composition := jsonb_build_object(
+    'version', approved->'composition'->'version',
+    'layout', approved->'composition'->'layout',
+    'fontContract', approved->'composition'->'font_contract',
+    'brandName', approved->'composition'->'brand_name',
+    'imageRole', approved->'composition'->'image_role',
+    'typographyOnly', approved->'composition'->'typography_only',
+    'headline', approved->'composition'->'headline',
+    'callToAction', approved->'composition'->'call_to_action');
+  expected_source := CASE source_evidence->>'kind'
+    WHEN 'upload' THEN jsonb_build_object(
+      'kind', 'upload',
+      'identity', coalesce(source_evidence->'storage_path', source_evidence->'storagePath', source_evidence->'identity'),
+      'hash', coalesce(source_evidence->'hash', source_evidence->'sha256', 'null'::jsonb),
+      'mediaType', coalesce(source_evidence->'media_type', source_evidence->'mediaType', source_evidence->'content_type', source_evidence->'contentType', 'null'::jsonb),
+      'byteLength', coalesce(source_evidence->'byte_length', source_evidence->'byteLength', '0'::jsonb),
+      'objectVersion', coalesce(source_evidence->'object_version', source_evidence->'objectVersion', source_evidence->'revision', 'null'::jsonb))
+    WHEN 'source' THEN jsonb_build_object(
+      'kind', 'source',
+      'identity', coalesce(source_evidence->'url', source_evidence->'identity'),
+      'sourceUrl', coalesce(approved->'image'->'source_url', approved->'image'->'sourceUrl', 'null'::jsonb),
+      'hash', coalesce(source_evidence->'hash', source_evidence->'sha256', 'null'::jsonb),
+      'mediaType', coalesce(source_evidence->'media_type', source_evidence->'mediaType', source_evidence->'content_type', source_evidence->'contentType', 'null'::jsonb),
+      'byteLength', coalesce(source_evidence->'byte_length', source_evidence->'byteLength', '0'::jsonb),
+      'revision', coalesce(source_evidence->'revision', source_evidence->'source_revision', source_evidence->'sourceRevision', 'null'::jsonb))
+    ELSE jsonb_build_object(
+      'kind', 'typography_only',
+      'identity', 'typography-only',
+      'hash', 'null'::jsonb,
+      'mediaType', 'null'::jsonb,
+      'byteLength', 0)
+    END;
+
+  IF approved->>'status' IS DISTINCT FROM 'approved'
+    OR approved->>'content_snapshot' IS DISTINCT FROM draft.body
+    OR approved->'server_attestation'->>'payloadHash' IS DISTINCT FROM p_attestation->>'payloadHash'
+    OR approved->'server_attestation'->>'signature' IS DISTINCT FROM p_attestation->>'signature'
+    OR encode(sha256(convert_to(draft.body, 'UTF8')), 'hex') IS DISTINCT FROM p_attestation->>'contentHash'
+    OR approved->'final_render_evidence'->>'hash' IS DISTINCT FROM p_attestation->>'outputHash'
+    OR p_attestation->'payload'->'row'->>'id' IS DISTINCT FROM pref.id::text
+    OR p_attestation->'payload'->'row'->>'preferenceType' IS DISTINCT FROM 'creative_review'
+    OR (p_attestation->'payload'->'row'->>'active')::boolean IS DISTINCT FROM true
+    OR p_attestation->'payload'->'authority'->>'userId' IS DISTINCT FROM pod.user_id::text
+    OR p_attestation->'payload'->'authority'->>'podId' IS DISTINCT FROM pod.id::text
+    OR p_attestation->'payload'->'authority'->>'postId' IS DISTINCT FROM draft.id::text
+    OR p_attestation->'payload'->'authority'->>'provider' IS DISTINCT FROM draft.platform
+    OR p_attestation->'payload'->'authority'->>'contentHash' IS DISTINCT FROM encode(sha256(convert_to(draft.body, 'UTF8')), 'hex')
+    OR p_attestation->'payload'->'authority'->>'contentVersion' IS DISTINCT FROM md5(draft.body)
+    OR (p_attestation->'payload'->'authority'->>'approvedAt')::timestamptz IS DISTINCT FROM (approved->>'approved_at')::timestamptz
+    OR p_attestation->'payload'->'composition' IS DISTINCT FROM expected_composition
+    OR p_attestation->'payload'->'image' IS DISTINCT FROM coalesce(approved->'image', 'null'::jsonb)
+    OR p_attestation->'payload'->'sourceEvidence' IS DISTINCT FROM expected_source
+    OR p_attestation->'payload'->'finalRenderEvidence' IS DISTINCT FROM approved->'final_render_evidence' THEN
+    RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_CONTEXT_CHANGED';
+  END IF;
+
+  INSERT INTO private.meta_organic_creative_approval_attestations (
+    approval_id, user_id, pod_id, draft_id, content_hash, source_hash, output_hash,
+    payload_hash, signature, version, approved_payload
+  )
+  VALUES (
+    (p_attestation->>'approvalId')::uuid,
+    (p_attestation->>'userId')::uuid,
+    (p_attestation->>'podId')::uuid,
+    (p_attestation->>'postId')::uuid,
+    p_attestation->>'contentHash',
+    nullif(p_attestation->>'sourceHash', ''),
+    p_attestation->>'outputHash',
+    p_attestation->>'payloadHash',
+    p_attestation->>'signature',
+    p_attestation->>'version',
+    p_attestation->'payload'
+  )
+  ON CONFLICT (approval_id) DO NOTHING
+  RETURNING * INTO inserted;
+
+  IF NOT FOUND THEN RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_IMMUTABLE'; END IF;
+  RETURN jsonb_build_object('approvalId', inserted.approval_id, 'payloadHash', inserted.payload_hash);
+END;
+$$;
+
 CREATE TABLE IF NOT EXISTS private.meta_organic_publish_receipts (
   id UUID PRIMARY KEY DEFAULT private.meta_organic_publisher_uuid(),
   job_id UUID NOT NULL REFERENCES private.meta_organic_publish_jobs(id) ON DELETE CASCADE,
@@ -121,11 +263,13 @@ CREATE TABLE IF NOT EXISTS private.meta_organic_publish_receipts (
 ALTER TABLE private.meta_organic_publish_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.meta_organic_publish_approvals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.meta_organic_publish_exports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE private.meta_organic_creative_approval_attestations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.meta_organic_publish_receipts ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON private.meta_organic_publish_jobs FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON private.meta_organic_publish_approvals FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON private.meta_organic_publish_exports FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON private.meta_organic_creative_approval_attestations FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON private.meta_organic_publish_receipts FROM PUBLIC, anon, authenticated;
 
 CREATE OR REPLACE FUNCTION private.meta_organic_job_json(job private.meta_organic_publish_jobs)
@@ -698,6 +842,9 @@ DECLARE
   connection private.meta_organic_connections%ROWTYPE;
   assets JSONB;
   source_media JSONB;
+  source_evidence JSONB;
+  expected_source JSONB;
+  expected_composition JSONB;
 BEGIN
   IF p_request->>'contractVersion' IS DISTINCT FROM 'meta_organic_artwork_export_v1' THEN
     RAISE EXCEPTION 'EXPORT_CONTRACT_VERSION_REQUIRED';
@@ -738,6 +885,61 @@ BEGIN
   END IF;
   IF approval.preference_value->>'content_snapshot' IS DISTINCT FROM draft.body THEN
     RAISE EXCEPTION 'EXPORT_APPROVAL_STALE';
+  END IF;
+  source_evidence := coalesce(approval.preference_value->'source_evidence', approval.preference_value->'sourceEvidence');
+  expected_source := CASE source_evidence->>'kind'
+    WHEN 'upload' THEN jsonb_build_object(
+      'kind', 'upload',
+      'identity', coalesce(source_evidence->'storage_path', source_evidence->'storagePath', source_evidence->'identity'),
+      'hash', coalesce(source_evidence->'hash', source_evidence->'sha256', 'null'::jsonb),
+      'mediaType', coalesce(source_evidence->'media_type', source_evidence->'mediaType', source_evidence->'content_type', source_evidence->'contentType', 'null'::jsonb),
+      'byteLength', coalesce(source_evidence->'byte_length', source_evidence->'byteLength', '0'::jsonb),
+      'objectVersion', coalesce(source_evidence->'object_version', source_evidence->'objectVersion', source_evidence->'revision', 'null'::jsonb))
+    WHEN 'source' THEN jsonb_build_object(
+      'kind', 'source',
+      'identity', coalesce(source_evidence->'url', source_evidence->'identity'),
+      'sourceUrl', coalesce(approval.preference_value->'image'->'source_url', approval.preference_value->'image'->'sourceUrl', 'null'::jsonb),
+      'hash', coalesce(source_evidence->'hash', source_evidence->'sha256', 'null'::jsonb),
+      'mediaType', coalesce(source_evidence->'media_type', source_evidence->'mediaType', source_evidence->'content_type', source_evidence->'contentType', 'null'::jsonb),
+      'byteLength', coalesce(source_evidence->'byte_length', source_evidence->'byteLength', '0'::jsonb),
+      'revision', coalesce(source_evidence->'revision', source_evidence->'source_revision', source_evidence->'sourceRevision', 'null'::jsonb))
+    ELSE jsonb_build_object(
+      'kind', 'typography_only',
+      'identity', 'typography-only',
+      'hash', 'null'::jsonb,
+      'mediaType', 'null'::jsonb,
+      'byteLength', 0)
+    END;
+  expected_composition := jsonb_build_object(
+    'version', approval.preference_value->'composition'->'version',
+    'layout', approval.preference_value->'composition'->'layout',
+    'fontContract', approval.preference_value->'composition'->'font_contract',
+    'brandName', approval.preference_value->'composition'->'brand_name',
+    'imageRole', approval.preference_value->'composition'->'image_role',
+    'typographyOnly', approval.preference_value->'composition'->'typography_only',
+    'headline', approval.preference_value->'composition'->'headline',
+    'callToAction', approval.preference_value->'composition'->'call_to_action');
+  PERFORM 1
+  FROM private.meta_organic_creative_approval_attestations att
+  WHERE att.approval_id = approval.id
+    AND att.user_id = pod.user_id
+    AND att.pod_id = pod.id
+    AND att.draft_id = draft.id
+    AND att.version = 'meta_organic_creative_approval_attestation_v1'
+    AND att.content_hash = encode(sha256(convert_to(draft.body, 'UTF8')), 'hex')
+    AND att.output_hash = approval.preference_value->'final_render_evidence'->>'hash'
+    AND att.payload_hash = approval.preference_value->'server_attestation'->>'payloadHash'
+    AND att.signature = approval.preference_value->'server_attestation'->>'signature'
+    AND encode(sha256(convert_to(private.meta_organic_canonical_json(att.approved_payload), 'UTF8')), 'hex') = att.payload_hash
+    AND att.approved_payload->'authority'->>'contentHash' = encode(sha256(convert_to(draft.body, 'UTF8')), 'hex')
+    AND att.approved_payload->'authority'->>'contentVersion' = md5(draft.body)
+    AND (att.approved_payload->'authority'->>'approvedAt')::timestamptz = (approval.preference_value->>'approved_at')::timestamptz
+    AND att.approved_payload->'image' IS NOT DISTINCT FROM coalesce(approval.preference_value->'image', 'null'::jsonb)
+    AND att.approved_payload->'sourceEvidence' IS NOT DISTINCT FROM expected_source
+    AND att.approved_payload->'finalRenderEvidence' IS NOT DISTINCT FROM approval.preference_value->'final_render_evidence'
+    AND att.approved_payload->'composition' IS NOT DISTINCT FROM expected_composition;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_REQUIRED';
   END IF;
 
   SELECT * INTO connection
@@ -947,6 +1149,19 @@ BEGIN
 
   approved := latest_approval.preference_value;
   source_evidence := coalesce(approved->'source_evidence', approved->'sourceEvidence');
+  PERFORM 1
+  FROM private.meta_organic_creative_approval_attestations att
+  WHERE att.approval_id = latest_approval.id
+    AND att.user_id = (p_manifest->'authority'->>'userId')::uuid
+    AND att.pod_id = (p_manifest->'authority'->>'podId')::uuid
+    AND att.draft_id = draft.id
+    AND att.version = 'meta_organic_creative_approval_attestation_v1'
+    AND att.content_hash = p_manifest->'authority'->>'contentHash'
+    AND att.source_hash IS NOT DISTINCT FROM nullif(p_manifest->'authority'->>'sourceHash', '')
+    AND att.output_hash = p_manifest->'output'->>'hash'
+    AND att.payload_hash = approved->'server_attestation'->>'payloadHash'
+    AND att.signature = approved->'server_attestation'->>'signature';
+  IF NOT FOUND THEN RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_REQUIRED'; END IF;
   expected_composition := jsonb_build_object(
     'version', approved->'composition'->'version',
     'layout', approved->'composition'->'layout',
@@ -957,18 +1172,41 @@ BEGIN
     'headline', approved->'composition'->'headline',
     'callToAction', approved->'composition'->'call_to_action',
     'captionSnapshot', draft.body);
-  expected_source := jsonb_build_object(
-    'kind', source_evidence->'kind',
-    'identity', CASE source_evidence->>'kind'
-      WHEN 'typography_only' THEN to_jsonb('typography-only'::text)
-      WHEN 'upload' THEN coalesce(source_evidence->'storage_path', source_evidence->'storagePath', source_evidence->'identity')
-      ELSE coalesce(source_evidence->'url', source_evidence->'identity') END,
-    'sourceUrl', CASE WHEN source_evidence->>'kind' = 'source' THEN coalesce(approved->'image'->'source_url', approved->'image'->'sourceUrl', 'null'::jsonb) ELSE 'null'::jsonb END,
-    'hash', coalesce(source_evidence->'hash', source_evidence->'sha256', 'null'::jsonb),
-    'objectVersion', coalesce(source_evidence->'object_version', source_evidence->'objectVersion', CASE WHEN source_evidence->>'kind' = 'upload' THEN source_evidence->'revision' END, 'null'::jsonb),
-    'revision', CASE WHEN source_evidence->>'kind' = 'source' THEN coalesce(source_evidence->'revision', source_evidence->'source_revision', source_evidence->'sourceRevision', 'null'::jsonb) ELSE 'null'::jsonb END,
-    'mediaType', coalesce(source_evidence->'media_type', source_evidence->'mediaType', source_evidence->'content_type', source_evidence->'contentType', 'null'::jsonb),
-    'byteLength', coalesce(source_evidence->'byte_length', source_evidence->'byteLength', '0'::jsonb));
+  expected_source := CASE source_evidence->>'kind'
+    WHEN 'upload' THEN jsonb_build_object(
+      'kind', 'upload',
+      'identity', coalesce(source_evidence->'storage_path', source_evidence->'storagePath', source_evidence->'identity'),
+      'hash', coalesce(source_evidence->'hash', source_evidence->'sha256', 'null'::jsonb),
+      'mediaType', coalesce(source_evidence->'media_type', source_evidence->'mediaType', source_evidence->'content_type', source_evidence->'contentType', 'null'::jsonb),
+      'byteLength', coalesce(source_evidence->'byte_length', source_evidence->'byteLength', '0'::jsonb),
+      'objectVersion', coalesce(source_evidence->'object_version', source_evidence->'objectVersion', source_evidence->'revision', 'null'::jsonb))
+    WHEN 'source' THEN jsonb_build_object(
+      'kind', 'source',
+      'identity', coalesce(source_evidence->'url', source_evidence->'identity'),
+      'sourceUrl', coalesce(approved->'image'->'source_url', approved->'image'->'sourceUrl', 'null'::jsonb),
+      'hash', coalesce(source_evidence->'hash', source_evidence->'sha256', 'null'::jsonb),
+      'mediaType', coalesce(source_evidence->'media_type', source_evidence->'mediaType', source_evidence->'content_type', source_evidence->'contentType', 'null'::jsonb),
+      'byteLength', coalesce(source_evidence->'byte_length', source_evidence->'byteLength', '0'::jsonb),
+      'revision', coalesce(source_evidence->'revision', source_evidence->'source_revision', source_evidence->'sourceRevision', 'null'::jsonb))
+    ELSE jsonb_build_object(
+      'kind', 'typography_only',
+      'identity', 'typography-only',
+      'hash', 'null'::jsonb,
+      'mediaType', 'null'::jsonb,
+      'byteLength', 0)
+    END;
+  PERFORM 1
+  FROM private.meta_organic_creative_approval_attestations att
+  WHERE att.approval_id = latest_approval.id
+    AND encode(sha256(convert_to(private.meta_organic_canonical_json(att.approved_payload), 'UTF8')), 'hex') = att.payload_hash
+    AND att.approved_payload->'authority'->>'contentHash' = encode(sha256(convert_to(draft.body, 'UTF8')), 'hex')
+    AND att.approved_payload->'authority'->>'contentVersion' = md5(draft.body)
+    AND (att.approved_payload->'authority'->>'approvedAt')::timestamptz = (approved->>'approved_at')::timestamptz
+    AND att.approved_payload->'image' IS NOT DISTINCT FROM coalesce(approved->'image', 'null'::jsonb)
+    AND att.approved_payload->'sourceEvidence' IS NOT DISTINCT FROM expected_source
+    AND att.approved_payload->'finalRenderEvidence' IS NOT DISTINCT FROM approved->'final_render_evidence'
+    AND att.approved_payload->'composition' IS NOT DISTINCT FROM (expected_composition - 'captionSnapshot');
+  IF NOT FOUND THEN RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_REQUIRED'; END IF;
   IF p_manifest->'composition' IS DISTINCT FROM expected_composition
     OR approved->'headline' IS DISTINCT FROM approved->'composition'->'headline'
     OR approved->'call_to_action' IS DISTINCT FROM approved->'composition'->'call_to_action'
@@ -976,7 +1214,7 @@ BEGIN
         ELSE approved->'image'->>'kind' END) IS DISTINCT FROM expected_source->>'kind'
     OR (expected_source->>'kind' = 'upload' AND approved->'image'->'storage_path' IS DISTINCT FROM expected_source->'identity')
     OR (expected_source->>'kind' = 'source' AND approved->'image'->'url' IS DISTINCT FROM expected_source->'identity')
-    OR hash_payload->'source' IS DISTINCT FROM expected_source
+    OR p_manifest->'source' IS DISTINCT FROM expected_source
     OR encode(sha256(convert_to(draft.body, 'UTF8')), 'hex') IS DISTINCT FROM p_manifest->'authority'->>'contentHash'
     OR p_manifest->'authority'->'sourceHash' IS DISTINCT FROM expected_source->'hash'
     OR p_manifest->'authority'->'sourceKind' IS DISTINCT FROM expected_source->'kind'
@@ -1318,6 +1556,7 @@ REVOKE ALL ON FUNCTION public.mark_meta_organic_publish_unknown(UUID, TEXT, TEXT
 REVOKE ALL ON FUNCTION public.mark_meta_organic_publish_published(UUID, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.get_meta_organic_artwork_export_context(JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.persist_meta_organic_artwork_export_manifest(JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.persist_meta_organic_creative_approval_attestation(JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.claim_meta_organic_reconciliation_job(TEXT, TIMESTAMPTZ, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.mark_meta_organic_publish_reconciled(UUID, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.mark_meta_organic_reconciliation_inconclusive(UUID, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
@@ -1336,6 +1575,7 @@ GRANT EXECUTE ON FUNCTION public.mark_meta_organic_publish_unknown(UUID, TEXT, T
 GRANT EXECUTE ON FUNCTION public.mark_meta_organic_publish_published(UUID, TEXT, TEXT, JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.get_meta_organic_artwork_export_context(JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.persist_meta_organic_artwork_export_manifest(JSONB) TO service_role;
+GRANT EXECUTE ON FUNCTION public.persist_meta_organic_creative_approval_attestation(JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.claim_meta_organic_reconciliation_job(TEXT, TIMESTAMPTZ, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION public.mark_meta_organic_publish_reconciled(UUID, TEXT, TEXT, JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.mark_meta_organic_reconciliation_inconclusive(UUID, TEXT, TEXT, TEXT, JSONB) TO service_role;

@@ -619,7 +619,12 @@ function LivePodWorkspace({ session, subscription }) {
 
   const connectedAccountsFor = (platformKey) => (metaConnectionStatus.connections || [])
     .filter((connection) => connection.provider === platformKey && connection.status === 'connected' && connection.providerAccountId && connection.accountLabel)
-    .map((connection) => ({ provider: platformKey, providerAccountId: connection.providerAccountId, accountLabel: connection.accountLabel }));
+    .map((connection) => ({
+      provider: platformKey,
+      providerAccountId: connection.providerAccountId,
+      ...(connection.id ? { accountConnectionId: connection.id } : {}),
+      accountLabel: connection.accountLabel,
+    }));
   const selectedTargetsFor = (platformKey) => Array.isArray(accountTargetSelection[platformKey]) ? accountTargetSelection[platformKey] : (accountTargetSelection[platformKey] ? [accountTargetSelection[platformKey]] : []);
   const currentTargetsFor = (platformKey) => {
     const current = new Map(connectedAccountsFor(platformKey).map((account) => [account.providerAccountId, account]));
@@ -1266,7 +1271,7 @@ function LivePodWorkspace({ session, subscription }) {
               const targetText = (post.targetAccounts || []).length
                 ? post.targetAccounts.map((target) => `${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}`).join(' · ')
                 : (post.targetSaveFailed ? 'Account target not saved' : '');
-              return <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}{targetText ? ` · ${targetText}` : ''}</small></div><StatusPill>Draft</StatusPill></header><CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /><p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>;
+              return <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}{targetText ? ` · ${targetText}` : ''}</small></div><StatusPill>Draft</StatusPill></header><CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} accessToken={session?.access_token} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /><p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>;
             })}</div>}
           </div>
         );
