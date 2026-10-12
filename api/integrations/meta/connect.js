@@ -9,8 +9,8 @@ import {
   createStateRecord,
   getMetaOrganicConfig,
   META_LOGIN_ROUTE,
-  META_ORGANIC_SCOPES,
   META_PROVIDER_KEY,
+  requiredScopesForProvider,
 } from '../../_lib/metaOrganic.js';
 
 export default async function handler(req, res) {
@@ -34,7 +34,7 @@ export default async function handler(req, res) {
       loadOwnedPod(accessToken, podId),
       loadActiveSubscription(accessToken, user.id),
     ]);
-    authorizeMetaConnection({
+    const authorization = authorizeMetaConnection({
       pod,
       user,
       subscription,
@@ -42,15 +42,22 @@ export default async function handler(req, res) {
       idempotencyKey,
     });
 
-    const stateRecord = createStateRecord({ userId: user.id, podId, redirectUri: config.redirectUri });
+    const requiredScopes = requiredScopesForProvider(authorization.providerKey || META_PROVIDER_KEY);
+    const stateRecord = createStateRecord({
+      userId: user.id,
+      podId,
+      redirectUri: config.redirectUri,
+      requestedProviderKey: authorization.providerKey,
+      requiredScopes,
+    });
     await createOAuthState(stateRecord);
     res.setHeader('Set-Cookie', buildOAuthCookie(stateRecord, config));
 
     return sendJson(res, 200, {
-      authorizationUrl: buildMetaAuthorizeUrl(config, stateRecord.state),
-      provider: META_PROVIDER_KEY,
+      authorizationUrl: buildMetaAuthorizeUrl(config, stateRecord.state, requiredScopes),
+      provider: authorization.providerKey || META_PROVIDER_KEY,
       loginRoute: META_LOGIN_ROUTE,
-      requiredScopes: META_ORGANIC_SCOPES,
+      requiredScopes,
       expiresAt: stateRecord.expiresAt,
     });
   } catch (error) {

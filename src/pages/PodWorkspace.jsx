@@ -36,7 +36,7 @@ import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askPodAssistant, requestCompetitorSnapshot, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
-import { initiateMetaOrganicConnection, loadMetaConnectionStatus, summarizeMetaConnection } from '../lib/metaOrganic';
+import { initiateMetaOrganicConnection, isMetaOrganicProvider, loadMetaAccountSelection, loadMetaConnectionStatus, selectMetaAccounts, summarizeMetaConnection } from '../lib/metaOrganic';
 import {
   approvePodDirection,
   getAssetPreview,
@@ -460,8 +460,27 @@ function LivePodWorkspace({ session, subscription }) {
         const search = typeof window.location?.search === 'string' ? window.location.search : '';
         const query = new URLSearchParams(search);
         if (search && query.get('integration') === 'meta') {
-          const outcome = 'Meta sign-in returned. Check your account connection status.';
-          showNotice(outcome);
+          if (query.get('status') === 'selection_required' && query.get('selectionId')) {
+            const selection = await loadMetaAccountSelection({
+              accessToken: session.access_token,
+              podId,
+              selectionId: query.get('selectionId'),
+            }).catch(() => null);
+            if (!loadAction.isCurrent()) return;
+            if (selection) {
+              setModal({
+                type: 'meta-selection',
+                selection,
+                facebookPageId: '',
+                instagramAccountId: '',
+                message: '',
+              });
+            } else {
+              showNotice('Meta sign-in returned. Check your account connection status.');
+            }
+          } else {
+            showNotice('Meta sign-in returned. Check your account connection status.');
+          }
           window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
         }
       }
@@ -484,17 +503,51 @@ function LivePodWorkspace({ session, subscription }) {
   }, []);
 
   async function connectPlatform(platform) {
-    if (platform?.key !== 'instagram') {
+    if (!isMetaOrganicProvider(platform?.key)) {
       setModal({ type: 'connect', platform });
       return;
     }
     try {
       if (!session?.access_token) throw new Error('Sign in again before connecting Meta.');
       setConnectionMutation(platform.key);
-      await initiateMetaOrganicConnection({ accessToken: session.access_token, podId });
+      await initiateMetaOrganicConnection({ accessToken: session.access_token, podId, providerKey: platform.key });
     } catch (error) {
       setConnectionMutation('');
       setModal({ type: 'connect-error', platform, message: error.message || 'Meta connection is unavailable.' });
+    }
+  }
+
+  async function saveMetaSelection() {
+    if (!modal?.selection || connectionMutation) return;
+    const action = capturePodAction(podLifecycle.current, podId, 'meta-selection');
+    if (!action) return;
+    const facebookPageId = modal.facebookPageId || '';
+    const instagramAccountId = modal.instagramAccountId || '';
+    if (!facebookPageId && !instagramAccountId) {
+      setModal({ ...modal, message: 'Choose at least one eligible Meta account.' });
+      action.finish();
+      return;
+    }
+    try {
+      if (!session?.access_token) throw new Error('Sign in again before selecting Meta accounts.');
+      setConnectionMutation('meta-selection');
+      await selectMetaAccounts({
+        accessToken: session.access_token,
+        podId: action.podId,
+        selectionId: modal.selection.selectionId,
+        facebookPageId,
+        instagramAccountId,
+      });
+      if (!action.isCurrent()) return;
+      const status = await loadMetaConnectionStatus({ accessToken: session.access_token, podId: action.podId });
+      if (!action.isCurrent()) return;
+      setMetaConnectionStatus(status);
+      setModal(null);
+      showNotice('Meta account selection saved. Check your account connection status.');
+    } catch (error) {
+      if (action.isCurrent()) setModal({ ...modal, message: error.message || 'Meta account selection is unavailable.' });
+    } finally {
+      if (action.finish()) setConnectionMutation('');
     }
   }
 
@@ -1087,7 +1140,7 @@ function LivePodWorkspace({ session, subscription }) {
               {getPlanningPlatforms().map((platform) => {
                 const selected = selectedPlatformKeys.includes(platform.key);
                 const recommended = recommendedKeys.includes(platform.key);
-                const connectionSummary = platform.key === 'instagram' ? summarizeMetaConnection(metaConnectionStatus) : null;
+                const connectionSummary = isMetaOrganicProvider(platform.key) ? summarizeMetaConnection(metaConnectionStatus, platform.key) : null;
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
                     <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
@@ -1098,7 +1151,7 @@ function LivePodWorkspace({ session, subscription }) {
                 );
               })}
             </div>
-            <p className="pod-honesty-note">Instagram uses Meta's Facebook Login route for page-linked professional accounts. Publishing remains unavailable until separate permissions, review, and approval are complete.</p>
+            <p className="pod-honesty-note">Facebook Page and Instagram connections use Meta's Facebook Login route for page-linked professional accounts. Publishing remains unavailable until separate permissions, review, and approval are complete.</p>
           </div>
         );
       }
@@ -1194,6 +1247,12 @@ function LivePodWorkspace({ session, subscription }) {
       <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => { if (!actionPending('direction')) setModal(null); }}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} disabled={Boolean(directionMutation) || contentGenerating} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim() || Boolean(directionMutation) || contentGenerating} onClick={saveOverride}>{directionMutation === 'override' ? 'Saving direction…' : 'Save and readjust'}</button><button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal(null)}>Cancel</button></div></PodModal>
       <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in will become available for each provider after its developer app, permissions, redirect URL, token encryption, and platform approval are configured.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
       <PodModal open={modal?.type === 'connect-error'} title={`Connect ${modal?.platform?.name || 'account'}`} description="The connection did not start." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Meta connection unavailable</strong><p>{modal?.message || 'Check the server configuration and try again.'}</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Close</button></PodModal>
+      <PodModal open={modal?.type === 'meta-selection'} title="Choose Meta accounts" description="Select the Facebook Page and Instagram account to connect to this pod." onClose={() => { if (!connectionMutation) setModal(null); }}>
+        <label className="pod-modal-field">Facebook Page<select value={modal?.facebookPageId || ''} disabled={Boolean(connectionMutation)} onChange={(event) => setModal({ ...modal, facebookPageId: event.target.value })}><option value="">Do not connect a Facebook Page</option>{(modal?.selection?.pages || []).map((page) => <option key={page.id} value={page.id} disabled={!page.pageCredentialAvailable}>{page.label}{page.pageCredentialAvailable ? '' : ' (Page credential unavailable)'}</option>)}</select></label>
+        <label className="pod-modal-field">Instagram account<select value={modal?.instagramAccountId || ''} disabled={Boolean(connectionMutation)} onChange={(event) => setModal({ ...modal, instagramAccountId: event.target.value })}><option value="">Do not connect an Instagram account</option>{(modal?.selection?.instagramAccounts || []).map((account) => <option key={account.id} value={account.id}>{account.label}{account.pageLabel ? ` (${account.pageLabel})` : ''}</option>)}</select></label>
+        {modal?.message && <p className="pod-decision-note">{modal.message}</p>}
+        <div className="pod-action-row"><button className="button button-primary" type="button" disabled={Boolean(connectionMutation)} onClick={saveMetaSelection}>{connectionMutation === 'meta-selection' ? 'Saving…' : 'Save selection'}</button><button className="button button-ghost" type="button" disabled={Boolean(connectionMutation)} onClick={() => setModal(null)}>Cancel</button></div>
+      </PodModal>
       <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, an optional logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
       <PodModal open={modal?.type === 'analysis-first'} title="Run the analysis first" description="Content must come from this pod's website, photos, and approved direction." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Go to AI direction</button></PodModal>
       <PodModal open={modal?.type === 'approval-first'} title="Approve the direction first" description="This prevents the AI from filling the pod with content based on a direction you do not want." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Review direction</button></PodModal>

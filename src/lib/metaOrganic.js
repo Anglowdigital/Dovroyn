@@ -1,4 +1,6 @@
 export const META_ORGANIC_PROVIDER = 'instagram';
+export const META_FACEBOOK_PROVIDER = 'facebook';
+export const META_PROVIDERS = [META_ORGANIC_PROVIDER, META_FACEBOOK_PROVIDER];
 
 function idempotencyKey(provider, podId, target = globalThis) {
   const randomId = target.crypto?.randomUUID?.();
@@ -11,9 +13,14 @@ async function parseJson(response) {
   return payload;
 }
 
-export async function initiateMetaOrganicConnection({ accessToken, podId, target = globalThis }) {
+export function isMetaOrganicProvider(provider) {
+  return META_PROVIDERS.includes(String(provider || '').toLowerCase());
+}
+
+export async function initiateMetaOrganicConnection({ accessToken, podId, providerKey = META_ORGANIC_PROVIDER, target = globalThis }) {
   if (!accessToken) throw new Error('Sign in before connecting Meta.');
   if (!podId) throw new Error('Choose a pod before connecting Meta.');
+  const provider = isMetaOrganicProvider(providerKey) ? providerKey : META_ORGANIC_PROVIDER;
   const response = await fetch('/api/integrations/meta/connect', {
     method: 'POST',
     headers: {
@@ -22,14 +29,42 @@ export async function initiateMetaOrganicConnection({ accessToken, podId, target
     },
     body: JSON.stringify({
       podId,
-      providerKey: META_ORGANIC_PROVIDER,
-      idempotencyKey: idempotencyKey(META_ORGANIC_PROVIDER, podId, target),
+      providerKey: provider,
+      idempotencyKey: idempotencyKey(provider, podId, target),
     }),
   });
   const payload = await parseJson(response);
   if (!payload.authorizationUrl) throw new Error('Meta connection is unavailable.');
   target.location.assign(payload.authorizationUrl);
   return payload;
+}
+
+export async function loadMetaAccountSelection({ accessToken, podId, selectionId }) {
+  if (!accessToken || !podId || !selectionId) throw new Error('Meta account selection is unavailable.');
+  const params = new URLSearchParams({ podId, selectionId });
+  const response = await fetch(`/api/integrations/meta/selection?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const payload = await parseJson(response);
+  return payload.selection;
+}
+
+export async function selectMetaAccounts({ accessToken, podId, selectionId, facebookPageId, instagramAccountId }) {
+  if (!accessToken || !podId || !selectionId) throw new Error('Meta account selection is unavailable.');
+  const response = await fetch('/api/integrations/meta/selection', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      podId,
+      selectionId,
+      facebookPageId,
+      instagramAccountId,
+    }),
+  });
+  return parseJson(response);
 }
 
 export async function loadMetaConnectionStatus({ accessToken, podId }) {
@@ -45,12 +80,12 @@ export async function loadMetaConnectionStatus({ accessToken, podId }) {
   };
 }
 
-export function summarizeMetaConnection(status = {}) {
+export function summarizeMetaConnection(status = {}, provider = META_ORGANIC_PROVIDER) {
   const connections = Array.isArray(status) ? status : (status.connections || []);
   if (!Array.isArray(status) && status.available !== true) return { status: 'unavailable', label: 'Meta connection unavailable' };
-  const active = connections.find((connection) => connection.provider === META_ORGANIC_PROVIDER && connection.status === 'connected');
-  if (active) return { status: 'connected', label: active.accountLabel || 'Instagram account' };
-  const failed = connections.find((connection) => connection.provider === META_ORGANIC_PROVIDER && ['expired', 'revoked', 'error', 'reconnect_required'].includes(connection.status));
+  const active = connections.find((connection) => connection.provider === provider && connection.status === 'connected');
+  if (active) return { status: 'connected', label: active.accountLabel || (provider === META_FACEBOOK_PROVIDER ? 'Facebook Page' : 'Instagram account') };
+  const failed = connections.find((connection) => connection.provider === provider && ['expired', 'revoked', 'error', 'reconnect_required'].includes(connection.status));
   if (failed) return { status: failed.status, label: 'Reconnect required' };
   return { status: 'setup-ready', label: 'Official Meta sign-in available' };
 }

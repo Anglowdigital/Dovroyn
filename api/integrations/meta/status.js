@@ -1,6 +1,6 @@
 import { getBearerToken, sendJson } from '../../_lib/http.js';
-import { loadOwnedPod, loadSocialConnections, verifySupabaseUser } from '../../_lib/supabaseAuth.js';
-import { getMetaOrganicConfig, loadMetaOrganicReadiness, META_PROVIDER_KEY, normalizeConnection } from '../../_lib/metaOrganic.js';
+import { loadOwnedPod, verifySupabaseUser } from '../../_lib/supabaseAuth.js';
+import { getMetaOrganicConfig, listMetaConnections, loadMetaOrganicReadiness, META_PROVIDER_KEYS, normalizeConnection } from '../../_lib/metaOrganic.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -17,12 +17,12 @@ export default async function handler(req, res) {
     const pod = await loadOwnedPod(accessToken, podId);
     if (!pod) return sendJson(res, 404, { error: 'Pod not found.' });
     const readiness = await loadMetaOrganicReadiness(getMetaOrganicConfig());
-    const connections = await loadSocialConnections(accessToken, podId);
+    const connections = readiness.ready ? await listMetaConnections(user.id, podId) : [];
     const normalizedConnections = connections
-      .filter((connection) => connection.provider === META_PROVIDER_KEY)
+      .filter((connection) => META_PROVIDER_KEYS.includes(connection.provider))
       .map((connection) => normalizeConnection(connection));
     return sendJson(res, 200, {
-      provider: META_PROVIDER_KEY,
+      provider: 'meta',
       available: readiness.ready,
       reason: readiness.ready ? null : readiness.reason || 'storage_unavailable',
       connections: normalizedConnections,

@@ -125,7 +125,7 @@ async function uiHarness(first, { request, load = async () => first, demoMode = 
     '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup, '../lib/demoPod': demo,
-    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }) },
+    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, isMetaOrganicProvider: (provider) => ['instagram', 'facebook'].includes(provider), loadMetaAccountSelection: async () => ({ pages: [], instagramAccounts: [] }), loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), selectMetaAccounts: async () => ({}), summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }) },
     '../lib/aiClient': { requestCompetitorSnapshot: async (...args) => { requests++; return request(...args); } },
     '../lib/podRepository': { ...repository({}), loadPodWorkspace: load }, '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };

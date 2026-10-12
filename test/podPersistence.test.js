@@ -269,7 +269,7 @@ async function workspaceHarness(workspace, services = {}) {
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
     '../lib/aiClient': services.ai || {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
-    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }) },
+    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, isMetaOrganicProvider: (provider) => ['instagram', 'facebook'].includes(provider), loadMetaAccountSelection: async () => ({ pages: [], instagramAccounts: [] }), loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), selectMetaAccounts: async () => ({}), summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }), ...(services.metaOrganic || {}) },
     '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let commandItems = [];
@@ -286,7 +286,14 @@ async function workspaceHarness(workspace, services = {}) {
     .replace(/import\s+'[^']+';/g, '').replace('export default function PodWorkspace', 'function PodWorkspace');
   const { code } = await transformWithOxc(source, 'PodWorkspace.jsx', { jsx: { runtime: 'classic', pragma: 'h', pragmaFrag: 'Fragment' } });
   const timers = new Map(); let timerId = 0;
-  const windowStub = { addEventListener() {}, removeEventListener() {}, setTimeout(fn, delay) { timers.set(++timerId, { fn, delay }); return timerId; }, clearTimeout(id) { timers.delete(id); } };
+  const windowStub = {
+    location: { search: '', pathname: '/pods/one', ...(services.window?.location || {}) },
+    history: { replaceState(...args) { services.window?.history?.replaceState?.(...args); } },
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout(fn, delay) { timers.set(++timerId, { fn, delay }); return timerId; },
+    clearTimeout(id) { timers.delete(id); },
+  };
   const renderLive = new Function('modules', 'h', 'window', 'Fragment', `${code}; return LivePodWorkspace;`)(modules, h, windowStub, 'fragment');
   const render = () => { cursor = 0; tree = renderLive({ session: { access_token: 'own-token', user: { id: 'owner', email: 'owner@example.test' } }, subscription: { tier: 'starter' } }); return tree; };
   const flush = async () => { render(); while (effects.length) { effects.splice(0).forEach((effect) => effect()); await new Promise((resolve) => setImmediate(resolve)); render(); } };
@@ -496,6 +503,66 @@ test('failed pending platform save cannot roll back another Pod or show its erro
   await ui.tab('Social accounts');
   const email = ui.nodes().find((node) => node.type === 'label' && ui.text(node).includes('Email'));
   assert.equal(email.children.find((node) => node.type === 'input').props.checked, true);
+});
+
+test('expired Meta selection query does not block loading the workspace', async () => {
+  const replaced = [];
+  const ui = await workspaceHarness(savedWorkspace(), {
+    window: {
+      location: { search: '?integration=meta&status=selection_required&selectionId=expired', pathname: '/pods/one' },
+      history: { replaceState: (...args) => replaced.push(args) },
+    },
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [] }),
+      loadMetaAccountSelection: async () => { throw new Error('expired pending selection'); },
+    },
+  });
+  assert.match(ui.text(), /Our launch/);
+  assert.match(ui.text(), /Meta sign-in returned\. Check your account connection status\./);
+  assert.equal(replaced.length, 1);
+  assert.equal(replaced[0][2], '/pods/one');
+  assert.doesNotMatch(ui.text(), /Pod state could not be loaded|expired pending selection/);
+});
+
+test('pending Meta selection save cannot mutate another Pod after navigation', async () => {
+  const pending = deferred();
+  const podA = savedWorkspace();
+  const podB = savedWorkspace({
+    pod: { id: 'two', pod_name: 'Pod B', target_country: 'Australia', status: 'direction_locked' },
+    preferences: [{ active: true, preference_type: 'platform_selection', preference_value: { platforms: ['email'] } }],
+  });
+  const calls = [];
+  const ui = await workspaceHarness(podA, {
+    loadPodWorkspace: async (id) => (id === 'one' ? podA : podB),
+    window: { location: { search: '?integration=meta&status=selection_required&selectionId=select-one', pathname: '/pods/one' } },
+    metaOrganic: {
+      loadMetaConnectionStatus: async ({ podId }) => ({ available: true, connections: [{ provider: 'facebook', accountLabel: `Status ${podId}`, status: 'connected' }] }),
+      loadMetaAccountSelection: async () => ({
+        selectionId: 'select-one',
+        pages: [{ id: '1224063290785757', label: 'Meet Millie Ai', pageCredentialAvailable: true }],
+        instagramAccounts: [],
+      }),
+      selectMetaAccounts: (...args) => { calls.push(args[0]); return pending.promise; },
+      summarizeMetaConnection: (status, provider) => {
+        const active = status.connections?.find((connection) => connection.provider === provider && connection.status === 'connected');
+        return active ? { status: 'connected', label: active.accountLabel } : { status: 'setup-ready', label: 'Official Meta sign-in available' };
+      },
+    },
+  });
+  assert.match(ui.text(), /Choose Meta accounts/);
+  const pageSelect = ui.nodes().find((node) => node.type === 'select');
+  pageSelect.props.onChange({ target: { value: '1224063290785757' } });
+  await ui.flush();
+  const operation = ui.button('Save selection').props.onClick();
+  assert.equal(calls[0].podId, 'one');
+  await ui.navigate('two');
+  const before = ui.text();
+  pending.resolve({ connections: [{ provider: 'facebook' }] });
+  await operation;
+  await ui.flush();
+  assert.equal(ui.text(), before);
+  assert.match(ui.text(), /Pod B/);
+  assert.doesNotMatch(ui.text(), /Meta account selection saved|Status one/);
 });
 
 test('old budget completion cannot affect a fresh lifecycle of the same Pod or mutate state after unmount', async () => {

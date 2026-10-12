@@ -23,8 +23,9 @@ export default async function handler(req, res) {
     });
     redirect(res, buildIntegrationRedirect({
       podId: result.podId,
-      status: 'connected',
+      status: result.selectionRequired ? 'selection_required' : 'connected',
       connectionId: result.connectionId,
+      selectionId: result.selectionId,
     }));
   } catch (error) {
     redirect(res, buildIntegrationRedirect({
