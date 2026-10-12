@@ -163,3 +163,16 @@ test('persistent consent settings do not shift existing page layouts', () => {
   assert.ok(rule);
   assert.match(rule, /position:\s*fixed/);
 });
+
+test('undecided consent copy cannot intercept auth controls behind it', () => {
+  const css = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
+  const bannerRule = css.match(/\.consent-banner\s*\{([^}]+)\}/)?.[1];
+  assert.ok(bannerRule, 'consent banner CSS is missing');
+  assert.match(bannerRule, /position:\s*relative/);
+  assert.match(bannerRule, /z-index:\s*auto/);
+  assert.match(bannerRule, /inset:\s*auto/);
+  assert.match(bannerRule, /width:\s*calc\(100% - 2rem\)/);
+  assert.match(bannerRule, /margin:\s*1rem auto/);
+  assert.doesNotMatch(bannerRule, /position:\s*fixed/);
+  assert.doesNotMatch(bannerRule, /pointer-events:\s*none/);
+});

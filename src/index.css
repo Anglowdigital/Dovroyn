@@ -330,13 +330,12 @@ h1 {
 }
 
 .consent-banner {
-  position: fixed;
-  z-index: 1000;
-  right: 1rem;
-  bottom: 1rem;
-  left: 1rem;
+  position: relative;
+  z-index: auto;
+  inset: auto;
+  width: calc(100% - 2rem);
   max-width: 760px;
-  margin: 0 auto;
+  margin: 1rem auto;
   padding: 1rem 1.1rem;
   display: flex;
   align-items: center;
