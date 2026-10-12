@@ -2,6 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  computeMetaOrganicArtworkManifestHash,
+  META_ORGANIC_ARTWORK_RENDERER_VERSION,
+} from '../api/_lib/metaOrganicArtworkExport.js';
+
+import {
   SafeRetryablePublishError,
   UnknownOutcomePublishError,
   buildMetaOrganicPublishProposal,
@@ -28,14 +33,74 @@ const activeSubscription = Object.freeze({
   current_period_end: '2099-01-01T00:00:00.000Z',
 });
 
+function mergeManifest(base, override) {
+  if (!override) return base;
+  return {
+    ...base,
+    ...override,
+    authority: { ...base.authority, ...(override.authority || {}) },
+    composition: { ...base.composition, ...(override.composition || {}) },
+    source: { ...base.source, ...(override.source || {}) },
+    output: { ...base.output, ...(override.output || {}) },
+  };
+}
+
 function baseContext(overrides = {}) {
   const provider = overrides.provider || 'facebook';
   const accountConnectionId = overrides.accountConnectionId || `${provider}-connection-1`;
   const draftId = overrides.draftId || `${provider}-draft-1`;
   const contentVersion = overrides.contentVersion || `${draftId}:content:v1`;
-  const assetManifestHash = overrides.assetManifestHash || `${draftId}:asset:sha256`;
+  const outputHash = overrides.outputHash || 'b'.repeat(64);
   const approvalId = overrides.approvalId || `${draftId}:approval`;
+  const creativeApprovalId = overrides.creativeApprovalId || `${draftId}:creative-review`;
   const campaignDate = overrides.campaignDate || '2026-10-12';
+  const providerAccountId = overrides.account?.providerAccountId || (provider === 'instagram' ? '201' : '101');
+  const baseManifest = {
+    contractVersion: 'meta_organic_artwork_export_v1',
+    status: 'exported',
+    immutable: true,
+    authority: {
+      userId,
+      podId,
+      postId: draftId,
+      provider,
+      accountConnectionId,
+      providerAccountId,
+      creativeApprovalId,
+      approvedAt: '2026-10-11T10:00:00.000Z',
+      contentVersion,
+      contentHash: 'c'.repeat(64),
+      sourceIdentity: `${userId}/${podId}/asset.jpg`,
+      sourceHash: 'd'.repeat(64),
+      sourceKind: 'upload',
+      rendererVersion: META_ORGANIC_ARTWORK_RENDERER_VERSION,
+    },
+    composition: {
+      version: 'meta_organic_creative_composition_v2',
+      layout: 'meta-organic-portrait-v1',
+      fontContract: 'system-ui-safe-v1',
+      brandName: 'Dovroyn',
+      imageRole: 'image',
+      typographyOnly: false,
+      headline: 'Approved headline',
+      callToAction: 'Learn more',
+      captionSnapshot: `${provider} pilot caption`,
+    },
+    source: { kind: 'upload', identity: `${userId}/${podId}/asset.jpg`, hash: 'd'.repeat(64), objectVersion: 'object-v1', mediaType: 'image/jpeg', byteLength: 1000 },
+    output: {
+      hash: outputHash,
+      mediaType: 'image/jpeg',
+      dimensions: { width: 1080, height: 1350 },
+      byteLength: 1000,
+      objectPath: `meta-organic-exports/${userId}/${podId}/${draftId}/${creativeApprovalId}/${accountConnectionId}/${outputHash}.jpg`,
+      providerReadableUrl: 'https://cdn.example.test/dovroyn/exported-image.jpg',
+      providerReadableUrlExpiresAt: '2099-01-01T00:00:00.000Z',
+    },
+  };
+  baseManifest.manifestHash = computeMetaOrganicArtworkManifestHash(baseManifest);
+  const manifest = mergeManifest(baseManifest, overrides.asset?.manifest);
+  if (overrides.asset?.manifest) manifest.manifestHash = computeMetaOrganicArtworkManifestHash(manifest);
+  const assetManifestHash = overrides.assetManifestHash || manifest.manifestHash;
   const proposal = buildMetaOrganicPublishProposal({
     provider,
     userId,
@@ -78,11 +143,31 @@ function baseContext(overrides = {}) {
     asset: {
       userId,
       podId,
+      draftId,
+      accountConnectionId,
       manifestHash: assetManifestHash,
       providerReadableUrl: 'https://cdn.example.test/dovroyn/exported-image.jpg',
+      providerReadableUrlExpiresAt: '2099-01-01T00:00:00.000Z',
+      outputHash,
+      objectVersion: manifest.output.objectPath,
       status: 'exported',
       immutable: true,
       mediaType: 'image/jpeg',
+      manifest: {
+        authority: {
+          userId,
+          podId,
+          postId: draftId,
+          ...manifest.authority,
+        },
+        composition: manifest.composition,
+        source: manifest.source,
+        output: manifest.output,
+        contractVersion: manifest.contractVersion,
+        status: manifest.status,
+        immutable: manifest.immutable,
+        manifestHash: manifest.manifestHash,
+      },
       ...overrides.asset,
     },
     account: {
@@ -90,7 +175,7 @@ function baseContext(overrides = {}) {
       userId,
       podId,
       provider,
-      providerAccountId: provider === 'instagram' ? '201' : '101',
+      providerAccountId,
       status: 'connected',
       expiresAt: '2099-01-01T00:00:00.000Z',
       tokenKind: META_ORGANIC_TOKEN_KINDS[provider],
@@ -277,12 +362,25 @@ test('revoked account, changed asset and stale approval are rejected before prov
   const staleApproval = validateMetaOrganicPublishContext(baseContext({ approval: { contentVersion: 'old-content-version' } }), now);
   const missingExpiry = validateMetaOrganicPublishContext(baseContext({ account: { expiresAt: null } }), now);
   const invalidAccountId = validateMetaOrganicPublishContext(baseContext({ account: { providerAccountId: 'page-not-numeric' } }), now);
+  const noExportContext = baseContext();
+  noExportContext.asset = null;
+  const missingExport = validateMetaOrganicPublishContext(noExportContext, now);
+  const tamperedManifest = validateMetaOrganicPublishContext(baseContext({ asset: { manifest: { authority: { userId, podId, postId: 'other-post', accountConnectionId: 'facebook-connection-1', creativeApprovalId: 'facebook-draft-1:creative-review', contentVersion: 'facebook-draft-1:content:v1' }, output: { hash: 'b'.repeat(64), mediaType: 'image/jpeg', providerReadableUrl: 'https://cdn.example.test/dovroyn/exported-image.jpg' } } } }), now);
+  const expiredUrl = validateMetaOrganicPublishContext(baseContext({ asset: { providerReadableUrlExpiresAt: '2026-10-12T03:05:00.000Z' } }), now);
+  const separateApprovals = validateMetaOrganicPublishContext(baseContext({
+    approvalId: 'private-publish-approval-id',
+    creativeApprovalId: 'creative-review-row-id',
+  }), now);
 
   assert.equal(revoked.reason, 'PUBLISH_CONNECTION_REQUIRED');
   assert.equal(changedAsset.reason, 'PUBLISH_ASSET_EXPORT_REQUIRED');
   assert.equal(staleApproval.reason, 'PUBLISH_APPROVAL_CHANGED');
   assert.equal(missingExpiry.reason, 'PUBLISH_CONNECTION_EXPIRED');
   assert.equal(invalidAccountId.reason, 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED');
+  assert.equal(missingExport.reason, 'PUBLISH_ASSET_EXPORT_REQUIRED');
+  assert.equal(tamperedManifest.reason, 'PUBLISH_ASSET_EXPORT_REQUIRED');
+  assert.equal(expiredUrl.reason, 'PUBLISH_ASSET_EXPORT_REQUIRED');
+  assert.equal(separateApprovals.ok, true);
 });
 
 test('current discovery-only Instagram account contract is not publish-ready', () => {
@@ -666,5 +764,16 @@ test('unexpected errors after a mock provider write stay unknown and are never r
     });
     assert.equal(reconciled.status, 'reconciled');
     assert.equal(writes, 1);
+  }
+});
+
+
+test('changing both stored URL copies cannot bypass the approved manifest digest', () => {
+  for (const field of ['providerReadableUrl', 'providerReadableUrlExpiresAt']) {
+    const context = baseContext();
+    const replacement = field === 'providerReadableUrl' ? 'https://cdn.example.test/different.jpg' : '2098-01-01T00:00:00.000Z';
+    context.asset[field] = replacement;
+    context.asset.manifest.output[field] = replacement;
+    assert.equal(validateMetaOrganicPublishContext(context, now).ok, false);
   }
 });

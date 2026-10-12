@@ -8,6 +8,12 @@ import {
   processNextMetaOrganicPublishJob,
   reconcileNextMetaOrganicPublishJob,
 } from '../api/_lib/metaOrganicPublisher.js';
+import {
+  buildMetaOrganicArtworkExportRequest,
+  computeMetaOrganicArtworkManifestHash,
+  createRpcMetaOrganicArtworkExportStore,
+  exportApprovedMetaOrganicArtwork,
+} from '../api/_lib/metaOrganicArtworkExport.js';
 
 const pgliteModule = process.env.PGLITE_MODULE;
 if (!pgliteModule) {
@@ -33,7 +39,11 @@ const ids = Object.freeze({
   approval: '00000000-0000-4000-8000-000000000004',
   approval2: '00000000-0000-4000-8000-000000000005',
   account: '00000000-0000-4000-8000-000000000006',
+  creativeApproval: '00000000-0000-4000-8000-000000000007',
+  account2: '00000000-0000-4000-8000-000000000008',
 });
+const syntheticSourceBytes = Buffer.from('synthetic-source-bytes');
+const syntheticSourceHash = crypto.createHash('sha256').update(syntheticSourceBytes).digest('hex');
 
 function uuid(n) {
   return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -45,17 +55,73 @@ function literalJson(value) {
 
 function proposal(overrides = {}) {
   const body = overrides.body || 'Approved synthetic caption';
-  return buildMetaOrganicPublishProposal({
+  const base = {
     provider: 'facebook',
     userId: ids.user,
     podId: ids.pod,
     draftId: ids.draft,
     accountConnectionId: ids.account,
     contentVersion: crypto.createHash('md5').update(body).digest('hex'),
-    assetManifestHash: crypto.createHash('sha256').update('asset-v1').digest('hex'),
     approvalId: ids.approval,
     campaignDate: '2026-10-12',
     ...overrides,
+  };
+  return buildMetaOrganicPublishProposal({
+    ...base,
+    assetManifestHash: overrides.assetManifestHash || syntheticManifestHash(base),
+  });
+}
+
+function syntheticManifestHash(p) {
+  const outputHash = crypto.createHash('sha256').update('rendered-output-v1').digest('hex');
+  return computeMetaOrganicArtworkManifestHash({
+    contractVersion: 'meta_organic_artwork_export_v1',
+    status: 'exported',
+    immutable: true,
+    authority: {
+      userId: p.userId,
+      podId: p.podId,
+      postId: p.draftId,
+      provider: p.provider,
+      accountConnectionId: p.accountConnectionId,
+      providerAccountId: p.accountConnectionId === ids.account2 ? '201' : '101',
+      creativeApprovalId: ids.creativeApproval,
+      approvedAt: '2026-10-11T00:00:00.000Z',
+      contentVersion: p.contentVersion,
+      contentHash: crypto.createHash('sha256').update('Approved synthetic caption').digest('hex'),
+      sourceIdentity: `${ids.user}/${ids.pod}/synthetic-source.jpg`,
+      sourceHash: syntheticSourceHash,
+      sourceKind: 'upload',
+      rendererVersion: 'sharp_svg_jpeg_2026_10_12_v1',
+    },
+    composition: {
+      version: 'meta_organic_creative_composition_v2',
+      layout: 'meta-organic-portrait-v1',
+      fontContract: 'system-ui-safe-v1',
+      brandName: 'Synthetic Pod',
+      imageRole: 'image',
+      typographyOnly: false,
+      headline: 'Synthetic approved headline',
+      callToAction: 'Learn more',
+      captionSnapshot: 'Approved synthetic caption',
+    },
+    source: {
+      kind: 'upload',
+      identity: `${ids.user}/${ids.pod}/synthetic-source.jpg`,
+      hash: syntheticSourceHash,
+      objectVersion: 'object-version-synthetic',
+      mediaType: 'image/jpeg',
+      byteLength: syntheticSourceBytes.byteLength,
+    },
+    output: {
+      hash: outputHash,
+      mediaType: 'image/jpeg',
+      dimensions: { width: 1080, height: 1350 },
+      byteLength: 1000,
+      objectPath: `meta-organic-exports/${p.userId}/${p.podId}/${p.draftId}/${ids.creativeApproval}/${p.accountConnectionId}/${outputHash}.jpg`,
+      providerReadableUrl: 'https://cdn.example.test/export.jpg',
+      providerReadableUrlExpiresAt: '2099-01-01T00:00:00Z',
+    },
   });
 }
 
@@ -97,6 +163,25 @@ async function setupDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    CREATE TABLE public.pod_preferences (
+      id UUID PRIMARY KEY,
+      pod_id UUID NOT NULL REFERENCES public.pods(id),
+      preference_type TEXT NOT NULL,
+      preference_value JSONB NOT NULL,
+      source TEXT,
+      active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE public.pod_assets (
+      id UUID PRIMARY KEY,
+      pod_id UUID NOT NULL REFERENCES public.pods(id),
+      storage_path TEXT NOT NULL,
+      file_name TEXT,
+      media_type TEXT,
+      file_size BIGINT,
+      asset_role TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
   await db.exec(connectionSql);
   await db.exec(publisherSql);
@@ -114,10 +199,23 @@ async function setupDb() {
       'Main Page', 'connected', ARRAY['pages_manage_posts','pages_read_engagement'],
       '2099-01-01T00:00:00Z'
     );
+    INSERT INTO private.meta_organic_connections (
+      id, user_id, pod_id, provider, provider_account_id, account_label, status,
+      granted_scopes, expires_at
+    ) VALUES (
+      '${ids.account2}', '${ids.user}', '${ids.pod}', 'facebook', '201',
+      'Second Page', 'connected', ARRAY['pages_manage_posts','pages_read_engagement'],
+      '2099-01-01T00:00:00Z'
+    );
     INSERT INTO private.meta_organic_credentials (
       connection_id, token_kind, encrypted_access_token, encryption_key_version
     ) VALUES (
       '${ids.account}', 'page', 'syntheticEncryptedAccessTokenValue_000000000000', 'test-v1'
+    );
+    INSERT INTO private.meta_organic_credentials (
+      connection_id, token_kind, encrypted_access_token, encryption_key_version
+    ) VALUES (
+      '${ids.account2}', 'page', 'syntheticEncryptedAccessTokenValue_000000000001', 'test-v1'
     );
     INSERT INTO public.social_posts (
       id, pod_id, platform, body, status, scheduled_at, generation_date
@@ -125,11 +223,112 @@ async function setupDb() {
       '${ids.draft}', '${ids.pod}', 'facebook', 'Approved synthetic caption',
       'scheduled', '2098-10-12T03:00:00Z', '2026-10-12'
     );
+    INSERT INTO public.pod_preferences (
+      id, pod_id, preference_type, preference_value, source, active, created_at
+    ) VALUES (
+      '${ids.creativeApproval}', '${ids.pod}', 'creative_review',
+      ${literalJson({
+        post_id: ids.draft,
+        headline: 'Synthetic approved headline',
+        call_to_action: 'Learn more',
+        content_snapshot: 'Approved synthetic caption',
+        status: 'approved',
+        approved_at: '2026-10-11T00:00:00Z',
+        image: { kind: 'upload', storage_path: `${ids.user}/${ids.pod}/synthetic-source.jpg` },
+        artwork_contract_version: 'meta_organic_creative_composition_v2',
+        composition: {
+          version: 'meta_organic_creative_composition_v2',
+          layout: 'meta-organic-portrait-v1',
+          font_contract: 'system-ui-safe-v1',
+          brand_name: 'Synthetic Pod',
+          image_role: 'image',
+          typography_only: false,
+          headline: 'Synthetic approved headline',
+          call_to_action: 'Learn more',
+        },
+        source_evidence: {
+          kind: 'upload',
+          storage_path: `${ids.user}/${ids.pod}/synthetic-source.jpg`,
+          identity: `${ids.user}/${ids.pod}/synthetic-source.jpg`,
+          hash: syntheticSourceHash,
+          object_version: 'object-version-synthetic',
+          media_type: 'image/jpeg',
+          byte_length: syntheticSourceBytes.byteLength,
+        },
+        final_render_evidence: {
+          hash: crypto.createHash('sha256').update('synthetic-jpeg-Approved synthetic caption').digest('hex'),
+          mediaType: 'image/jpeg',
+          dimensions: { width: 1080, height: 1350 },
+          byteLength: Buffer.byteLength('synthetic-jpeg-Approved synthetic caption'),
+          rendererVersion: 'sharp_svg_jpeg_2026_10_12_v1',
+        },
+      })},
+      'user_override', true, '2026-10-11T00:00:00Z'
+    );
+    INSERT INTO public.pod_assets (
+      id, pod_id, storage_path, file_name, media_type, file_size, asset_role
+    ) VALUES (
+      '${uuid(20)}', '${ids.pod}',
+      '${ids.user}/${ids.pod}/synthetic-source.jpg',
+      'synthetic-source.jpg', 'image/jpeg', ${syntheticSourceBytes.byteLength}, 'campaign_asset'
+    );
   `);
   return db;
 }
 
 async function seedApprovalAndExport(db, p = proposal()) {
+  const outputHash = crypto.createHash('sha256').update('rendered-output-v1').digest('hex');
+  const manifest = {
+    contractVersion: 'meta_organic_artwork_export_v1',
+    status: 'exported',
+    immutable: true,
+    authority: {
+      userId: p.userId,
+      podId: p.podId,
+      postId: p.draftId,
+      provider: p.provider,
+      accountConnectionId: p.accountConnectionId,
+      providerAccountId: p.accountConnectionId === ids.account2 ? '201' : '101',
+      creativeApprovalId: ids.creativeApproval,
+      approvedAt: '2026-10-11T00:00:00.000Z',
+      contentVersion: p.contentVersion,
+      contentHash: crypto.createHash('sha256').update('Approved synthetic caption').digest('hex'),
+      sourceIdentity: `${p.userId}/${p.podId}/synthetic-source.jpg`,
+      sourceHash: syntheticSourceHash,
+      sourceKind: 'upload',
+      rendererVersion: 'sharp_svg_jpeg_2026_10_12_v1',
+    },
+    composition: {
+      version: 'meta_organic_creative_composition_v2',
+      layout: 'meta-organic-portrait-v1',
+      fontContract: 'system-ui-safe-v1',
+      brandName: 'Synthetic Pod',
+      imageRole: 'image',
+      typographyOnly: false,
+      headline: 'Synthetic approved headline',
+      callToAction: 'Learn more',
+      captionSnapshot: 'Approved synthetic caption',
+    },
+    output: {
+      hash: outputHash,
+      mediaType: 'image/jpeg',
+      dimensions: { width: 1080, height: 1350 },
+      byteLength: 1000,
+      objectPath: `meta-organic-exports/${p.userId}/${p.podId}/${p.draftId}/${ids.creativeApproval}/${p.accountConnectionId}/${outputHash}.jpg`,
+      providerReadableUrl: 'https://cdn.example.test/export.jpg',
+      providerReadableUrlExpiresAt: '2099-01-01T00:00:00Z',
+    },
+    source: {
+      kind: 'upload',
+      identity: `${p.userId}/${p.podId}/synthetic-source.jpg`,
+      hash: syntheticSourceHash,
+      objectVersion: 'object-version-synthetic',
+      mediaType: 'image/jpeg',
+      byteLength: syntheticSourceBytes.byteLength,
+    },
+  };
+  manifest.manifestHash = computeMetaOrganicArtworkManifestHash(manifest);
+  assert.equal(manifest.manifestHash, p.assetManifestHash);
   await db.exec(`
     INSERT INTO private.meta_organic_publish_approvals (
       id, user_id, pod_id, draft_id, provider, account_connection_id,
@@ -140,12 +339,16 @@ async function seedApprovalAndExport(db, p = proposal()) {
       '${p.campaignDate}', 'approved', '2026-10-11T00:00:00Z', '${p.userId}'
     );
     INSERT INTO private.meta_organic_publish_exports (
-      manifest_hash, user_id, pod_id, draft_id, media_type, byte_length,
-      provider_readable_url, object_version, immutable, status, exported_at
+      manifest_hash, user_id, pod_id, draft_id, account_connection_id,
+      media_type, byte_length, output_hash, provider_readable_url,
+      provider_readable_url_expires_at, object_version, manifest, immutable,
+      status, exported_at
     ) VALUES (
       '${p.assetManifestHash}', '${p.userId}', '${p.podId}', '${p.draftId}',
-      'image/jpeg', 1000, 'https://cdn.example.test/export.jpg', 'object-v1',
-      true, 'exported', '2026-10-11T00:00:00Z'
+      '${p.accountConnectionId}', 'image/jpeg', 1000, '${outputHash}',
+      'https://cdn.example.test/export.jpg', '2099-01-01T00:00:00Z',
+      '${manifest.output.objectPath}', ${literalJson(manifest)}, true, 'exported',
+      '2026-10-11T00:00:00Z'
     );
   `);
 }
@@ -181,6 +384,8 @@ function rpcFor(db) {
       claim_meta_organic_reconciliation_job: [params.p_worker_id, params.p_now, params.p_lease_ms],
       mark_meta_organic_publish_reconciled: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_receipt],
       mark_meta_organic_reconciliation_inconclusive: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_receipt],
+      get_meta_organic_artwork_export_context: [params.p_request],
+      persist_meta_organic_artwork_export_manifest: [params.p_manifest],
     };
     if (!argsByName[name]) throw new Error(`Unhandled RPC ${name}`);
     try {
@@ -188,7 +393,7 @@ function rpcFor(db) {
       return result.rows[0].result;
     } catch (error) {
       const message = error?.message || String(error);
-      const known = message.match(/PUBLISH_[A-Z_]+/)?.[0];
+      const known = message.match(/(?:PUBLISH|EXPORT)_[A-Z_]+/)?.[0];
       if (known) error.code = known;
       throw error;
     }
@@ -213,6 +418,120 @@ async function checkExecutableQueueAndContext() {
   assert.equal(context.rows[0].context.account.providerAccountId, '101');
 }
 
+async function checkDurableArtworkExportStoreContract() {
+  const db = await setupDb();
+  const rpc = rpcFor(db);
+  const store = createRpcMetaOrganicArtworkExportStore({ rpc });
+  const uploaded = new Map();
+  const storage = {
+    async readPodAsset({ storagePath }) {
+      assert.equal(storagePath, `${ids.user}/${ids.pod}/synthetic-source.jpg`);
+      return { bytes: syntheticSourceBytes, contentType: 'image/jpeg', objectVersion: 'object-version-synthetic' };
+    },
+    async putImmutableObject(path, bytes) {
+      if (uploaded.has(path)) throw new Error('immutable overwrite');
+      uploaded.set(path, Buffer.from(bytes));
+    },
+    async createReadOnlySignedUrl(path, ttlSeconds) {
+      assert.ok(ttlSeconds >= 14_400);
+      return { url: `https://cdn.example.test/${encodeURIComponent(path)}`, expiresAt: '2099-01-01T00:00:00Z' };
+    },
+  };
+  const renderer = async (composition) => Buffer.from(`synthetic-jpeg-${composition.caption}`);
+  const first = await exportApprovedMetaOrganicArtwork({
+    request: buildMetaOrganicArtworkExportRequest({
+      userId: ids.user,
+      podId: ids.pod,
+      postId: ids.draft,
+      provider: 'facebook',
+      accountConnectionId: ids.account,
+      providerAccountId: '101',
+      creativeApprovalId: ids.creativeApproval,
+    }),
+    store,
+    storage,
+    renderer,
+    now: new Date('2026-10-12T00:00:00Z'),
+  });
+  const second = await exportApprovedMetaOrganicArtwork({
+    request: buildMetaOrganicArtworkExportRequest({
+      userId: ids.user,
+      podId: ids.pod,
+      postId: ids.draft,
+      provider: 'facebook',
+      accountConnectionId: ids.account2,
+      providerAccountId: '201',
+      creativeApprovalId: ids.creativeApproval,
+    }),
+    store,
+    storage: { ...storage, putImmutableObject: async () => undefined },
+    renderer,
+    now: new Date('2026-10-12T00:00:00Z'),
+  });
+
+  assert.equal(first.status, 'exported');
+  assert.equal(second.status, 'exported');
+  assert.equal(first.manifest.authority.creativeApprovalId, ids.creativeApproval);
+  assert.equal(first.manifest.authority.approvalId, undefined);
+  assert.notEqual(first.manifest.manifestHash, second.manifest.manifestHash);
+
+  const exportRows = await db.query(`SELECT manifest_hash, account_connection_id, manifest FROM private.meta_organic_publish_exports ORDER BY account_connection_id`);
+  assert.equal(exportRows.rows.length, 2);
+  assert.equal(exportRows.rows[0].manifest.authority.creativeApprovalId, ids.creativeApproval);
+  assert.equal(exportRows.rows[0].manifest.authority.approvalId, undefined);
+  const approvals = await db.query(`SELECT count(*)::int AS count FROM private.meta_organic_publish_approvals`);
+  assert.equal(approvals.rows[0].count, 0);
+
+  // Bypass the JS adapter: these assertions exercise the durable RPC itself.
+  const persistDirect = (manifest) => db.query(
+    'SELECT public.persist_meta_organic_artwork_export_manifest($1::jsonb)', [JSON.stringify(manifest)]);
+  for (const mutate of [
+    (m) => { m.output.providerReadableUrl = 'https://different.example.test/art.jpg'; },
+    (m) => { m.output.providerReadableUrlExpiresAt = '2099-02-01T00:00:00Z'; },
+    (m) => { m.composition.headline = 'Changed without new approval'; },
+  ]) {
+    const changed = structuredClone(first.manifest);
+    mutate(changed);
+    await assert.rejects(() => persistDirect(changed), /EXPORT_MANIFEST_HASH_MISMATCH/);
+  }
+  for (const mutate of [
+    (m) => { m.output.hash = 'f'.repeat(64); m.output.objectPath = m.output.objectPath.replace(first.manifest.output.hash, m.output.hash); },
+    (m) => { m.source.hash = 'f'.repeat(64); m.authority.sourceHash = m.source.hash; },
+    (m) => { m.composition.headline = 'Changed without new approval'; },
+    (m) => { m.authority.contentHash = 'f'.repeat(64); },
+    (m) => { m.output.byteLength += 1; },
+    (m) => { m.output.dimensions.width = 900; },
+  ]) {
+    const changed = structuredClone(first.manifest);
+    mutate(changed);
+    changed.manifestHash = computeMetaOrganicArtworkManifestHash(changed);
+    await assert.rejects(() => persistDirect(changed), /EXPORT_REVIEWED_ARTWORK_CHANGED/);
+  }
+  const otherOwner = structuredClone(first.manifest);
+  otherOwner.authority.userId = uuid(999);
+  otherOwner.output.objectPath = otherOwner.output.objectPath.replace(ids.user, uuid(999));
+  otherOwner.manifestHash = computeMetaOrganicArtworkManifestHash(otherOwner);
+  await assert.rejects(() => persistDirect(otherOwner), /EXPORT_ACCOUNT_CONTEXT_REQUIRED/);
+
+  const originalReview = (await db.query('SELECT preference_value FROM public.pod_preferences WHERE id = $1', [ids.creativeApproval])).rows[0].preference_value;
+  for (const mutate of [
+    (r) => { r.final_render_evidence.hash = 'f'.repeat(64); },
+    (r) => { r.source_evidence.hash = 'f'.repeat(64); },
+    (r) => { r.composition.headline = 'Same row changed'; },
+  ]) {
+    const changed = structuredClone(originalReview);
+    mutate(changed);
+    await db.query('UPDATE public.pod_preferences SET preference_value = $1::jsonb WHERE id = $2', [JSON.stringify(changed), ids.creativeApproval]);
+    await assert.rejects(() => persistDirect(first.manifest), /EXPORT_REVIEWED_ARTWORK_CHANGED/);
+    await db.query('UPDATE public.pod_preferences SET preference_value = $1::jsonb WHERE id = $2', [JSON.stringify(originalReview), ids.creativeApproval]);
+  }
+  const helperAcl = await db.query("SELECT has_function_privilege('authenticated', 'private.meta_organic_canonical_json(jsonb)', 'EXECUTE') AS browser, has_function_privilege('service_role', 'private.meta_organic_canonical_json(jsonb)', 'EXECUTE') AS service");
+  assert.equal(helperAcl.rows[0].browser, false);
+  assert.equal(helperAcl.rows[0].service, false);
+
+  await assert.rejects(() => store.persistExportManifest(first.manifest), /EXPORT_MANIFEST_IMMUTABLE/);
+}
+
 async function checkLeaseAndPrivilegeFences() {
   const db = await setupDb();
   await enqueue(db, proposal());
@@ -231,11 +550,15 @@ async function checkLeaseAndPrivilegeFences() {
   const privileges = await db.query(`
     SELECT
       has_function_privilege('authenticated', 'public.claim_meta_organic_publish_job(text,timestamp with time zone,integer)', 'EXECUTE') AS can_claim,
+      has_function_privilege('authenticated', 'public.get_meta_organic_artwork_export_context(jsonb)', 'EXECUTE') AS can_export_context,
+      has_function_privilege('authenticated', 'public.persist_meta_organic_artwork_export_manifest(jsonb)', 'EXECUTE') AS can_export_manifest,
       has_function_privilege('authenticated', 'private.meta_organic_require_lease(uuid,text,text,boolean)', 'EXECUTE') AS can_require_lease,
       has_schema_privilege('authenticated', 'private', 'USAGE') AS can_use_private_schema,
       has_table_privilege('authenticated', 'private.meta_organic_publish_jobs', 'SELECT') AS can_read_jobs
   `);
   assert.equal(privileges.rows[0].can_claim, false);
+  assert.equal(privileges.rows[0].can_export_context, false);
+  assert.equal(privileges.rows[0].can_export_manifest, false);
   assert.equal(privileges.rows[0].can_require_lease, false);
   assert.equal(privileges.rows[0].can_use_private_schema, true);
   assert.equal(privileges.rows[0].can_read_jobs, false);
@@ -415,6 +738,7 @@ async function checkAllowanceWindowRolloverAndReservations() {
 }
 
 await checkExecutableQueueAndContext();
+await checkDurableArtworkExportStoreContract();
 await checkLeaseAndPrivilegeFences();
 await checkUnknownTransition();
 await checkReapprovalDedupe();

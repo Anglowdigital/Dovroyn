@@ -34,7 +34,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
     setBusy(true);
     setError('');
     try {
-      const payload = creativeReviewPayload(post.id, headline, cta, selected, approve, currentContent.current);
+      const payload = creativeReviewPayload(post.id, headline, cta, selected, approve, currentContent.current, { brandName });
       const row = await savePreferenceDecision(podId, 'creative_review', payload);
       if (!row?.id) throw new Error('The creative save was not confirmed. Please retry.');
       if (!active.current) return;

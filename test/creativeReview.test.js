@@ -27,7 +27,12 @@ test('restoration is scoped to pod and post, newest decision wins over prior app
 });
 
 test('draft save clears approval and accepts typography only; blank headline is rejected', () => {
-  assert.deepEqual(creativeReviewPayload('p', ' Headline ', ' CTA ', null, false), { post_id: 'p', headline: 'Headline', call_to_action: 'CTA', image: null, content_snapshot: '', status: 'draft', approved_at: null });
+  const payload = creativeReviewPayload('p', ' Headline ', ' CTA ', null, false);
+  assert.equal(payload.status, 'draft');
+  assert.equal(payload.approved_at, null);
+  assert.equal(payload.image, null);
+  assert.equal(payload.composition.typography_only, true);
+  assert.equal(payload.source_evidence.kind, 'typography_only');
   assert.throws(() => creativeReviewPayload('p', ' ', '', null, true));
 });
 

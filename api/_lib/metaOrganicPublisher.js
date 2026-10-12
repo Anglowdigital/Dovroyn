@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { getPlan, hasActivePaidAccess } from '../../src/lib/plans.js';
 import { rpcWithServiceRole } from './supabaseAuth.js';
+import { computeMetaOrganicArtworkManifestHash, META_ORGANIC_ARTWORK_RENDERER_VERSION } from './metaOrganicArtworkExport.js';
 
 export const META_ORGANIC_PUBLISHER_CONTRACT_VERSION = 'meta_organic_publisher_pilot_v1';
 export const META_ORGANIC_PUBLISHER_PROVENANCE = 'meta_organic_publisher_foundation_2026_10_12';
@@ -96,6 +97,11 @@ function providerAccountId(value) {
   return /^[1-9][0-9]{0,31}$/.test(id) ? id : '';
 }
 
+function futureIso(value, now, minMs = 0) {
+  const parsed = iso(value);
+  return parsed && new Date(parsed).getTime() > now.getTime() + minMs ? parsed : null;
+}
+
 export function getMetaOrganicPublisherConfig(env = process.env) {
   return {
     enabled: env.META_ORGANIC_PUBLISHER_ENABLED === 'true',
@@ -185,7 +191,9 @@ export function validateMetaOrganicPublishContext(context = {}, now = new Date()
   if (draft.id !== proposal.draftId || draft.provider !== proposal.provider) return { ok: false, reason: 'PUBLISH_DRAFT_MISMATCH' };
   if (!['approved', 'ready'].includes(draft.status)) return { ok: false, reason: 'PUBLISH_DRAFT_NOT_APPROVED' };
   if (draft.contentVersion !== proposal.contentVersion) return { ok: false, reason: 'PUBLISH_CONTENT_CHANGED' };
-  if (!cleanString(draft.caption, proposal.provider === 'instagram' ? 2200 : 63206)) return { ok: false, reason: 'PUBLISH_CAPTION_REQUIRED' };
+  const captionLimit = proposal.provider === 'instagram' ? 2200 : 63206;
+  if (typeof draft.caption !== 'string' || draft.caption.length === 0) return { ok: false, reason: 'PUBLISH_CAPTION_REQUIRED' };
+  if (draft.caption.length > captionLimit) return { ok: false, reason: 'PUBLISH_CAPTION_TOO_LONG' };
 
   if (approval.id !== proposal.approvalId || approval.userId !== proposal.userId || approval.podId !== proposal.podId
     || approval.draftId !== proposal.draftId || approval.accountConnectionId !== proposal.accountConnectionId
@@ -194,9 +202,24 @@ export function validateMetaOrganicPublishContext(context = {}, now = new Date()
     return { ok: false, reason: 'PUBLISH_APPROVAL_CHANGED' };
   }
 
-  if (asset.userId !== proposal.userId || asset.podId !== proposal.podId || asset.manifestHash !== proposal.assetManifestHash
+  const outputHash = cleanString(asset.outputHash || asset.output_hash, 80);
+  const manifestOutputHash = cleanString(asset.manifest?.output?.hash, 80);
+  const manifestAuthority = asset.manifest?.authority || {};
+  const manifestOutput = asset.manifest?.output || {};
+  const recomputedManifestHash = asset.manifest ? computeMetaOrganicArtworkManifestHash(asset.manifest) : '';
+  const expiresAt = futureIso(asset.providerReadableUrlExpiresAt || asset.provider_readable_url_expires_at || manifestOutput.providerReadableUrlExpiresAt, now, 10 * 60 * 1000);
+  if (asset.userId !== proposal.userId || asset.podId !== proposal.podId || asset.draftId !== proposal.draftId
+    || asset.accountConnectionId !== proposal.accountConnectionId || asset.manifestHash !== proposal.assetManifestHash
+    || recomputedManifestHash !== proposal.assetManifestHash
     || asset.status !== 'exported' || asset.immutable !== true || !isHttpsUrl(asset.providerReadableUrl)
-    || asset.mediaType !== 'image/jpeg') {
+    || asset.mediaType !== 'image/jpeg' || !/^[a-f0-9]{64}$/.test(outputHash) || !expiresAt
+    || manifestAuthority.userId !== proposal.userId || manifestAuthority.podId !== proposal.podId || manifestAuthority.postId !== proposal.draftId
+    || manifestAuthority.accountConnectionId !== proposal.accountConnectionId || !cleanString(manifestAuthority.creativeApprovalId, 120)
+    || manifestAuthority.provider !== proposal.provider || manifestAuthority.providerAccountId !== account.providerAccountId
+    || manifestAuthority.rendererVersion !== META_ORGANIC_ARTWORK_RENDERER_VERSION
+    || manifestAuthority.contentVersion !== proposal.contentVersion || manifestOutputHash !== outputHash
+    || manifestOutput.mediaType !== 'image/jpeg' || manifestOutput.providerReadableUrl !== asset.providerReadableUrl
+    || manifestOutput.objectPath !== asset.objectVersion) {
     return { ok: false, reason: 'PUBLISH_ASSET_EXPORT_REQUIRED' };
   }
 
