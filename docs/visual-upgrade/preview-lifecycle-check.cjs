@@ -1,0 +1,33 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const assert=require('node:assert/strict');
+(async()=>{
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH || '/usr/bin/chromium',args:['--no-sandbox']});
+ const page=await browser.newPage();
+ await page.addInitScript(()=>{
+  window.objectUrls={created:[],revoked:[]};
+  const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);
+  URL.createObjectURL=file=>{const url=create(file);window.objectUrls.created.push(url);return url};
+  URL.revokeObjectURL=url=>{window.objectUrls.revoked.push(url);return revoke(url)};
+ });
+ await page.goto('http://localhost:4173/docs/visual-upgrade/fixture.html?surface=intake');
+ const input=page.locator('input[type=file]').first();
+ await input.setInputFiles('public/dovroyn-logo.png');
+ const image=page.locator('.selected-source-previews img');
+ await image.waitFor();
+ const original=await image.getAttribute('src');
+ const before=await page.evaluate(()=>window.objectUrls);
+ await page.getByLabel('Pod Name',{exact:true}).pressSequentially('My website pod');
+ await page.getByLabel('Brand Name',{exact:true}).pressSequentially('My brand');
+ await page.getByLabel('One primary website URL',{exact:true}).pressSequentially('https://dovroyn.com');
+ assert.equal(await image.getAttribute('src'),original);
+ assert.deepEqual(await page.evaluate(()=>window.objectUrls),before,'Typing must not recreate/revoke image URLs');
+ await input.setInputFiles('public/demo/aurora-products.png');
+ await page.waitForFunction(old=>document.querySelector('.selected-source-previews img')?.src!==old,original);
+ assert.ok((await page.evaluate(()=>window.objectUrls.revoked)).includes(original));
+ const replacement=await image.getAttribute('src');
+ await input.setInputFiles([]);
+ await image.waitFor({state:'detached'});
+ assert.ok((await page.evaluate(()=>window.objectUrls.revoked)).includes(replacement));
+ await browser.close();
+ console.log('Preview lifecycle passed: form typing preserves URLs; file replacement and removal revoke old URLs.');
+})().catch(error=>{console.error(error);process.exit(1)});

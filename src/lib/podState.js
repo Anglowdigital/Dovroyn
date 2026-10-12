@@ -1,5 +1,7 @@
 const CAMPAIGN_STATUSES = ['draft', 'review', 'approved', 'active', 'completed', 'archived'];
 const CALENDAR_STATUSES = ['draft', 'approved', 'scheduled', 'posted', 'failed'];
+const ACCOUNT_TARGET_SELECTION = 'account_target_selection';
+const POST_TARGET_SNAPSHOT = 'social_post_target_snapshot';
 
 function requirePodId(podId) {
   if (typeof podId !== 'string' || !podId.trim()) throw new Error('A Pod ID is required.');
@@ -11,6 +13,53 @@ function platformSelection(keys) {
     throw new Error('Platform keys must be an array of non-empty strings.');
   }
   return [...new Set(keys.map((key) => key.trim()))];
+}
+
+function cleanText(value, max = 200) {
+  return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max) : '';
+}
+
+export function normalizeAccountTarget(value, expectedPlatform = '') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const provider = cleanText(value.provider || value.platform, 40).toLowerCase();
+  const providerAccountId = cleanText(value.providerAccountId || value.provider_account_id || value.accountId || value.id, 100);
+  const accountConnectionId = cleanText(value.accountConnectionId || value.account_connection_id || value.connectionId, 120);
+  const accountLabel = cleanText(value.accountLabel || value.account_label || value.label, 200);
+  if (!provider || !providerAccountId || !accountLabel) return null;
+  if (expectedPlatform && provider !== expectedPlatform) return null;
+  return { provider, providerAccountId, accountLabel, ...(accountConnectionId ? { accountConnectionId } : {}) };
+}
+
+export function normalizeAccountTargets(value, expectedPlatform = '') {
+  const values = Array.isArray(value) ? value : [value];
+  const seen = new Set();
+  return values.flatMap((item) => {
+    const target = normalizeAccountTarget(item, expectedPlatform);
+    if (!target || seen.has(target.providerAccountId)) return [];
+    seen.add(target.providerAccountId);
+    return [target];
+  });
+}
+
+function targetSetKey(targets) {
+  return normalizeAccountTargets(targets).map((target) => `${target.provider}:${target.providerAccountId}:${target.accountLabel}`).sort().join('|');
+}
+
+function parsePreferenceValue(value) {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function normalizeAccountTargetSelection(targets) {
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) throw new Error('Account targets must be keyed by platform.');
+  return Object.fromEntries(Object.entries(targets).flatMap(([platform, targetValue]) => {
+    const key = cleanText(platform, 40).toLowerCase();
+    if (!key) return [];
+    if (targetValue == null || targetValue === '') return [[key, []]];
+    const normalized = normalizeAccountTargets(targetValue, key);
+    if (!normalized.length && (Array.isArray(targetValue) ? targetValue.length : targetValue)) throw new Error('Account targets must use connected account identifiers and labels.');
+    return [[key, normalized]];
+  }).filter(([, targets]) => targets.length));
 }
 
 async function confirmed(query, collection, multiple = false) {
@@ -32,6 +81,48 @@ export async function persistPlatformSelection(client, podId, platformKeys) {
     .neq('id', row.id).lte('created_at', row.created_at);
   if (error) throw new Error(`pod_preferences: ${error.message || 'previous selection could not be deactivated'}`, { cause: error });
   return row;
+}
+
+export async function persistAccountTargetSelection(client, podId, targets) {
+  const id = requirePodId(podId);
+  const accountTargets = normalizeAccountTargetSelection(targets);
+  const row = await confirmed(client.from('pod_preferences').insert({
+    pod_id: id, preference_type: ACCOUNT_TARGET_SELECTION, preference_value: { targets: accountTargets }, source: 'user_override', active: true,
+  }).select().single(), 'pod_preferences');
+  const { error } = await client.from('pod_preferences').update({ active: false })
+    .eq('pod_id', id).eq('preference_type', ACCOUNT_TARGET_SELECTION).eq('active', true)
+    .neq('id', row.id).lte('created_at', row.created_at);
+  if (error) throw new Error(`pod_preferences: ${error.message || 'previous account target selection could not be deactivated'}`, { cause: error });
+  return row;
+}
+
+export async function persistPostTargetSnapshots(client, podId, snapshots) {
+  const id = requirePodId(podId);
+  if (!Array.isArray(snapshots)) throw new Error('Post target snapshots must be an array.');
+  const expected = snapshots.map((snapshot) => {
+    const postId = cleanText(snapshot?.postId || snapshot?.post_id, 100);
+    const platform = cleanText(snapshot?.platform, 40).toLowerCase();
+    const targets = normalizeAccountTargets(snapshot?.targets || snapshot?.target, platform);
+    if (!postId || !platform || !targets.length) throw new Error('Post target snapshots require a post, platform, and connected account target.');
+    return { postId, platform, targets };
+  });
+  const rows = expected.map(({ postId, platform, targets }) => {
+    return { pod_id: id, preference_type: POST_TARGET_SNAPSHOT, preference_value: { postId, platform, targets }, source: 'observed_result', active: true };
+  });
+  if (!rows.length) return [];
+  const saved = await confirmed(client.from('pod_preferences').insert(rows).select(), 'pod_preferences', true);
+  if (!Array.isArray(saved) || saved.length !== rows.length) throw new Error('Post target snapshots write could not be fully confirmed.');
+  const expectedKeys = new Set(expected.map(({ postId, platform, targets }) => `${postId}:${platform}:${targetSetKey(targets)}`));
+  for (const row of saved) {
+    const value = parsePreferenceValue(row.preference_value);
+    const targets = normalizeAccountTargets(value?.targets || value?.target, value?.platform);
+    const key = `${cleanText(value?.postId || value?.post_id, 100)}:${cleanText(value?.platform, 40).toLowerCase()}:${targetSetKey(targets)}`;
+    if (row.pod_id !== id || row.preference_type !== POST_TARGET_SNAPSHOT || row.active === false || !expectedKeys.delete(key)) {
+      throw new Error('Post target snapshots write returned mismatched rows.');
+    }
+  }
+  if (expectedKeys.size) throw new Error('Post target snapshots write returned incomplete rows.');
+  return saved;
 }
 
 function validDate(value) {
@@ -155,6 +246,7 @@ export function restoreOperationalState(workspace) {
   const preferences = (type) => newestFirst(workspace.preferences).filter((row) => row.active !== false && row.preference_type === type);
   const preference = (type) => preferences(type)[0];
   const selections = preferences('platform_selection');
+  const accountSelections = preferences(ACCOUNT_TARGET_SELECTION);
   const platformKeys = selections.map((row) => {
     let value = row.preference_value;
     if (typeof value === 'string') {
@@ -166,6 +258,31 @@ export function restoreOperationalState(workspace) {
     if (!Array.isArray(keys) || keys.some((key) => typeof key !== 'string' || !key.trim())) return null;
     return platformSelection(keys);
   }).find((keys) => keys !== null);
+  const accountTargets = accountSelections.map((row) => {
+    let value = row.preference_value;
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value); } catch { return null; }
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'value')) value = value.value;
+    const targets = value?.targets;
+    if (!targets || typeof targets !== 'object' || Array.isArray(targets)) return null;
+    return Object.fromEntries(Object.entries(targets).flatMap(([platform, target]) => {
+      const normalized = normalizeAccountTargets(target, platform);
+      return normalized.length ? [[platform, normalized]] : [];
+    }));
+  }).find((targets) => targets !== null);
+  const postTargets = {};
+  for (const row of preferences(POST_TARGET_SNAPSHOT).reverse()) {
+    let value = row.preference_value;
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value); } catch { continue; }
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'value')) value = value.value;
+    const postId = cleanText(value?.postId || value?.post_id, 100);
+    const platform = cleanText(value?.platform, 40).toLowerCase();
+    const targets = normalizeAccountTargets(value?.targets || value?.target, platform);
+    if (postId && targets.length && !postTargets[postId]) postTargets[postId] = targets;
+  }
   const decision = preference('budget_recommendation_decision')?.preference_value?.decision;
   const budget = newest(workspace.budgets);
   const latestAdAnalysis = [...(workspace.adAnalysis || [])].filter(own).sort((a, b) =>
@@ -174,6 +291,8 @@ export function restoreOperationalState(workspace) {
     || String(b.id || '').localeCompare(String(a.id || '')))[0];
   return {
     platformKeys: platformKeys ?? (selections.length ? [] : null),
+    accountTargets: accountTargets || {},
+    postTargets,
     calendarItems: [...(workspace.calendarItems || [])].filter(own).sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date)),
     campaign: newest(workspace.campaigns), budget: budget ? { ...budget, planned_budget: Number(budget.planned_budget) || 0 } : null,
     holidayPreference: newest(workspace.holidayPreferences), budgetDecision: ['approved', 'rejected'].includes(decision) ? decision : 'pending',

@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { ArrowUpRight, Globe2, Plus, Sparkles } from 'lucide-react';
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
+import PodBrandCover from '../components/pod/PodBrandCover';
 import { TIER_LIMITS } from '../lib/stripe';
 
 export default function PodsPage({ session, subscription }) {
   const [pods, setPods] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [callbackNotice, setCallbackNotice] = useState('');
 
   useEffect(() => {
     if (!supabaseConfigured || !session?.user?.id) {
@@ -24,16 +26,24 @@ export default function PodsPage({ session, subscription }) {
       });
   }, [session?.user?.id]);
 
+  useEffect(() => {
+    const search = typeof window.location?.search === 'string' ? window.location.search : '';
+    const query = new URLSearchParams(search);
+    if (!search || query.get('integration') !== 'meta') return;
+    setCallbackNotice('Meta sign-in returned. Check your account connection status.');
+    window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
+  }, []);
+
   const tier = subscription?.tier || 'free';
   const maxPods = TIER_LIMITS[tier]?.maxPods || 0;
   const activePodCount = pods.filter((pod) => pod.status !== 'archived').length;
 
   return (
-    <div className="page-stack">
+    <div className="page-stack editorial-pod-library">
       <header className="section-header panel">
         <div>
           <p className="eyebrow">Pods ({activePodCount}/{maxPods})</p>
-          <h3>All AI marketing pods</h3>
+          <h3>Your brands. Their own space.</h3>
           <p className="subtle">
             Create a dedicated pod for each brand, product, offer, or campaign.
           </p>
@@ -42,6 +52,7 @@ export default function PodsPage({ session, subscription }) {
           Create Pod
         </NavLink>
       </header>
+      {callbackNotice && <div className="panel" role="status">{callbackNotice}</div>}
 
 
       <section className="pod-library-grid">
@@ -61,10 +72,7 @@ export default function PodsPage({ session, subscription }) {
 
         {pods.map((pod) => (
           <NavLink key={pod.id} className="panel pod-library-card" to={`/pods/${pod.id}`}>
-            <div className="pod-library-cover">
-              <span><Sparkles size={19} /></span>
-              <span className="status-tag">{String(pod.status || 'created').replaceAll('_', ' ')}</span>
-            </div>
+            <PodBrandCover pod={pod} />
             <div className="pod-library-body">
               <div>
                 <p className="eyebrow">{pod.brand_name || pod.pod_type || 'Marketing pod'}</p>

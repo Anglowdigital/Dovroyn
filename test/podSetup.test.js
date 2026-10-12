@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { DOVROYN_POD_PRESET, MAX_BRAND_PHOTOS, validatePodSetup } from '../src/lib/podSetup.js';
 
-test('a URL-based pod needs exactly one primary URL and one logo', () => {
+test('a URL-based pod needs a primary URL and accepts an optional logo', () => {
   assert.match(validatePodSetup({ sourceType: 'website', sourceUrl: '', logoCount: 1, photoCount: 0 }), /primary URL/);
-  assert.match(validatePodSetup({ sourceType: 'website', sourceUrl: 'https://example.com', logoCount: 0, photoCount: 0 }), /one brand logo/);
+  assert.equal(validatePodSetup({ sourceType: 'website', sourceUrl: 'https://example.com', logoCount: 0, photoCount: 0 }), '');
+  assert.match(validatePodSetup({ sourceType: 'website', sourceUrl: 'https://example.com', logoCount: 2, photoCount: 0 }), /no more than one/);
   assert.equal(validatePodSetup({ sourceType: 'website', sourceUrl: 'https://example.com', logoCount: 1, photoCount: 0 }), '');
 });
 

@@ -1,0 +1,10 @@
+import React, {useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import {BrowserRouter} from 'react-router-dom';
+import NewPod from '../../src/pages/NewPod';
+import Pods from '../../src/pages/Pods';
+import CreativeReview from '../../src/components/pod/CreativeReview';
+import '../../src/index.css';
+import '../../src/pages/pod-workspace.css';
+import '../../src/visual-upgrade.css';
+function Fixture(){const [prefs,setPrefs]=useState([]);const [caption,setCaption]=useState('Turn your website into a clear marketing direction. Create your own AI pod.'); const type=new URLSearchParams(location.search).get('surface');return <main style={{maxWidth:1100,margin:'30px auto',padding:20}}><p role="note">Local UI test fixture — no live account or publishing</p>{type==='intake'?<NewPod session={{user:{id:'fixture-user'}}} subscription={{tier:'free'}}/>:type==='library'?<Pods session={{user:{id:'fixture-user'}}} subscription={{tier:'growth'}}/>:<><CreativeReview podId="fixture-pod" post={{id:'fixture-post',platformName:'Instagram',content:caption,callToAction:'Build your first pod'}} brandName="Dovroyn" sourceMedia={[{url:location.origin+'/dovroyn-logo.png',alt:'Dovroyn supplied logo',role:'brand_logo',source_url:'https://dovroyn.com',approval_status:'needs_review'}]} savedPreferences={prefs} onSaved={row=>setPrefs(x=>[...x,row])}/><label>Post caption<textarea aria-label="Post caption" value={caption} onChange={e=>setCaption(e.target.value)}/></label></>}</main>};createRoot(document.getElementById('root')).render(<BrowserRouter><Fixture/></BrowserRouter>);

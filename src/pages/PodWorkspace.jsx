@@ -28,6 +28,7 @@ import {
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
 import { buildCalendarItems, restoreOperationalState } from '../lib/podState';
+import { attachApprovedCalendarCreatives, attachCalendarTargetSnapshots, decodeCalendarTargets, resolveCalendarCreative } from '../lib/calendarCreative';
 import { capturePodAction, isPodActionPending, startPodLifecycle } from '../lib/podLifecycle';
 import { normalizePodCompetitorSnapshot, normalizePodLearning, selectPodCompetitorSnapshot } from '../lib/podLearning';
 import { getPlan } from '../lib/plans';
@@ -35,12 +36,15 @@ import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askPodAssistant, requestCompetitorSnapshot, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
+import { confirmMetaCalendarPublishingReview, initiateMetaOrganicConnection, isMetaOrganicProvider, loadMetaAccountSelection, loadMetaConnectionStatus, prepareMetaCalendarPublishingReview, selectMetaAccounts, summarizeMetaConnection } from '../lib/metaOrganic';
 import {
   approvePodDirection,
   getAssetPreview,
   loadPodWorkspace,
   restorePodAnalysisSnapshot,
   savePlatformSelection,
+  saveAccountTargetSelection,
+  savePostTargetSnapshots,
   saveCalendarItems,
   saveCampaignDecision,
   saveBudgetPlan,
@@ -56,20 +60,23 @@ import {
 import PodCommandPalette from '../components/pod/PodCommandPalette';
 import PodModal from '../components/pod/PodModal';
 import './pod-workspace.css';
+import PlatformMark from '../components/PlatformMark';
+import PodJourney from '../components/pod/PodJourney';
+import CreativeReview from '../components/pod/CreativeReview';
 
 const TAB_GROUPS = [
   {
     label: 'Pod brain',
     items: [
       ['sources', 'Website & photos', Globe2],
-      ['direction', 'AI direction', Palette],
+      ['direction', 'AI analysis & review', Palette],
       ['overview', 'Overview', LayoutDashboard],
       ['assistant', 'Pod AI', Bot],
       ['assets', 'Assets', FileImage],
     ],
   },
   {
-    label: 'Create & publish',
+    label: 'Plan & create',
     items: [
       ['socials', 'Social accounts', MessageSquareText],
       ['content', 'Social content', Sparkles],
@@ -89,6 +96,39 @@ const TAB_GROUPS = [
     ],
   },
 ];
+
+function formatUtcDateTime(value) {
+  const time = Date.parse(value || '');
+  if (!Number.isFinite(time)) return 'Reviewed publishing time';
+  return new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'UTC',
+    hour12: false,
+  }).format(new Date(time)) + ' UTC';
+}
+
+function jobField(row, camel) {
+  const snake = camel.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  return row?.[camel] ?? row?.[snake];
+}
+
+function publishingEntryOutcome(review, entry) {
+  const jobs = Array.isArray(review?.queued) ? review.queued : [];
+  const failures = Array.isArray(review?.failures) ? review.failures : [];
+  const sameEntry = (row) => jobField(row, 'accountConnectionId') === entry.accountConnectionId
+    && (!jobField(row, 'assetManifestHash') || jobField(row, 'assetManifestHash') === entry.assetManifestHash);
+  const job = jobs.find(sameEntry);
+  const failure = failures.find(sameEntry);
+  if (job) {
+    const state = jobField(job, 'state') || (job.duplicate ? 'duplicate' : 'queued');
+    return { label: state === 'queued' ? 'queued' : state, detail: job.duplicate ? 'Existing durable job reused.' : 'Durable job recorded.' };
+  }
+  if (failure) return { label: 'blocked', detail: failure.reason || 'Queue blocked.' };
+  if (review?.status === 'queued') return { label: 'unknown', detail: 'No durable account result was returned.' };
+  if (review?.status === 'blocked') return { label: 'blocked', detail: 'Not queued.' };
+  return null;
+}
 
 const INITIAL_ANALYSIS = {
   summary: 'A premium skincare brand that makes effective routines feel calm, clear, and attainable.',
@@ -134,6 +174,41 @@ function EmptyState({ icon: Icon, title, body, action, actionLabel }) {
       {action && <button className="button button-primary button-sm" type="button" onClick={action}>{actionLabel}</button>}
     </div>
   );
+}
+
+function confirmSavedSocialPosts(expectedPosts, savedRows, podId) {
+  const rows = Array.isArray(savedRows) ? savedRows : [];
+  if (rows.length !== expectedPosts.length) throw new Error('Social drafts were not fully confirmed.');
+  const byId = new Map(rows.map((row) => [row?.id, row]));
+  return expectedPosts.map((post) => {
+    const row = byId.get(post.id);
+    if (!row || row.pod_id !== podId || row.platform !== post.platformKey || row.body !== post.content || row.status !== 'draft') {
+      throw new Error('Social drafts returned mismatched rows.');
+    }
+    return { ...post, id: row.id };
+  });
+}
+
+const targetKey = (targets = []) => targets.map((target) => `${target.provider}:${target.providerAccountId}:${target.accountLabel}`).sort().join('|');
+
+function preferenceValue(value) {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function confirmPostTargetSnapshots(expectedSnapshots, savedRows, podId) {
+  const rows = Array.isArray(savedRows) ? savedRows : [];
+  if (rows.length !== expectedSnapshots.length) throw new Error('Account target snapshots were not fully confirmed.');
+  const expected = new Set(expectedSnapshots.map((snapshot) => `${snapshot.postId}:${snapshot.platform}:${targetKey(snapshot.targets)}`));
+  for (const row of rows) {
+    const value = preferenceValue(row?.preference_value);
+    const key = `${value?.postId || value?.post_id}:${value?.platform}:${targetKey(value?.targets || value?.target ? (Array.isArray(value.targets) ? value.targets : [value.target]) : [])}`;
+    if (row?.pod_id !== podId || row?.preference_type !== 'social_post_target_snapshot' || row?.active === false || !expected.delete(key)) {
+      throw new Error('Account target snapshots returned mismatched rows.');
+    }
+  }
+  if (expected.size) throw new Error('Account target snapshots returned incomplete rows.');
+  return rows;
 }
 
 function CompetitorSnapshotCards({ snapshot }) {
@@ -200,7 +275,7 @@ function DemoPodShowcase() {
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">Fictional website & photos</p><h2>Brand analysis inputs</h2><p className="subtle">A complete sample of the information a real pod can organise after its owner provides the source.</p></div><StatusPill tone="green">Sample locked</StatusPill></header>
             <article className="pod-lock-card"><LockKeyhole size={22} /><div><strong>{pod.source_url}</strong><p>Reserved demonstration address. It is not a real business or connected website.</p></div></article>
-            <div className="pod-asset-grid"><article className="pod-file-card"><Globe2 /><div><strong>{pod.source_url}</strong><small>Fictional primary website</small></div></article>{[...logoAssets, ...brandPhotos].map((asset) => <article className="pod-file-card" key={asset.id}><img src={asset.preview} alt="" /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample brand logo' : 'Sample brand photo'}</small></div></article>)}</div>
+            <div className="pod-asset-grid pod-source-gallery"><article className="pod-file-card"><Globe2 /><div><strong>{pod.source_url}</strong><small>Fictional primary website</small></div></article>{[...logoAssets, ...brandPhotos].map((asset) => <article className="pod-file-card" key={asset.id}><img src={asset.preview} alt="" /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample brand logo' : 'Sample brand photo'}</small></div></article>)}</div>
           </div>
         );
       case 'direction':
@@ -215,9 +290,9 @@ function DemoPodShowcase() {
       case 'assets':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample library</p><h2>Campaign assets</h2><p className="subtle">Prepared fictional images demonstrate how real pod assets are grouped without allowing public uploads.</p></div><StatusPill>Read-only sample</StatusPill></header><div className="pod-media-grid">{assets.map((asset) => <article key={asset.id}><img src={asset.preview} alt={asset.name} /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Sample logo' : asset.assetRole === 'brand_photo' ? 'Sample brand photo' : 'Sample campaign creative'}</small></div></article>)}</div></div>;
       case 'socials':
-        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample channel plan</p><h2>Recommended social accounts</h2><p className="subtle">These are example recommendations only. No public demo accounts are connected.</p></div><StatusPill>0 live connections</StatusPill></header><div className="pod-platform-select-grid">{selectedPlatforms.map((platform) => <article key={platform.key} className="pod-platform-select selected"><span className="pod-social-monogram">{platform.name.slice(0, 2)}</span><div><h3>{platform.name}</h3><p>{platform.focus}</p><small>Recommended in this fictional plan</small></div></article>)}</div><p className="pod-honesty-note">Provider connections are not live yet. Future connections would require official provider configuration and owner authorisation. This showcase cannot connect, post, or publish.</p></div>;
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample channel plan</p><h2>Recommended social accounts</h2><p className="subtle">These are example recommendations only. No public demo accounts are connected.</p></div><StatusPill>0 live connections</StatusPill></header><div className="pod-platform-select-grid">{selectedPlatforms.map((platform) => <article key={platform.key} className="pod-platform-select selected"><PlatformMark platform={platform.key} size={28} /><div><h3>{platform.name}</h3><p>{platform.focus}</p><small>Recommended in this fictional plan</small></div></article>)}</div><p className="pod-honesty-note">Provider connections are not live yet. Future connections would require official provider configuration and owner authorisation. This showcase cannot connect, post, or publish.</p></div>;
       case 'content':
-        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample social manager</p><h2>Prepared campaign drafts</h2><p className="subtle">Fictional, read-only examples for each recommended channel.</p></div><StatusPill>{posts.length} sample drafts</StatusPill></header><div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Sample</StatusPill></header><img className="pod-post-photo" src={brandPhotos[0].preview} alt="Fictional Aurora Botanicals campaign" /><small className="pod-photo-source">Fictional sample creative</small><p className="pod-demo-post-copy">{post.content}</p></article>)}</div></div>;
+        return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample social manager</p><h2>Prepared campaign drafts</h2><p className="subtle">Fictional, read-only examples for each recommended channel.</p></div><StatusPill>{posts.length} sample drafts</StatusPill></header><div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Sample</StatusPill></header><img className="pod-post-photo" src={brandPhotos[0].preview} alt="Fictional Aurora Botanicals campaign" /><small className="pod-photo-source">Fictional sample creative</small><p className="pod-demo-post-copy">{post.content}</p></article>)}</div></div>;
       case 'calendar':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Sample June calendar</p><h2>Content calendar</h2><p className="subtle">A filled example showing the same approved campaign adapted for the selected channels.</p></div><StatusPill>Fictional schedule</StatusPill></header><div className="pod-cal-grid" aria-label="Fictional June content calendar">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day} className="pod-cal-dow">{day}</span>)}{Array.from({ length: 30 }, (_, index) => index + 1).map((date) => <div key={date} className={`pod-cal-day${calendarPostDays.has(date) ? ' pod-cal-post' : ''}`}><span className="pod-cal-date">{date}</span>{calendarPostDays.has(date) && <><span className="pod-cal-thumb"><img src={brandPhotos[0].preview} alt="" /></span><strong>Winter ritual</strong><span className="pod-cal-badges">{selectedPlatforms.slice(0, 2).map((platform) => <span key={platform.key}>{platform.name}</span>)}</span></>}</div>)}</div></div>;
       case 'campaigns':
@@ -243,7 +318,8 @@ function DemoPodShowcase() {
     <section className="pod-workspace pod-showcase" data-pod-mode="showcase">
       <div className="pod-demo-banner" role="note"><Sparkles size={15} /><span>Read-only fictional showcase — explore each section; nothing can be edited, connected, sent, saved, or published.</span><Link to="/signup">Create a working pod →</Link></div>
       <Link to="/" className="pod-back-link">&larr; Back to Dovroyn</Link>
-      <header className="pod-workspace-topbar"><div className="pod-workspace-title"><span className="pod-brand-orb"><Sparkles size={18} /></span><div><p className="eyebrow">{pod.brand_name} · fictional</p><h2>{pod.pod_name}</h2></div></div><div className="pod-workspace-actions"><StatusPill>Showcase only</StatusPill></div></header>
+      <header className="pod-workspace-topbar"><div className="pod-workspace-title"><span className="pod-brand-orb">{logoAssets[0]?.preview ? <img src={logoAssets[0].preview} alt="Brand logo" /> : <Sparkles size={18} />}</span><div><p className="eyebrow">{pod.brand_name} · fictional</p><h2>{pod.pod_name}</h2></div></div><div className="pod-workspace-actions"><StatusPill>Showcase only</StatusPill></div></header>
+      <PodJourney activeTab={activeTab} />
       <div className="pod-workspace-body">
         <aside className="pod-workspace-nav" role="tablist" aria-label="Demo pod sections" aria-orientation="vertical">
           {DEMO_TAB_GROUPS.map((group) => <div key={group.label} role="presentation"><p role="presentation">{group.label}</p>
@@ -274,7 +350,7 @@ function LivePodWorkspace({ session, subscription }) {
   const [pod, setPod] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('sources');
   const [analysis, setAnalysis] = useState(null);
   const [analysisState, setAnalysisState] = useState('idle');
   const [aiMessages, setAiMessages] = useState([]);
@@ -290,7 +366,9 @@ function LivePodWorkspace({ session, subscription }) {
   const [sourceUrl, setSourceUrl] = useState('');
   const [assets, setAssets] = useState([]);
   const [selectedPlatformKeys, setSelectedPlatformKeys] = useState([]);
+  const [accountTargetSelection, setAccountTargetSelection] = useState({});
   const [posts, setPosts] = useState([]);
+  const [creativePreferences, setCreativePreferences] = useState([]);
   const [calendarItems, setCalendarItems] = useState([]);
   const [calendarMonth] = useState(() => {
     const now = new Date();
@@ -310,12 +388,16 @@ function LivePodWorkspace({ session, subscription }) {
   const [competitorBusy, setCompetitorBusy] = useState(false);
   const [competitorError, setCompetitorError] = useState('');
   const [learningEvents, setLearningEvents] = useState([]);
+  const [metaConnectionStatus, setMetaConnectionStatus] = useState({ available: false, connections: [] });
+  const [connectionMutation, setConnectionMutation] = useState('');
   const podLifecycle = useRef({ current: null, podId });
   podLifecycle.current.podId = podId;
   const hasPlatformSelection = useRef(false);
+  const calendarPublishGeneration = useRef(0);
   const [modal, setModal] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState('');
+  const [calendarPublishReview, setCalendarPublishReview] = useState(null);
 
   const plan = getPlan(subscription?.tier || 'free');
   const sourceLocked = Boolean(pod?.source_locked_at || analysis);
@@ -323,6 +405,11 @@ function LivePodWorkspace({ session, subscription }) {
   const brandPhotos = assets.filter((asset) => asset.assetRole === 'brand_photo');
   const selectedSource = POD_SOURCE_TYPES.find((source) => source.value === sourceType);
   const monthItems = calendarItems.filter((item) => item.scheduled_date.startsWith(calendarMonth));
+  const calendarPublishSourceFingerprint = JSON.stringify({
+    calendar: monthItems.map((item) => [item.id, item.scheduled_date, item.platform, item.caption, item.status, item.creative_note]),
+    accounts: accountTargetSelection,
+    posts: posts.map((post) => [post.id, post.platformKey, post.content, post.status, post.targetAccounts]),
+  });
   const campaignState = campaign?.status ? campaign.status[0].toUpperCase() + campaign.status.slice(1) : 'Draft';
   const targetCountry = pod?.target_country === 'Australia' ? 'AU' : String(pod?.target_country || '').trim().toUpperCase();
   const budgetCurrency = targetCountry === 'AU' ? 'AUD' : '';
@@ -337,7 +424,7 @@ function LivePodWorkspace({ session, subscription }) {
     hasPlatformSelection.current = false;
     setPod(null);
     setLoadError('');
-    setActiveTab('overview');
+    setActiveTab('sources');
     setAnalysis(null);
     setAnalysisState('idle');
     setAiMessages([]);
@@ -353,7 +440,9 @@ function LivePodWorkspace({ session, subscription }) {
     setSourceUrl('');
     setAssets([]);
     setSelectedPlatformKeys([]);
+    setAccountTargetSelection({});
     setPosts([]);
+    setCreativePreferences([]);
     setCalendarItems([]);
     setCampaign(null);
     setObservancesEnabled(false);
@@ -365,11 +454,14 @@ function LivePodWorkspace({ session, subscription }) {
     setBudgetDecision('pending');
     setModal(null);
     setPaletteOpen(false);
+    setCalendarPublishReview(null);
     setCompetitorBusy(false);
     setCompetitorError('');
     setCompetitorUrls(['', '', '']);
     setCompetitorSnapshot(null);
     setLearningEvents([]);
+    setMetaConnectionStatus({ available: false, connections: [] });
+    setConnectionMutation('');
     setOperationalMutation('');
     setNotice('');
     if (!supabaseConfigured || !podId) {
@@ -385,6 +477,7 @@ function LivePodWorkspace({ session, subscription }) {
       setSourceType(workspace.pod?.source_type || (workspace.pod?.source_url ? 'website' : 'photos'));
       setSourceUrl(workspace.pod?.source_url || '');
       setSources(workspace.sources || []);
+      setCreativePreferences(workspace.preferences || []);
       setAiMessages(workspace.messages || []);
       const savedCompetitors = normalizePodCompetitorSnapshot(workspace.competitorSnapshot) || selectPodCompetitorSnapshot(workspace.preferences, podId);
       setCompetitorSnapshot(savedCompetitors);
@@ -394,6 +487,7 @@ function LivePodWorkspace({ session, subscription }) {
       const operational = restoreOperationalState(workspace);
       hasPlatformSelection.current = operational.platformKeys !== null;
       setSelectedPlatformKeys(operational.platformKeys || []);
+      setAccountTargetSelection(operational.accountTargets || {});
       setCalendarItems(operational.calendarItems);
       setCampaign(operational.campaign);
       setBudget(operational.budget);
@@ -414,6 +508,7 @@ function LivePodWorkspace({ session, subscription }) {
           pillars: restoredPillars.length ? restoredPillars : INITIAL_ANALYSIS.pillars,
         }, workspace.preferences));
         setAnalysisState('ready');
+        setActiveTab('direction');
       } else {
         setActiveTab('sources');
       }
@@ -427,6 +522,7 @@ function LivePodWorkspace({ session, subscription }) {
             characterCount: post.body.length,
             contentStyle: platform?.rules?.contentStyle || 'Platform-specific',
             status: post.status,
+            targetAccounts: operational.postTargets?.[post.id] || [],
           };
         }));
       const persistedAssets = await Promise.all((workspace.assets || []).map(async (asset) => ({
@@ -439,12 +535,48 @@ function LivePodWorkspace({ session, subscription }) {
         })));
       if (!loadAction.isCurrent()) return;
       setAssets(persistedAssets);
+      if (session?.access_token) {
+        const status = await loadMetaConnectionStatus({ accessToken: session.access_token, podId }).catch(() => ({ available: false, connections: [] }));
+        if (!loadAction.isCurrent()) return;
+        setMetaConnectionStatus(status);
+        const search = typeof window.location?.search === 'string' ? window.location.search : '';
+        const query = new URLSearchParams(search);
+        if (search && query.get('integration') === 'meta') {
+          if (query.get('status') === 'selection_required' && query.get('selectionId')) {
+            const selection = await loadMetaAccountSelection({
+              accessToken: session.access_token,
+              podId,
+              selectionId: query.get('selectionId'),
+            }).catch(() => null);
+            if (!loadAction.isCurrent()) return;
+            if (selection) {
+              setModal({
+                type: 'meta-selection',
+                selection,
+                facebookPageId: '',
+                instagramAccountId: '',
+                message: '',
+              });
+            } else {
+              showNotice('Meta sign-in returned. Check your account connection status.');
+            }
+          } else {
+            showNotice('Meta sign-in returned. Check your account connection status.');
+          }
+          window.history?.replaceState?.({}, '', window.location.pathname || '/pods');
+        }
+      }
       setLoading(false);
     }).catch((error) => {
       if (loadAction?.isCurrent()) { setLoadError(error.message || 'The Pod state could not be loaded.'); setPod(null); setLoading(false); }
     });
     return () => { lifecycle.active = false; };
   }, [podId]);
+
+  useEffect(() => {
+    calendarPublishGeneration.current += 1;
+    setCalendarPublishReview(null);
+  }, [calendarPublishSourceFingerprint]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -456,6 +588,55 @@ function LivePodWorkspace({ session, subscription }) {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  async function connectPlatform(platform) {
+    if (!isMetaOrganicProvider(platform?.key)) {
+      setModal({ type: 'connect', platform });
+      return;
+    }
+    try {
+      if (!session?.access_token) throw new Error('Sign in again before connecting Meta.');
+      setConnectionMutation(platform.key);
+      await initiateMetaOrganicConnection({ accessToken: session.access_token, podId, providerKey: platform.key });
+    } catch (error) {
+      setConnectionMutation('');
+      setModal({ type: 'connect-error', platform, message: error.message || 'Meta connection is unavailable.' });
+    }
+  }
+
+  async function saveMetaSelection() {
+    if (!modal?.selection || connectionMutation) return;
+    const action = capturePodAction(podLifecycle.current, podId, 'meta-selection');
+    if (!action) return;
+    const facebookPageId = modal.facebookPageId || '';
+    const instagramAccountId = modal.instagramAccountId || '';
+    if (!facebookPageId && !instagramAccountId) {
+      setModal({ ...modal, message: 'Choose at least one eligible Meta account.' });
+      action.finish();
+      return;
+    }
+    try {
+      if (!session?.access_token) throw new Error('Sign in again before selecting Meta accounts.');
+      setConnectionMutation('meta-selection');
+      await selectMetaAccounts({
+        accessToken: session.access_token,
+        podId: action.podId,
+        selectionId: modal.selection.selectionId,
+        facebookPageId,
+        instagramAccountId,
+      });
+      if (!action.isCurrent()) return;
+      const status = await loadMetaConnectionStatus({ accessToken: session.access_token, podId: action.podId });
+      if (!action.isCurrent()) return;
+      setMetaConnectionStatus(status);
+      setModal(null);
+      showNotice('Meta account selection saved. Check your account connection status.');
+    } catch (error) {
+      if (action.isCurrent()) setModal({ ...modal, message: error.message || 'Meta account selection is unavailable.' });
+    } finally {
+      if (action.finish()) setConnectionMutation('');
+    }
+  }
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -477,6 +658,45 @@ function LivePodWorkspace({ session, subscription }) {
         if (isCurrent()) hasPlatformSelection.current = true;
       } catch (error) {
         if (isCurrent()) setSelectedPlatformKeys(previous);
+        throw error;
+      }
+    });
+  };
+
+  const connectedAccountsFor = (platformKey) => (metaConnectionStatus.connections || [])
+    .filter((connection) => connection.provider === platformKey && connection.status === 'connected' && connection.providerAccountId && connection.accountLabel)
+    .map((connection) => ({
+      provider: platformKey,
+      providerAccountId: connection.providerAccountId,
+      ...(connection.id ? { accountConnectionId: connection.id } : {}),
+      accountLabel: connection.accountLabel,
+    }));
+  const selectedTargetsFor = (platformKey) => Array.isArray(accountTargetSelection[platformKey]) ? accountTargetSelection[platformKey] : (accountTargetSelection[platformKey] ? [accountTargetSelection[platformKey]] : []);
+  const currentTargetsFor = (platformKey) => {
+    const current = new Map(connectedAccountsFor(platformKey).map((account) => [account.providerAccountId, account]));
+    return selectedTargetsFor(platformKey).flatMap((target) => current.get(target.providerAccountId) || []);
+  };
+  const targetIsCurrent = (target) => Boolean(target && connectedAccountsFor(target.provider).some((account) => account.providerAccountId === target.providerAccountId));
+
+  const saveAccountTarget = async (platformKey, providerAccountId, checked) => {
+    if (!beginAction() || actionPending('operational')) return;
+    const target = connectedAccountsFor(platformKey).find((account) => account.providerAccountId === providerAccountId) || null;
+    if (!target) return;
+    const previous = accountTargetSelection;
+    const next = { ...accountTargetSelection };
+    const existing = selectedTargetsFor(platformKey);
+    const selected = checked
+      ? [...existing.filter((account) => account.providerAccountId !== target.providerAccountId), target]
+      : existing.filter((account) => account.providerAccountId !== target.providerAccountId);
+    if (selected.length) next[platformKey] = selected;
+    else delete next[platformKey];
+    await saveOperational('account-targets', async (isCurrent) => {
+      setAccountTargetSelection(next);
+      try {
+        await saveAccountTargetSelection(pod.id, next);
+        if (isCurrent()) showNotice(`${getPlatform(platformKey)?.name || platformKey} targets saved. Existing drafts keep their saved targets.`);
+      } catch (error) {
+        if (isCurrent()) setAccountTargetSelection(previous);
         throw error;
       }
     });
@@ -556,7 +776,7 @@ function LivePodWorkspace({ session, subscription }) {
     const saved = await saveCampaignDecision(pod.id, {
       campaignId: campaign?.id, name: campaign?.name || `${pod.pod_name} campaign`, status,
       objective: campaign?.objective || analysis?.offer || null,
-      brief: campaign?.brief || { strategy: analysis?.opportunity || '', platforms: selectedPlatformKeys },
+      brief: campaign?.brief || { strategy: analysis?.opportunity || '', platforms: selectedPlatformKeys, accountTargets: accountTargetSelection },
     });
     if (!isCurrent()) return;
     setCampaign(saved);
@@ -798,12 +1018,29 @@ function LivePodWorkspace({ session, subscription }) {
         contentDay: new Date().toISOString().slice(0, 10),
       });
       if (!action.isCurrent()) return;
-      const generated = result.posts.map((post, index) => ({ ...post, id: `${post.platformKey}-${Date.now()}-${index}`, status: 'Draft' }));
-      setPosts(generated);
+      const generated = result.posts.map((post) => ({ ...post, id: crypto.randomUUID(), status: 'Draft' }));
+      const targeted = generated.map((post) => ({ ...post, targetAccounts: currentTargetsFor(post.platformKey) }));
       if (pod?.id) {
-        const saved = await saveSocialPosts(action.podId, generated);
+        const saved = await saveSocialPosts(action.podId, targeted);
         if (!action.isCurrent()) return;
-        setPosts((current) => current.map((post, index) => ({ ...post, id: saved[index]?.id || post.id })));
+        const withIds = confirmSavedSocialPosts(targeted, saved, action.podId);
+        const snapshots = withIds.filter((post) => post.targetAccounts?.length).map((post) => ({ postId: post.id, platform: post.platformKey, targets: post.targetAccounts }));
+        if (snapshots.length) {
+          try {
+            const savedSnapshots = await savePostTargetSnapshots(action.podId, snapshots);
+            confirmPostTargetSnapshots(snapshots, savedSnapshots, action.podId);
+          } catch (error) {
+            if (!action.isCurrent()) return;
+            setPosts(withIds.map((post) => ({ ...post, targetAccounts: [], targetSaveFailed: Boolean(post.targetAccounts?.length) })));
+            setActiveTab('content');
+            showNotice(error.message || 'Drafts were saved, but account targets were not confirmed. Choose targets again before scheduling.');
+            return;
+          }
+        }
+        if (!action.isCurrent()) return;
+        setPosts(withIds);
+      } else {
+        setPosts(targeted);
       }
       setActiveTab('content');
       showNotice(`${generated.length} platform-specific drafts generated.`);
@@ -825,11 +1062,85 @@ function LivePodWorkspace({ session, subscription }) {
       const items = buildCalendarItems({ month: calendarMonth, posts, platformKeys: selectedPlatformKeys,
         weeklyPostingDays: plan.weeklyPostingDays, monthlyContentDays: plan.monthlyContentDays });
       if (!items.length) throw new Error('No calendar days are available. Check your plan allowance and selected platform drafts.');
-      const saved = await saveCalendarItems(pod.id, items);
+      const targetedItems = attachCalendarTargetSnapshots(items, { posts });
+      const saved = await saveCalendarItems(pod.id, attachApprovedCalendarCreatives(targetedItems, { podId: pod.id, posts, preferences: creativePreferences, assets, sourceMedia: analysis?.source_media || [] }));
       if (!isCurrent()) return;
       setCalendarItems((current) => [...current.filter((item) => !item.scheduled_date.startsWith(calendarMonth)), ...saved]);
       showNotice('Calendar drafts saved for this month. Nothing was approved or published.');
     });
+  };
+
+  const prepareCalendarPublishing = async (scheduledDate) => {
+    const action = beginAction(`calendar-publish:${scheduledDate}`);
+    if (!action) return;
+    const generation = calendarPublishGeneration.current + 1;
+    calendarPublishGeneration.current = generation;
+    setCalendarPublishReview({ date: scheduledDate, status: 'preparing', loadedEntryIds: new Set(), error: '', generation });
+    try {
+      const result = await prepareMetaCalendarPublishingReview({
+        accessToken: session?.access_token,
+        podId: action.podId,
+        scheduledDate,
+      });
+      if (!action.isCurrent() || calendarPublishGeneration.current !== generation) return;
+      setCalendarPublishReview({
+        date: scheduledDate,
+        status: 'ready',
+        generation,
+        token: result.preparationToken,
+        entries: result.entries || [],
+        scheduledAt: result.scheduledAt,
+        timezone: result.timezone || 'UTC',
+        expiresAt: result.expiresAt,
+        loadedEntryIds: new Set(),
+        error: '',
+      });
+    } catch (error) {
+      if (action.isCurrent() && calendarPublishGeneration.current === generation) setCalendarPublishReview({ date: scheduledDate, status: 'error', loadedEntryIds: new Set(), error: error.message || 'Publishing review could not be prepared.', generation });
+    } finally {
+      action.finish();
+    }
+  };
+
+  const markCalendarPublishImageLoaded = (entryId, token, generation, ok) => {
+    setCalendarPublishReview((current) => {
+      if (!current || current.status !== 'ready' || current.token !== token || current.generation !== generation) return current;
+      const loadedEntryIds = new Set(current.loadedEntryIds || []);
+      if (ok) loadedEntryIds.add(entryId);
+      else loadedEntryIds.delete(entryId);
+      return { ...current, loadedEntryIds, imageError: ok ? '' : 'A rendered image could not be loaded. Prepare the review again.' };
+    });
+  };
+
+  const confirmCalendarPublishing = async () => {
+    const review = calendarPublishReview;
+    if (!review || review.status !== 'ready') return;
+    const generation = review.generation;
+    const token = review.token;
+    const action = beginAction(`calendar-confirm:${review.date}`);
+    if (!action) return;
+    setCalendarPublishReview((current) => current?.date === review.date && current?.token === token && current?.generation === generation ? { ...current, status: 'confirming' } : current);
+    try {
+      const result = await confirmMetaCalendarPublishingReview({
+        accessToken: session?.access_token,
+        podId: action.podId,
+        scheduledDate: review.date,
+        preparationToken: token,
+        loadedEntryIds: [...(review.loadedEntryIds || [])],
+      });
+      if (!action.isCurrent() || calendarPublishGeneration.current !== generation) return;
+      setCalendarPublishReview((current) => current?.date === review.date && current?.token === token && current?.generation === generation ? {
+        ...current,
+        status: result.status === 'queued' ? 'queued' : 'blocked',
+        queued: result.queued || [],
+        failures: result.failures || [],
+      } : current);
+      showNotice(result.status === 'queued' ? 'Publishing approval saved and queued for the reviewed time.' : 'Publishing approval was not fully queued. Review the account status.');
+    } catch (error) {
+      if (action.isCurrent() && calendarPublishGeneration.current === generation) setCalendarPublishReview((current) => current?.date === review.date && current?.token === token && current?.generation === generation ? { ...current, status: 'error', error: error.message || 'Publishing approval could not be confirmed.' } : current);
+    } finally {
+      action.finish();
+    }
   };
 
   const savePostEdit = async (post) => {
@@ -946,8 +1257,8 @@ function LivePodWorkspace({ session, subscription }) {
       case 'sources':
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">One pod, one source</p><h2>Brand analysis inputs</h2><p className="subtle">Choose one website, social page, Shopify store, or photos-only source. Add one logo and up to five photos, then analyse and lock this pod.</p></div>{sourceLocked && <StatusPill tone="green">Source locked</StatusPill>}</header>
-            <article className="pod-note-card"><strong>Website photos first. Asset folder second.</strong><p>Every post and campaign uses the photos from this website before anything else. The Asset folder is only for extras — a Christmas party, a flash sale, a seasonal push.</p></article>
+            <header className="pod-panel-heading"><div><p className="eyebrow">One pod, one source</p><h2>Brand analysis inputs</h2><p className="subtle">Choose one website, social page, Shopify store, or photos-only source. Optionally add your logo and up to five photos, then analyse and review this pod.</p></div>{sourceLocked && <StatusPill tone="green">Source locked</StatusPill>}</header>
+            <article className="pod-note-card"><strong>Your source. Your creative choices.</strong><p>Review imagery observed on your website alongside the photos you upload. Choose the image for each creative before approving it; campaign assets can supply additional options.</p></article>
             {sourceLocked ? (
               <article className="pod-lock-card"><LockKeyhole size={22} /><div><strong>This pod is permanently tied to its analysed source.</strong><p>Create another pod for a different website, social page, Shopify store, or brand. This prevents one subscription pod from being reused for multiple businesses.</p></div></article>
             ) : (
@@ -964,7 +1275,7 @@ function LivePodWorkspace({ session, subscription }) {
                 <div className="pod-brand-upload-grid">
                   <label className="pod-upload-zone">
                     <Upload size={24} />
-                    <strong>{logoAssets.length ? 'Logo added' : 'Add one brand logo'}</strong>
+                    <strong>{logoAssets.length ? 'Logo added' : 'Add a logo (optional)'}</strong>
                     <span>PNG, JPG, or WebP. One logo per pod.</span>
                     <input type="file" accept="image/png,image/jpeg,image/webp" disabled={logoAssets.length >= 1} onChange={(event) => addAssets(event, 'logo')} />
                   </label>
@@ -978,7 +1289,7 @@ function LivePodWorkspace({ session, subscription }) {
                 <div className="pod-analysis-lock-action"><div><strong>Ready to build this pod?</strong><p>Analysis generates the brand direction and permanently locks these inputs to this pod.</p></div><button className="button button-primary" type="button" onClick={runAnalysis} disabled={analysisState === 'running'}><Sparkles size={16} /> {analysisState === 'running' ? 'Analysing…' : 'Analyse and lock pod'}</button></div>
               </>
             )}
-            <div className="pod-asset-grid">
+            <div className="pod-asset-grid pod-source-gallery">
               {sourceUrl && <article className="pod-file-card"><Globe2 /><div><strong>{sourceUrl}</strong><small>{selectedSource?.label || 'Primary source'}</small></div></article>}
               {[...logoAssets, ...brandPhotos].map((asset) => <article className="pod-file-card" key={asset.id}><img src={asset.preview} alt="" /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Brand logo' : `Brand photo · ${Math.ceil(asset.size / 1024)} KB`}</small></div></article>)}
             </div>
@@ -990,6 +1301,9 @@ function LivePodWorkspace({ session, subscription }) {
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">AI direction</p><h2>Review before content is generated</h2><p className="subtle">Approve the proposal or teach this pod what to change.</p></div><StatusPill tone={directionApproved ? 'green' : 'gold'}>{directionApproved ? 'Approved' : 'Needs review'}</StatusPill></header>
+            {analysis.source_warnings?.length > 0 && <aside className="pod-honesty-note" role="note"><strong>What we could read</strong>{analysis.source_warnings.map(warning => <p key={warning}>{warning}</p>)}</aside>}
+            {analysis.source_pages?.length > 0 && <article className="pod-rich-card"><small>Source evidence</small><ul>{analysis.source_pages.map(page => <li key={page.url}>{page.title || page.url} — {page.extraction_mode === 'metadata_only' ? 'Metadata only; page content not rendered' : 'Page text read'}</li>)}</ul></article>}
+            {analysis.source_media?.length > 0 && <section className="pod-media-review"><h3>Images found on your source</h3><p className="subtle">Review these before choosing one for a creative. Finding an image does not approve its use.</p><div className="pod-media-grid">{analysis.source_media.map(media => <article key={media.url}><img src={media.url} referrerPolicy="no-referrer" alt={media.alt || 'Image observed on the source website'} /><div><strong>{media.role === 'brand_logo' ? 'Source logo' : 'Source image'}</strong><small>Needs review · {media.source_url}</small></div></article>)}</div></section>}
             <section className="pod-insight-grid">
               {[['Brand summary', analysis.summary], ['Tone', analysis.tone], ['Audience', analysis.audience], ['Offer', analysis.offer], ['Strongest opportunity', analysis.opportunity]].map(([label, value]) => <article key={label}><small>{label}</small><p>{value}</p></article>)}
             </section>
@@ -1035,7 +1349,7 @@ function LivePodWorkspace({ session, subscription }) {
       case 'assets':
         return <div className="pod-panel-stack"><header className="pod-panel-heading"><div><p className="eyebrow">Library</p><h2>Campaign assets</h2><p className="subtle">Add working campaign images without changing the logo and brand sources locked during analysis.</p></div></header><label className="pod-upload-zone"><Upload size={24} /><strong>Add campaign assets</strong><span>These files stay inside this pod and do not replace its locked analysis source.</span><input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => addAssets(event, 'campaign_asset')} /></label>{assets.length ? <div className="pod-media-grid">{assets.map((asset) => <article key={asset.id}><img src={asset.preview} alt={asset.name} /><div><strong>{asset.name}</strong><small>{asset.assetRole === 'logo' ? 'Locked logo' : asset.assetRole === 'brand_photo' ? 'Locked brand photo' : 'Campaign asset'}</small></div></article>)}</div> : <EmptyState icon={FileImage} title="No campaign assets yet" body="Upload images for campaigns and social content after this pod's brand source has been analysed." />}</div>;
       case 'socials': {
-        const recommendedKeys = analysis?.platforms || ['instagram', 'facebook', 'tiktok', 'email'];
+        const recommendedKeys = analysis?.platforms || [];
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">Recommended channels</p><h2>Connect social accounts</h2><p className="subtle">The pod recommends the best platforms — tick or untick any of them. Your selection controls what content is generated and where it posts.</p></div></header>
@@ -1043,26 +1357,45 @@ function LivePodWorkspace({ session, subscription }) {
               {getPlanningPlatforms().map((platform) => {
                 const selected = selectedPlatformKeys.includes(platform.key);
                 const recommended = recommendedKeys.includes(platform.key);
+                const connectionSummary = isMetaOrganicProvider(platform.key) ? summarizeMetaConnection(metaConnectionStatus, platform.key) : null;
+                const connectedAccounts = isMetaOrganicProvider(platform.key) ? connectedAccountsFor(platform.key) : [];
+                const savedTargets = selectedTargetsFor(platform.key);
+                const selectedIds = new Set(currentTargetsFor(platform.key).map((account) => account.providerAccountId));
+                const unavailableTargets = savedTargets.filter((target) => !selectedIds.has(target.providerAccountId));
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
                     <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
-                    <span className="pod-social-monogram">{platform.name.slice(0, 2)}</span>
-                    <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}Provider setup required for live connection</small></div>
-                    {selected && <button className="button button-ghost button-sm" type="button" onClick={(event) => { event.preventDefault(); setModal({ type: 'connect', platform }); }}>Connect account</button>}
+                    <PlatformMark platform={platform.key} size={28} />
+                    <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}{connectionSummary?.label || 'Provider setup required for live connection'}</small>
+                      {selected && unavailableTargets.length > 0 && <small>{unavailableTargets.map((target) => target.accountLabel).join(' · ')} saved previously · unavailable for new drafts</small>}
+                      {selected && connectedAccounts.length > 0 && <fieldset className="pod-account-targets" onClick={(event) => event.stopPropagation()}>
+                        <legend>Draft targets</legend>
+                        {connectedAccounts.map((account) => <span key={account.providerAccountId}><input type="checkbox" aria-label={account.accountLabel} checked={selectedIds.has(account.providerAccountId)} disabled={Boolean(operationalMutation)} onChange={(event) => saveAccountTarget(platform.key, account.providerAccountId, event.target.checked)} />{account.accountLabel}</span>)}
+                      </fieldset>}
+                    </div>
+                    {selected && <button className="button button-ghost button-sm" type="button" disabled={connectionMutation === platform.key || connectionSummary?.status === 'unavailable'} onClick={(event) => { event.preventDefault(); connectPlatform(platform); }}>{connectionMutation === platform.key ? 'Opening…' : connectionSummary?.status === 'unavailable' ? 'Unavailable' : connectionSummary?.status === 'connected' ? 'Reconnect' : 'Connect account'}</button>}
                   </label>
                 );
               })}
             </div>
-            <p className="pod-honesty-note">Dovroyn can plan for 30+ platforms. Live sign-in and publishing become available one provider at a time after its developer app, permissions, and API review are configured.</p>
+            <p className="pod-honesty-note">Facebook Page and Instagram connections use Meta's Facebook Login route for page-linked professional accounts. Publishing remains unavailable until separate permissions, review, and approval are complete.</p>
           </div>
         );
       }
       case 'content': {
-        const contentPhoto = [...brandPhotos, ...assets.filter((asset) => asset.assetRole === 'campaign_asset')][0] || null;
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign, posted everywhere</h2><p className="subtle">The same approved campaign goes to every selected platform on the same day — with photos from the website gallery first, the asset folder second.</p></div><button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={generateContent}><Sparkles size={16} /> {contentGenerating ? 'Generating…' : 'Generate content'}</button></header>
-            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header>{contentPhoto && <img className="pod-post-photo" src={contentPhoto.preview} alt={contentPhoto.name} />}<small className="pod-photo-source">Photo source: {contentPhoto ? (contentPhoto.assetRole === 'brand_photo' ? 'website gallery (first)' : 'asset folder (extras)') : 'no photos yet — add website or campaign photos'}</small><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>)}</div>}
+            <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign. A creative for every channel.</h2><p className="subtle">Generate channel-specific copy, choose your imagery, then edit and approve the visual creative. Nothing is published from this screen.</p></div><button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={generateContent}><Sparkles size={16} /> {contentGenerating ? 'Generating…' : 'Generate content'}</button></header>
+            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => {
+              const targetText = (post.targetAccounts || []).length
+                ? post.targetAccounts.map((target) => `${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}`).join(' · ')
+                : (post.targetSaveFailed ? 'Account target not saved' : '');
+              const metaPost = isMetaOrganicProvider(post.platformKey);
+              const currentTargets = metaPost ? (post.targetAccounts || []).filter(targetIsCurrent) : [];
+              const completeCurrentTargets = currentTargets.length > 0 && currentTargets.length === (post.targetAccounts || []).length;
+              const canReviewExactMetaArtwork = metaPost && metaConnectionStatus.available === true && completeCurrentTargets && !post.targetSaveFailed;
+              return <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}{targetText ? ` · ${targetText}` : ''}</small></div><StatusPill>Draft</StatusPill></header>{canReviewExactMetaArtwork ? <CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} accessToken={session?.access_token} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /> : <p className="pod-honesty-note">{metaPost ? 'Exact Meta artwork review needs current saved Meta account targets and available private review storage. Save account targets, then regenerate or save drafts before review.' : 'This platform is planning-only in this release. Exact rendered Meta artwork review is available only for Facebook and Instagram posts with saved account targets.'}</p>}<p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>;
+            })}</div>}
           </div>
         );
       }
@@ -1070,10 +1403,9 @@ function LivePodWorkspace({ session, subscription }) {
         const [year, month] = calendarMonth.split('-').map(Number);
         const startOffset = (new Date(year, month - 1, 1).getDay() + 6) % 7;
         const daysInMonth = new Date(year, month, 0).getDate();
-        const calThumb = brandPhotos[0]?.preview || assets.find((asset) => asset.assetRole === 'campaign_asset')?.preview || '';
         return (
           <div className="pod-panel-stack">
-            <header className="pod-panel-heading"><div><p className="eyebrow">Visible month · {calendarMonth}</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. Saved calendar entries remain drafts until approved; provider publishing is unavailable.</p></div><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
+            <header className="pod-panel-heading"><div><p className="eyebrow">Visible month · {calendarMonth}</p><h2>Content calendar</h2><p className="subtle">Up to {plan.monthlyContentDays} content days per allowance month and {plan.weeklyPostingDays} posting days each week. New entries include a snapshot of matching approved artwork. Entries remain drafts; provider publishing is unavailable. Existing calendars are not rewritten when artwork changes.</p></div><button className="button button-primary" type="button" disabled={Boolean(operationalMutation)} onClick={createCalendar}><CalendarDays size={16} /> Generate calendar</button></header>
             <label className="pod-toggle"><input type="checkbox" checked={observancesEnabled} disabled={Boolean(operationalMutation)} onChange={(event) => saveObservances(event.target.checked)} /><span /><div><strong>Include selected religious observances</strong><small>Off by default. Dovroyn will never guess a user's religion. No observances are selected unless you supply them.</small></div></label>
             {monthItems.length ? (
               <div className="pod-cal-grid" aria-label={`Saved content calendar for ${calendarMonth}`}>
@@ -1083,15 +1415,20 @@ function LivePodWorkspace({ session, subscription }) {
                   const date = index + 1;
                   const dateItems = monthItems.filter((item) => item.scheduled_date === `${calendarMonth}-${String(date).padStart(2, '0')}`);
                   const isPostDay = dateItems.length > 0;
+                  const artwork = resolveCalendarCreative(dateItems[0], { podId: pod.id, assets, sourceMedia: analysis?.source_media || [] });
+                  const targetBadges = dateItems.flatMap((item) => {
+                    const targets = decodeCalendarTargets(item.creative_note);
+                    return targets.length ? targets.map((target) => ({ item, target })) : [{ item, target: null }];
+                  });
                   return (
                     <div key={date} className={`pod-cal-day${isPostDay ? ' pod-cal-post' : ''}`}>
                       <span className="pod-cal-date">{date}</span>
                       {isPostDay && (
                         <>
-                          <span className="pod-cal-thumb">{calThumb ? <img src={calThumb} alt="" /> : <Sparkles size={14} />}</span>
-                          <strong>{dateItems[0].caption || dateItems[0].content_type}</strong>
+                          <span className="pod-cal-thumb">{artwork?.imageUrl ? <img src={artwork.imageUrl} alt="" /> : <Sparkles size={14} />}</span>
+                          <strong>{artwork?.snapshot.headline || dateItems[0].caption || dateItems[0].content_type}</strong>
                           <small>{[...new Set(dateItems.map((item) => item.status))].join(' · ')}</small>
-                          <span className="pod-cal-badges">{[...new Set(dateItems.map((item) => item.platform))].map((key) => <span key={key}>{getPlatform(key)?.name || key}</span>)}</span>
+                          <span className="pod-cal-badges">{[...new Map(targetBadges.map(({ item, target }) => [target ? `${item.platform}:${target.providerAccountId}` : item.platform, `${getPlatform(item.platform)?.name || item.platform}${target ? ` · ${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}` : ''}`])).entries()].map(([key, label]) => <span key={key}>{label}</span>)}</span>
                         </>
                       )}
                     </div>
@@ -1099,6 +1436,32 @@ function LivePodWorkspace({ session, subscription }) {
                 })}
               </div>
             ) : <EmptyState icon={CalendarDays} title="Calendar not generated" body="Generate content drafts first, then the pod can place them within the paid allowance period." />}
+            {monthItems.length > 0 && <section className="calendar-artwork-list" aria-label="Saved calendar artwork">{monthItems.map((item, index) => {
+              const creative = resolveCalendarCreative(item, { podId: pod.id, assets, sourceMedia: analysis?.source_media || [] });
+              const targets = decodeCalendarTargets(item.creative_note);
+              const targetLabel = targets.map((target) => `${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}`).join(' · ');
+              return <details key={item.id || index}><summary>{item.scheduled_date} · {getPlatform(item.platform)?.name || item.platform}{targetLabel ? ` · ${targetLabel}` : ''} · {creative ? 'Saved artwork' : 'Caption only'}</summary>
+                {creative ? <><div className="calendar-artwork-preview">{creative.imageUrl && <img src={creative.imageUrl} alt={creative.imageAlt} />}<h3>{creative.snapshot.headline}</h3><p>{creative.snapshot.call_to_action}</p></div><small>Artwork snapshot approved {new Date(creative.snapshot.approved_at).toLocaleDateString()}. Calendar status: {item.status}. This does not authorise publishing.</small></> : <p>No matching approved artwork snapshot is available for this entry.</p>}
+                <p>{item.caption}</p></details>;
+            })}</section>}
+            {monthItems.length > 0 && <section className="calendar-publish-review" aria-label="Meta publishing review">
+              <header><div><small>Publishing approval</small><h3>Review exact exported images before queueing</h3></div></header>
+              <div className="calendar-publish-dates">{[...new Set(monthItems.map((item) => item.scheduled_date))].map((date) => <button key={date} className="button button-ghost button-sm" type="button" disabled={calendarPublishReview?.status === 'preparing' || calendarPublishReview?.status === 'confirming'} onClick={() => prepareCalendarPublishing(date)}>{calendarPublishReview?.date === date && calendarPublishReview?.status === 'preparing' ? 'Preparing...' : `Review ${date}`}</button>)}</div>
+              {calendarPublishReview?.status === 'error' && <p role="alert" className="pod-honesty-note">{calendarPublishReview.error}</p>}
+              {calendarPublishReview && ['ready', 'confirming', 'queued', 'blocked'].includes(calendarPublishReview.status) && <article className="calendar-publish-candidate">
+                <header><div><small>{calendarPublishReview.date} · {calendarPublishReview.timezone}</small><h3>{formatUtcDateTime(calendarPublishReview.scheduledAt)}</h3></div><StatusPill>{calendarPublishReview.status}</StatusPill></header>
+                <div className="calendar-publish-entries">{(calendarPublishReview.entries || []).map((entry) => {
+                  const outcome = publishingEntryOutcome(calendarPublishReview, entry);
+                  return <div key={entry.reviewEntryId} className="calendar-publish-entry">
+                    <img src={entry.imageUrl} alt={`${entry.accountLabel} reviewed artwork`} onLoad={() => markCalendarPublishImageLoaded(entry.reviewEntryId, calendarPublishReview.token, calendarPublishReview.generation, true)} onError={() => markCalendarPublishImageLoaded(entry.reviewEntryId, calendarPublishReview.token, calendarPublishReview.generation, false)} />
+                    <div><strong>{entry.accountLabel}</strong><small>{getPlatform(entry.provider)?.name || entry.provider} · {entry.outputHash?.slice(0, 12)}</small><p>{entry.caption}</p>{outcome && <small>Queue status: {outcome.label} · {outcome.detail}</small>}</div>
+                  </div>;
+                })}</div>
+                {calendarPublishReview.imageError && <p role="alert" className="pod-honesty-note">{calendarPublishReview.imageError}</p>}
+                {calendarPublishReview.status === 'blocked' && <p role="alert" className="pod-honesty-note">Some accounts were not queued: {(calendarPublishReview.failures || []).map((failure) => failure.reason).join(' · ')}</p>}
+                {calendarPublishReview.status === 'queued' ? <p className="pod-decision-note">Publishing approval is queued for the exact reviewed time. Provider dispatch still depends on the inactive scheduler activation gates.</p> : calendarPublishReview.status === 'blocked' ? <button className="button button-ghost button-sm" type="button" onClick={() => prepareCalendarPublishing(calendarPublishReview.date)}>Prepare again</button> : <button className="button button-primary button-sm" type="button" disabled={calendarPublishReview.status === 'confirming' || (calendarPublishReview.loadedEntryIds?.size || 0) !== (calendarPublishReview.entries?.length || 0)} onClick={confirmCalendarPublishing}>{calendarPublishReview.status === 'confirming' ? 'Confirming...' : 'Confirm publishing approval'}</button>}
+              </article>}
+            </section>}
           </div>
         );
       }
@@ -1131,9 +1494,10 @@ function LivePodWorkspace({ session, subscription }) {
         </div>
       )}
       <Link to="/pods" className="pod-back-link">&larr; Pods</Link><header className="pod-workspace-topbar">
-        <div className="pod-workspace-title"><span className="pod-brand-orb"><Sparkles size={18} /></span><div><p className="eyebrow">{pod.brand_name || pod.pod_type}</p><h1>{pod.pod_name}</h1></div></div>
+        <div className="pod-workspace-title"><span className="pod-brand-orb">{logoAssets[0]?.preview ? <img src={logoAssets[0].preview} alt="Brand logo" /> : <Sparkles size={18} />}</span><div><p className="eyebrow">{pod.brand_name || pod.pod_type}</p><h1>{pod.pod_name}</h1></div></div>
         <div className="pod-workspace-actions"><StatusPill tone={directionApproved ? 'green' : 'gold'}>{directionApproved ? 'Direction approved' : 'AI brain ready'}</StatusPill><button className="pod-command-trigger" type="button" onClick={() => setPaletteOpen(true)}><Command size={15} /> Commands <kbd>Ctrl K</kbd></button></div>
       </header>
+      <PodJourney activeTab={activeTab} />
       <div className="pod-workspace-body">
         <aside className="pod-workspace-nav" aria-label="Pod sections">{TAB_GROUPS.map((group) => <div key={group.label}><p>{group.label}</p>{group.items.map(([key, label, Icon]) => <button key={key} className={activeTab === key ? 'active' : ''} type="button" onClick={() => setActiveTab(key)}><Icon size={16} /><span>{label}</span></button>)}</div>)}</aside>
         <main className="pod-workspace-panel">{renderPanel()}</main>
@@ -1141,11 +1505,18 @@ function LivePodWorkspace({ session, subscription }) {
       {notice && <div className="pod-toast" role="status"><Check size={16} />{notice}</div>}
       <PodCommandPalette open={paletteOpen} commands={commands} onClose={() => setPaletteOpen(false)} />
       <PodModal open={modal?.type === 'override'} title="Teach this pod your direction" description="The AI will readjust its tone and future output, then ask you to approve again." onClose={() => { if (!actionPending('direction')) setModal(null); }}><label className="pod-modal-field">What should change?<textarea rows={5} value={overrideText} disabled={Boolean(directionMutation) || contentGenerating} onChange={(event) => setOverrideText(event.target.value)} placeholder="For example: make the tone more direct and less luxurious…" /></label><div className="pod-action-row"><button className="button button-primary" type="button" disabled={!overrideText.trim() || Boolean(directionMutation) || contentGenerating} onClick={saveOverride}>{directionMutation === 'override' ? 'Saving direction…' : 'Save and readjust'}</button><button className="button button-ghost" type="button" disabled={Boolean(directionMutation) || contentGenerating} onClick={() => setModal(null)}>Cancel</button></div></PodModal>
-      <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in needs the provider app ID, permissions, redirect URL, token encryption, and platform approval before this button can safely open OAuth.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
-      <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, one logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
+      <PodModal open={modal?.type === 'connect'} title={`Connect ${modal?.platform?.name || 'account'}`} description="Account connection must use the platform's official authorisation screen." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Provider setup is not live yet</strong><p>Dovroyn can already plan {modal?.platform?.name} content. Live sign-in will become available for each provider after its developer app, permissions, redirect URL, token encryption, and platform approval are configured.</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Understood</button></PodModal>
+      <PodModal open={modal?.type === 'connect-error'} title={`Connect ${modal?.platform?.name || 'account'}`} description="The connection did not start." onClose={() => setModal(null)}><div className="pod-provider-message"><Globe2 /><div><strong>Meta connection unavailable</strong><p>{modal?.message || 'Check the server configuration and try again.'}</p></div></div><button className="button button-ghost" type="button" onClick={() => setModal(null)}>Close</button></PodModal>
+      <PodModal open={modal?.type === 'meta-selection'} title="Choose Meta accounts" description="Select the Facebook Page and Instagram account to connect to this pod." onClose={() => { if (!connectionMutation) setModal(null); }}>
+        <label className="pod-modal-field">Facebook Page<select value={modal?.facebookPageId || ''} disabled={Boolean(connectionMutation)} onChange={(event) => setModal({ ...modal, facebookPageId: event.target.value })}><option value="">Do not connect a Facebook Page</option>{(modal?.selection?.pages || []).map((page) => <option key={page.id} value={page.id} disabled={!page.pageCredentialAvailable}>{page.label}{page.pageCredentialAvailable ? '' : ' (Page credential unavailable)'}</option>)}</select></label>
+        <label className="pod-modal-field">Instagram account<select value={modal?.instagramAccountId || ''} disabled={Boolean(connectionMutation)} onChange={(event) => setModal({ ...modal, instagramAccountId: event.target.value })}><option value="">Do not connect an Instagram account</option>{(modal?.selection?.instagramAccounts || []).map((account) => <option key={account.id} value={account.id}>{account.label}{account.pageLabel ? ` (${account.pageLabel})` : ''}</option>)}</select></label>
+        {modal?.message && <p className="pod-decision-note">{modal.message}</p>}
+        <div className="pod-action-row"><button className="button button-primary" type="button" disabled={Boolean(connectionMutation)} onClick={saveMetaSelection}>{connectionMutation === 'meta-selection' ? 'Saving…' : 'Save selection'}</button><button className="button button-ghost" type="button" disabled={Boolean(connectionMutation)} onClick={() => setModal(null)}>Cancel</button></div>
+      </PodModal>
+      <PodModal open={modal?.type === 'missing-source'} title="Complete the pod inputs first" description={modal?.message || 'Add one primary source, an optional logo, and no more than five brand photos.'} onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('sources'); }}>Complete pod inputs</button></PodModal>
       <PodModal open={modal?.type === 'analysis-first'} title="Run the analysis first" description="Content must come from this pod's website, photos, and approved direction." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Go to AI direction</button></PodModal>
       <PodModal open={modal?.type === 'approval-first'} title="Approve the direction first" description="This prevents the AI from filling the pod with content based on a direction you do not want." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('direction'); }}>Review direction</button></PodModal>
-      <PodModal open={modal?.type === 'content-first'} title="Generate content first" description="The calendar schedules approved platform-specific drafts." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('content'); }}>Open social content</button></PodModal>
+      <PodModal open={modal?.type === 'content-first'} title="Generate content first" description="The calendar organises platform-specific draft captions on the same campaign dates." onClose={() => setModal(null)}><button className="button button-primary" type="button" onClick={() => { setModal(null); setActiveTab('content'); }}>Open social content</button></PodModal>
       <PodModal open={modal?.type === 'invite'} title="Invite a collaborator" description="Invitations will be sent only after private pod-membership policies and email delivery are enabled." onClose={() => setModal(null)}><label className="pod-modal-field">Email address<input type="email" placeholder="collaborator@example.com" /></label><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Invite saved as pending setup; no email was sent.')}>Save pending invite</button></PodModal>
       <PodModal open={modal?.type === 'launch'} title="Coming-soon draft created" description="The page stays private until publishing infrastructure and its address are configured." onClose={() => setModal(null)}><div className="pod-provider-message"><Mail /><div><strong>Draft ready inside this pod</strong><p>The page uses the approved brand direction and stores email captures separately from marketing content.</p></div></div><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Coming-soon page draft saved.')}>Save page draft</button></PodModal>
     </section>

@@ -1,0 +1,102 @@
+{
+  "routes": [
+    {
+      "path": "/",
+      "result": "rendered"
+    },
+    {
+      "path": "/pricing",
+      "result": "rendered"
+    },
+    {
+      "path": "/login",
+      "result": "rendered"
+    },
+    {
+      "path": "/signup",
+      "result": "rendered"
+    },
+    {
+      "path": "/demo-pod",
+      "result": "rendered"
+    },
+    {
+      "path": "/privacy",
+      "result": "rendered"
+    },
+    {
+      "path": "/terms",
+      "result": "rendered"
+    },
+    {
+      "path": "/contact",
+      "result": "rendered"
+    }
+  ],
+  "tabs": [
+    "Website & photos",
+    "AI analysis & review",
+    "Overview",
+    "Pod AI",
+    "Assets",
+    "Social accounts",
+    "Social content",
+    "Calendar",
+    "Campaigns",
+    "Analytics",
+    "Collaborations",
+    "Coming soon",
+    "Budget & ads",
+    "Competitor Watch",
+    "Learning History"
+  ],
+  "accessibility": [
+    {
+      "surface": "home",
+      "width": 1440,
+      "violations": []
+    },
+    {
+      "surface": "pod-platforms",
+      "width": 1440,
+      "violations": []
+    },
+    {
+      "surface": "home",
+      "width": 390,
+      "violations": []
+    },
+    {
+      "surface": "pod-platforms",
+      "width": 390,
+      "violations": []
+    }
+  ],
+  "overflow": [
+    {
+      "surface": "home",
+      "width": 1440,
+      "overflow": false
+    },
+    {
+      "surface": "calendar",
+      "width": 1440,
+      "overflow": false
+    },
+    {
+      "surface": "home",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "surface": "calendar",
+      "width": 390,
+      "overflow": false
+    }
+  ],
+  "fixture": {
+    "creative": "edit, save, approve, caption invalidation and failed-save boundaries passed",
+    "intake": "URL without logo valid; photos-only without photos invalid"
+  },
+  "errors": []
+}

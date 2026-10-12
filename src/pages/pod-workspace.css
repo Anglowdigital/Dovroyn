@@ -279,6 +279,9 @@ kbd {
 .pod-post-card header > div { display: grid; gap: 0.2rem; }
 .pod-post-card small { color: var(--muted); font-size: 0.64rem; }
 .pod-post-card textarea { width: 100%; padding: 0.7rem; resize: vertical; line-height: 1.45; }
+.creative-render-review { margin: 0; display: grid; gap: 0.4rem; }
+.creative-render-review img { width: min(260px, 100%); aspect-ratio: 4 / 5; object-fit: contain; border: 1px solid var(--gold-border); border-radius: 8px; background: var(--card); }
+.creative-render-review figcaption { color: var(--muted); font-size: 0.64rem; }
 .pod-demo-post-copy { padding: 0.75rem; border: 1px solid var(--gold-border); border-radius: 10px; color: var(--navy-65); background: var(--panel); white-space: pre-wrap; line-height: 1.5; }
 
 .pod-toggle { width: fit-content; display: flex; align-items: center; gap: 0.65rem; cursor: pointer; }
@@ -431,6 +434,28 @@ kbd {
 .pod-platform-select p { margin: 0.15rem 0; color: var(--navy-65); font-size: 0.72rem; }
 .pod-platform-select small { color: var(--muted); font-size: 0.62rem; }
 .pod-platform-select .button { grid-column: 1 / -1; justify-self: start; }
+.pod-account-targets {
+  grid-column: 1 / -1;
+  border: 0;
+  padding: 0.35rem 0 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.7rem;
+}
+.pod-account-targets legend {
+  width: 100%;
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+.pod-account-targets span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--navy);
+  font-size: 0.68rem;
+}
+.pod-account-targets input { margin: 0; }
 
 /* ─── Post photos ─── */
 .pod-post-photo {

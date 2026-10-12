@@ -1,0 +1,80 @@
+# Dovroyn visual and own-site review package
+
+Branch: `feat/editorial-visual-upgrade`, isolated from main `fbf4dd9`.
+Scope expanded by the parent during implementation from visual-only work to optional-logo URL intake, source evidence, and editable visual creative review. No other repository or stalled working branch was changed.
+
+## Implemented
+
+- Benefit-led cream/ivory/navy/gold homepage with locally bundled Playfair Display, layered image/creative previews and working signup/demo CTAs.
+- Original Dovroyn promotional concepts using the existing Dovroyn logo and actual interface captures. These are review concepts, not published advertisements.
+- Pod workflow strip; uploaded brand logos and photography on real pod library cards; real persisted status labels; platform glyphs in brand colours; source gallery, responsive creative and calendar layouts.
+- URL intake no longer requires a logo. Photos-only intake still requires photos. New pods open Sources; existing analysed pods open Analysis & Review.
+- Bounded observed website metadata and same-origin images are returned with provenance and persisted. Accessible SPA shells are explicitly labelled metadata-only. No browser rendering is claimed. Dovroyn source extraction excludes its fictional Aurora demo assets.
+- Per-post visual creative editor using uploaded/observed assets, editable headline and CTA, persisted drafts and explicit approval. Signed storage URLs are not persisted. Captions are snapshotted; caption or creative edits invalidate the displayed approval. Nothing is published or scheduled by approval.
+
+## Evidence
+
+Production build succeeds. `npm test`: **286 passing, 0 failing**. `git diff --check` clean.
+
+[Browser results](browser-checks.json): all eight linked public routes rendered; all 15 demo tabs and wrapping arrow/Home navigation worked; no browser JavaScript errors; no page overflow at 1440px/390px. Axe WCAG 2 A/AA + 2.1 AA checks report zero violations on the homepage and pod-platform screen at both widths. This is an automated scan, not a claim of complete accessibility certification.
+
+Controlled UI fixture checks verify editable creative, persisted-save response handling, explicit approval, caption invalidation and failed-save errors. URL intake is browser-valid without a logo; photos-only intake without photos is invalid. A controlled Supabase fixture also exercises the full URL-only create handler, confirms no logo upload is attempted and verifies navigation to the new pod. These are **local fixtures, not live account verification**.
+
+| Surface | Desktop | Mobile |
+| --- | --- | --- |
+| Homepage | [Screenshot](screenshots/home-desktop.png) | [Screenshot](screenshots/home-mobile.png) |
+| Pod source gallery | [Screenshot](screenshots/pod-desktop.png) | [Screenshot](screenshots/pod-mobile.png) |
+| Pod platforms | [Screenshot](screenshots/platforms-desktop.png) | [Screenshot](screenshots/platforms-mobile.png) |
+| Pod calendar | [Screenshot](screenshots/calendar-desktop.png) | [Screenshot](screenshots/calendar-mobile.png) |
+| Source intake (fixture) | [Screenshot](screenshots/source-intake-fixture.png) | [Screenshot](screenshots/source-intake-mobile-fixture.png) |
+
+[Pod library fixture](screenshots/pod-library-fixture.png) · [Editable creative fixture](screenshots/creative-editor-fixture.png) · [Brand ad concept](screenshots/dovroyn-ad-brand.png) · [Direction ad concept](screenshots/dovroyn-ad-direction.png)
+
+## Integration ownership
+
+Meta PR #48 was inspected read-only at `8785e7f73af185b98e3b0522e70f316162d8d004`; it is not merged here. A three-way file merge against the shared base finds two conflicts in `src/pages/PodWorkspace.jsx`:
+
+1. Platform selection row: retain Meta connection summary/button/handler and use this branch's `PlatformMark` in place of the old two-letter monogram.
+2. Adjacent modal definitions: retain Meta's connect/error modals and this branch's optional-logo source message and truthful draft-calendar message.
+
+Both branches also extend the existing UI test harness module maps; keep the added stubs/imports from both. This branch changes `App.jsx` only at imports, hero placement, promotional examples, sample labels and platform icon presentation. Styling is in `visual-upgrade.css`; `index.css` only loses the external Google Fonts import. No Meta backend/auth files or pricing/entitlement rules are changed.
+
+## Remaining blockers and tracked gaps
+
+- **Not merged or deployed.** Parent reconciliation/review and verified production smoke test remain required.
+- **Native screenshot delivery blocked.** The supported Library batch-upload helper failed before preparation with `hosted apps tools/list request failed: network`, including a retry with additional permissions. No upload sessions or Library file IDs were created. Parent can upload the committed PNGs from a functioning Library environment.
+- **Reference pixels unreviewed.** Library `libfile_31af108c90ec819198b8c6a0f9aadcd1` was prepared with a consumer-local destination, but its supported transfer failed to download readable bytes. A fresh-helper retry, including additional permissions, again returned `library file transfer failed: download failed`. No claim of pixel fidelity to `44386.jpg` is made.
+- **Live own-site run unverified.** No authenticated Dovroyn session or configured local app environment was supplied. Container requests to dovroyn.com and its logo were denied with proxy HTTP 403; this does not establish that production extraction is blocked. Parent must create a real Dovroyn URL pod, run server-side AI analysis, review actual source details, save/restore creative and verify tier behavior in the live account after integration.
+- **Calendar artwork linkage:** newly generated entries preserve matching saved artwork approvals in the existing `creative_note` field, with a resolvable image reference, headline, CTA and approval timestamp. No signed storage URL is persisted. Dates, counts and draft publishing status stay unchanged. Expandable entries show the saved snapshot or explicitly say caption only. Existing calendars are not rewritten; refreshing old entries and provider execution remain outside this change. Five additional tests cover scope, stale captions, missing media, chronology and same-date counts.
+- **Video generation and real coming-soon publishing remain absent.** Existing photos-only input is preserved. No new image/video provider call, OAuth grant, spend, social publishing or recurring promotion is performed.
+- URL-only pod cards use initials until a logo is uploaded; observed source imagery is available for review/creative selection inside the pod. No guessed logo is substituted.
+
+## Asset provenance
+
+`public/dovroyn-logo.png` is the pre-existing supplied logo. `public/demo/aurora-products.png` is newly AI-generated **fictional demonstration imagery**, not a customer/product result. `pod-*-preview.png` files capture the actual read-only fictional demo UI. Font files are from `@fontsource/playfair-display` 5.3.0; the OFL licence is included in `public/fonts/`.
+
+## Reproduce the local browser checks
+
+Start `npm run dev -- --host 0.0.0.0 --port 4173`. With Playwright, Chromium and axe-core available, run `node docs/visual-upgrade/browser-check.cjs` and `node docs/visual-upgrade/intake-check.cjs` from the repository root. Optional `PLAYWRIGHT_MODULE`, `CHROMIUM_PATH` and `AXE_SCRIPT` environment variables select existing tool installations without changing package dependencies. The development-only fixture files use explicitly intercepted I/O in these scripts; they are not a live-login bypass or production route.
+
+## Follow-up review
+
+Fixed the pod library cover/body overlap by replacing the legacy fixed grid row with automatic sizing. Brand and pod names now appear inside the cover and the pod title remains visible below; an 88px mark/initials fallback avoids an anonymous empty cover. Browser assertions check title bounds, mark size and mobile overflow. See `screenshots/pod-library-mobile-fixture.png` as well as the updated desktop capture.
+
+The first campaign concept now leads with labelled fictional product imagery alongside the actual source-review UI instead of two small-text interface captures. No performance claim was added.
+
+Free-analysis claim checked against repository implementation: `src/lib/plans.js` grants one free pod; `20261001071256_customer_onboarding_reconciliation.sql` replaces the former paid-only pod creation gate with a one-pod default. `api/ai/analyze.js` checks authentication, ownership and unlocked source, with no subscription requirement; `public.finalize_pod_analysis` likewise checks ownership/source rather than paid entitlement. No gates/pricing changed. Applied production migrations and a real free-account analysis remain unverified from this environment.
+
+## Independent security and workflow review
+
+A separate reviewer examined `e23f597` and independently ran 286 tests/build. The review found a release-blocking discrepancy: the newest database finalization function still required a logo. `20261011233000_optional_logo_analysis.sql` removes only that clause from the latest function, retaining owner checks, row locking, source locking, photos-only minimum, valid payload checks, invoker security and grants. **Apply this forward migration before deploying optional-logo intake.** No production migration was applied here.
+
+`verify-optional-logo.cjs` executes the actual migration function in isolated PostgreSQL using PGlite with a minimal schema. Run with `PGLITE_MODULE=/path/to/@electric-sql/pglite node docs/visual-upgrade/verify-optional-logo.cjs`. URL/no-logo success, photos-only minimum, source locks, wrong owner, invalid source type, payload failure atomicity and invoker security passed. This is not a production RLS/deployment smoke test.
+
+The independent review found no additional introduced blocker. Existing page extraction retains pinned DNS, per-redirect checks, encoded/decoded body limits and per-hop timeouts. The pre-existing lack of a total multi-page crawl deadline remains a deployment timeout risk. Source media is observed from markup, not fetched server-side. Uploaded creative snapshots persist storage paths, not signed URLs.
+
+Meta auth/start/callback routes are absent in this branch. Connect opens an explicit provider-setup-unavailable modal without an OAuth request, token write or success state. This branch is safely independent of Meta implementation, but cannot provide working platform connections.
+
+Flow: NewPod saves source inputs and opens Sources. The next primary action is Analyse and lock pod; analysis is not automatic. Success opens AI analysis & review. Content generation retains analysis/direction approval gates. Corrected a pre-existing absolute claim about website photos being used automatically; imagery is explicitly chosen during creative review.
+
+Vercel reported READY for reviewed head `e23f597` at `https://dovroyn-m0y1ih6v8-anglowdigital.vercel.app`. This confirms preview build, not authenticated behavior or database compatibility. A refreshed preview must be checked after the migration fix commit. No production deployment or merge was performed.

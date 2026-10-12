@@ -6,6 +6,7 @@ import * as lifecycle from '../src/lib/podLifecycle.js';
 import { createClient } from '@supabase/supabase-js';
 import * as direction from '../src/lib/podDirection.js';
 import * as state from '../src/lib/podState.js';
+import * as calendarCreative from '../src/lib/calendarCreative.js';
 import * as platforms from '../src/lib/platforms.js';
 import * as setup from '../src/lib/podSetup.js';
 import * as demo from '../src/lib/demoPod.js';
@@ -117,10 +118,14 @@ async function uiHarness(first, { request, load = async () => first, demoMode = 
     useEffect(fn, deps) { const i = cursor++; if (!slots[i] || deps.some((dep, index) => dep !== slots[i][index])) { slots[i] = deps; effects.push(() => { cleanups.get(i)?.(); cleanups.set(i, fn()); }); } },
   };
   const modules = {
+    '../components/PlatformMark': { default: () => null },
+    '../components/pod/PodJourney': { default: () => null },
+    '../components/pod/CreativeReview': { default: () => null },
     react: hooks, 'react-router-dom': { Link: ({ children }) => h('a', {}, children), useParams: () => ({ podId }) }, 'lucide-react': new Proxy({}, { get: () => () => null }),
-    '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction, '../lib/podState': state, '../lib/podLearning': learning,
+    '../lib/supabaseClient': { supabaseConfigured: true }, '../lib/podDirection': direction, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup, '../lib/demoPod': demo,
+    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, isMetaOrganicProvider: (provider) => ['instagram', 'facebook'].includes(provider), loadMetaAccountSelection: async () => ({ pages: [], instagramAccounts: [] }), loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), selectMetaAccounts: async () => ({}), summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }) },
     '../lib/aiClient': { requestCompetitorSnapshot: async (...args) => { requests++; return request(...args); } },
     '../lib/podRepository': { ...repository({}), loadPodWorkspace: load }, '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };

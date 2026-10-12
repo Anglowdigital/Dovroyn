@@ -4,6 +4,7 @@ import { normalizePodLearning, selectPodCompetitorSnapshot } from './podLearning
 import {
   loadOperationalCollections, persistPlatformSelection, persistCalendarItems,
   persistCampaignDecision, persistBudgetPlan, persistPreferenceDecision, persistHolidayPreference,
+  persistAccountTargetSelection, persistPostTargetSnapshots,
 } from './podState.js';
 
 function requireSupabase() {
@@ -17,6 +18,10 @@ function throwIfError(error) {
 
 function structuredPreferenceValue(value) {
   return value !== null && typeof value === 'object' ? value : { value };
+}
+
+function isUuid(value) {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export function selectWebsiteIntelligenceSnapshot(preferences = [], podId) {
@@ -48,6 +53,7 @@ export function selectWebsiteIntelligenceSnapshot(preferences = [], podId) {
 const WEBSITE_INTELLIGENCE_FIELDS = [
   'brand_colours', 'geography', 'products_services', 'visual_style', 'site_structure', 'best_landing_pages',
   'weak_pages', 'seo_opportunities', 'content_opportunities', 'audience_fit',
+  'source_pages', 'source_media', 'source_warnings',
 ];
 
 function isRecord(value) {
@@ -59,6 +65,11 @@ function stringList(value) {
 }
 
 function validIntelligenceField(field, value) {
+  if (field === 'source_pages') return Array.isArray(value) && value.every((item) => isRecord(item)
+    && typeof item.url === 'string' && typeof item.title === 'string' && ['page_text', 'metadata_only'].includes(item.extraction_mode));
+  if (field === 'source_media') return Array.isArray(value) && value.every((item) => isRecord(item)
+    && typeof item.url === 'string' && /^https?:\/\//i.test(item.url) && typeof item.source_url === 'string'
+    && typeof item.alt === 'string' && ['brand_logo', 'source_image'].includes(item.role) && item.approval_status === 'needs_review');
   if (['visual_style', 'audience_fit'].includes(field)) return typeof value === 'string';
   if (field === 'brand_colours') return Array.isArray(value) && value.every((item) => isRecord(item)
     && typeof item.name === 'string' && typeof item.hex === 'string' && /^#(?:[a-f\d]{3}|[a-f\d]{6}|[a-f\d]{8})$/i.test(item.hex));
@@ -250,6 +261,8 @@ export async function saveWebsiteIntelligenceSnapshot(podId, analysis, savePrefe
 }
 
 export const savePlatformSelection = (podId, keys) => persistPlatformSelection(requireSupabase(), podId, keys);
+export const saveAccountTargetSelection = (podId, targets) => persistAccountTargetSelection(requireSupabase(), podId, targets);
+export const savePostTargetSnapshots = (podId, snapshots) => persistPostTargetSnapshots(requireSupabase(), podId, snapshots);
 export const saveCalendarItems = (podId, items) => persistCalendarItems(requireSupabase(), podId, items);
 export const saveCampaignDecision = (podId, decision) => persistCampaignDecision(requireSupabase(), podId, decision);
 export const saveBudgetPlan = (podId, plan) => persistBudgetPlan(requireSupabase(), podId, plan);
@@ -265,16 +278,29 @@ export async function savePodDirectionOverride(podId, value) {
 }
 
 export async function saveSocialPosts(podId, posts) {
-  const rows = posts.map((post) => ({
-    pod_id: podId,
-    platform: post.platformKey,
-    body: post.content,
-    status: 'draft',
-    generation_date: new Date().toISOString().slice(0, 10),
-  }));
+  const rows = posts.map((post) => {
+    if (!isUuid(post.id)) throw new Error('Social post drafts require stable client IDs.');
+    return {
+      id: post.id,
+      pod_id: podId,
+      platform: post.platformKey,
+      body: post.content,
+      status: 'draft',
+      generation_date: new Date().toISOString().slice(0, 10),
+    };
+  });
   const { data, error } = await requireSupabase().from('social_posts').insert(rows).select();
   throwIfError(error);
-  return data || [];
+  const returned = Array.isArray(data) ? data : [];
+  if (returned.length !== rows.length) throw new Error('social_posts write could not be fully confirmed.');
+  const byId = new Map(returned.map((row) => [row.id, row]));
+  for (const row of rows) {
+    const saved = byId.get(row.id);
+    if (!saved || saved.pod_id !== row.pod_id || saved.platform !== row.platform || saved.body !== row.body || saved.status !== 'draft') {
+      throw new Error('social_posts write returned mismatched rows.');
+    }
+  }
+  return rows.map((row) => byId.get(row.id));
 }
 
 export async function updateSocialPost(postId, body) {

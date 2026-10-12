@@ -1,8 +1,10 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
 import { canCreatePod, getPlan } from '../lib/plans';
 import { uploadPodAsset } from '../lib/podRepository';
+import SelectedFilePreview from '../components/pod/SelectedFilePreview';
+import PodJourney from '../components/pod/PodJourney';
 import { DOVROYN_POD_PRESET, MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 
 export default function NewPodPage({ session, subscription }) {
@@ -18,6 +20,7 @@ export default function NewPodPage({ session, subscription }) {
   const [logoFile, setLogoFile] = useState(null);
   const logoInputRef = useRef(null);
   const [photoFiles, setPhotoFiles] = useState([]);
+  const previewFiles = useMemo(() => [logoFile, ...photoFiles].filter(Boolean), [logoFile, photoFiles]);
   const [saving, setSaving] = useState(false);
   const [presetLoading, setPresetLoading] = useState(false);
   const [error, setError] = useState('');
@@ -39,7 +42,7 @@ export default function NewPodPage({ session, subscription }) {
       setLogoFile(new File([blob], 'dovroyn-logo.png', { type: blob.type || 'image/png' }));
     } catch {
       setLogoFile(null);
-      setError('Dovroyn details were loaded. Select the existing Dovroyn logo before creating the pod.');
+      setError('Dovroyn details were loaded. You can continue with its website URL or upload the existing Dovroyn logo.');
     } finally {
       setPresetLoading(false);
     }
@@ -120,7 +123,7 @@ export default function NewPodPage({ session, subscription }) {
       const { error: budgetError } = await supabase.from('budgets').insert({ pod_id: data.id });
       if (budgetError) preferencesSaved = false;
       try {
-        await uploadPodAsset({ userId: session.user.id, podId: data.id, file: logoFile, assetRole: 'logo' });
+        if (logoFile) await uploadPodAsset({ userId: session.user.id, podId: data.id, file: logoFile, assetRole: 'logo' });
         await Promise.all(photoFiles.map((file) => uploadPodAsset({
           userId: session.user.id,
           podId: data.id,
@@ -147,11 +150,11 @@ export default function NewPodPage({ session, subscription }) {
   };
 
   return (
-    <div className="page-stack">
+    <div className="page-stack editorial-pod-setup">
       <header className="section-header panel">
         <div>
           <p className="eyebrow">Create Pod</p>
-          <h3>Create a new AI marketing pod</h3>
+          <h3>Give your brand a place to begin.</h3>
           <p className="subtle">
             Each pod belongs to one brand source. After the first analysis, that source is permanently locked to this pod.
           </p>
@@ -162,6 +165,7 @@ export default function NewPodPage({ session, subscription }) {
         <p className="form-error" style={{ padding: '0.5rem' }}>{error}</p>
       )}
 
+      <PodJourney activeTab="sources" />
       <form className="card-form panel" onSubmit={handleCreate}>
         <div className="pod-action-row">
           <button className="button button-ghost" type="button" disabled={saving || presetLoading} onClick={loadDovroynPreset}>
@@ -189,11 +193,12 @@ export default function NewPodPage({ session, subscription }) {
             />
           </label>
 
-          <label>What should this pod analyse?</label>
-          <div className="campaign-type-buttons" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
+          <p className="source-type-label" id="source-type-label">What should this pod analyse?</p>
+          <div role="group" aria-labelledby="source-type-label" className="campaign-type-buttons" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
             {POD_SOURCE_TYPES.map((source) => (
               <button
                 key={source.value}
+                aria-pressed={form.sourceType === source.value}
                 type="button"
                 className={`button ${form.sourceType === source.value ? 'button-primary' : 'button-ghost'}`}
                 onClick={() => setForm((previous) => ({ ...previous, sourceType: source.value, sourceUrl: source.value === 'photos' ? '' : previous.sourceUrl }))}
@@ -217,16 +222,15 @@ export default function NewPodPage({ session, subscription }) {
           )}
 
           <label>
-            Brand logo
+            Brand logo (optional)
             <input
               ref={logoInputRef}
               type="file"
               accept="image/png,image/jpeg,image/webp"
               disabled={presetLoading}
               onChange={(event) => setLogoFile(event.target.files?.[0] || null)}
-              required={!logoFile}
             />
-            <span className="subtle">{logoFile ? `${logoFile.name} ready. ` : ''}One logo. It becomes part of this pod's locked brand analysis.</span>
+            <span className="subtle">{logoFile ? `${logoFile.name} ready. ` : ''}Optional for URL analysis. Add your own logo now or review media found on your website.</span>
           </label>
 
           <label>
@@ -277,6 +281,7 @@ export default function NewPodPage({ session, subscription }) {
           </label>
         </div>
 
+        <SelectedFilePreview logoFile={logoFile} files={previewFiles} />
         <button className="button button-primary" type="submit" disabled={saving || presetLoading}>
           {saving ? 'Creating pod...' : 'Create Pod and Review Inputs'}
         </button>

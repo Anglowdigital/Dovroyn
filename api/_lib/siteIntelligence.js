@@ -85,6 +85,8 @@ function readablePage(page, url, sourceReference, remainingChars) {
     canonicalUrl: String(page?.canonicalUrl || '').trim().slice(0, 2000),
     h1: String(page?.h1 || '').trim().slice(0, 1000),
     text,
+    extraction_mode: page?.extraction_mode || 'page_text',
+    media: Array.isArray(page?.media) ? page.media : [],
   };
 }
 

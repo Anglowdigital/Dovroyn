@@ -24,7 +24,7 @@ export function validatePodSetup({ sourceType, sourceUrl, logoCount, photoCount 
   if (!POD_SOURCE_TYPES.some((source) => source.value === sourceType)) return 'Choose one primary source type.';
   if (sourceNeedsUrl(sourceType) && !String(sourceUrl || '').trim()) return 'Add the one primary URL for this pod.';
   if (sourceType === 'photos' && photoCount < 1) return 'Add at least one brand photo for a photos-only pod.';
-  if (logoCount !== 1) return 'Add one brand logo before analysis.';
+  if (logoCount > 1) return 'Add no more than one brand logo.';
   if (photoCount > MAX_BRAND_PHOTOS) return `Add no more than ${MAX_BRAND_PHOTOS} brand photos.`;
   return '';
 }
