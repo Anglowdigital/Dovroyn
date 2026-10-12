@@ -81,6 +81,12 @@ CREATE TABLE IF NOT EXISTS private.meta_organic_publish_approvals (
   content_version TEXT NOT NULL,
   asset_manifest_hash TEXT NOT NULL,
   campaign_date DATE NOT NULL,
+  scheduled_at TIMESTAMPTZ NOT NULL,
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  calendar_item_id UUID,
+  calendar_snapshot_hash TEXT CHECK (calendar_snapshot_hash IS NULL OR calendar_snapshot_hash ~ '^[a-f0-9]{64}$'),
+  calendar_day_snapshot_hash TEXT CHECK (calendar_day_snapshot_hash IS NULL OR calendar_day_snapshot_hash ~ '^[a-f0-9]{64}$'),
+  calendar_context_hash TEXT,
   status TEXT NOT NULL CHECK (status IN ('approved','revoked')),
   approved_at TIMESTAMPTZ NOT NULL,
   approved_by UUID NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
@@ -402,11 +408,25 @@ DECLARE
   approval_draft_id UUID := (p_approval->>'draftId')::uuid;
   approval_connection_id UUID := (p_approval->>'accountConnectionId')::uuid;
   approval_campaign_date DATE := (p_approval->>'campaignDate')::date;
+  approval_scheduled_at TIMESTAMPTZ := NULLIF(p_approval->>'scheduledAt', '')::timestamptz;
+  approval_timezone TEXT := coalesce(NULLIF(btrim(p_approval->>'timezone'), ''), 'UTC');
+  approval_calendar_item_id UUID := NULLIF(p_approval->>'calendarItemId', '')::uuid;
+  approval_calendar_snapshot_hash TEXT := NULLIF(p_approval->>'calendarSnapshotHash', '');
+  approval_calendar_day_snapshot_hash TEXT := NULLIF(p_approval->>'calendarDaySnapshotHash', '');
+  calendar_row RECORD;
+  current_calendar_snapshot_hash TEXT;
+  current_calendar_day_snapshot_hash TEXT;
 BEGIN
   IF p_approval->>'status' IS DISTINCT FROM 'approved'
     OR p_approval->>'provider' NOT IN ('facebook','instagram')
     OR btrim(coalesce(p_approval->>'contentVersion', '')) = ''
     OR coalesce(p_approval->>'assetManifestHash', '') !~ '^[a-f0-9]{64}$'
+    OR approval_scheduled_at IS NULL
+    OR (approval_scheduled_at AT TIME ZONE 'UTC')::date IS DISTINCT FROM approval_campaign_date
+    OR approval_scheduled_at <= now()
+    OR approval_calendar_item_id IS NULL
+    OR coalesce(approval_calendar_snapshot_hash, '') !~ '^[a-f0-9]{64}$'
+    OR coalesce(approval_calendar_day_snapshot_hash, '') !~ '^[a-f0-9]{64}$'
     OR NULLIF(p_approval->>'approvedAt', '') IS NULL
     OR NULLIF(p_approval->>'approvedBy', '') IS NULL THEN
     RAISE EXCEPTION 'PUBLISH_APPROVAL_REQUIRED';
@@ -472,14 +492,55 @@ BEGIN
     RAISE EXCEPTION 'PUBLISH_EXPORT_SUPERSEDED';
   END IF;
 
+  SELECT id, pod_id, scheduled_date, platform, caption, creative_note, created_at INTO calendar_row
+  FROM public.calendar_items
+  WHERE id = approval_calendar_item_id
+    AND pod_id = approval_pod_id
+    AND scheduled_date = approval_campaign_date
+    AND platform = p_approval->>'provider'
+    AND caption = draft.body
+  FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED'; END IF;
+  current_calendar_snapshot_hash := encode(sha256(convert_to(private.meta_organic_canonical_json(jsonb_build_object(
+    'id', calendar_row.id,
+    'podId', calendar_row.pod_id,
+    'scheduledDate', calendar_row.scheduled_date,
+    'platform', calendar_row.platform,
+    'caption', calendar_row.caption,
+    'creativeNote', calendar_row.creative_note,
+    'createdAt', calendar_row.created_at
+  )), 'UTF8')), 'hex');
+  IF current_calendar_snapshot_hash IS DISTINCT FROM approval_calendar_snapshot_hash THEN
+    RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED';
+  END IF;
+  SELECT encode(sha256(convert_to(private.meta_organic_canonical_json(coalesce(jsonb_agg(jsonb_build_object(
+    'id', day_item.id,
+    'podId', day_item.pod_id,
+    'scheduledDate', day_item.scheduled_date,
+    'platform', day_item.platform,
+    'caption', day_item.caption,
+    'creativeNote', day_item.creative_note,
+    'createdAt', day_item.created_at
+  ) ORDER BY day_item.created_at, day_item.id), '[]'::jsonb)), 'UTF8')), 'hex')
+  INTO current_calendar_day_snapshot_hash
+  FROM public.calendar_items day_item
+  WHERE day_item.pod_id = approval_pod_id
+    AND day_item.scheduled_date = approval_campaign_date;
+  IF current_calendar_day_snapshot_hash IS DISTINCT FROM approval_calendar_day_snapshot_hash THEN
+    RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED';
+  END IF;
+
   INSERT INTO private.meta_organic_publish_approvals (
     id, user_id, pod_id, draft_id, provider, account_connection_id,
-    content_version, asset_manifest_hash, campaign_date, status, approved_at, approved_by
+    content_version, asset_manifest_hash, campaign_date, scheduled_at, timezone,
+    calendar_item_id, calendar_snapshot_hash, calendar_day_snapshot_hash, calendar_context_hash, status, approved_at, approved_by
   )
   VALUES (
     approval_id, approval_user_id, approval_pod_id, approval_draft_id, p_approval->>'provider',
     approval_connection_id, p_approval->>'contentVersion', p_approval->>'assetManifestHash',
-    approval_campaign_date, 'approved', (p_approval->>'approvedAt')::timestamptz,
+    approval_campaign_date, approval_scheduled_at, approval_timezone,
+    approval_calendar_item_id, approval_calendar_snapshot_hash, approval_calendar_day_snapshot_hash,
+    NULLIF(p_approval->>'contextFingerprint', ''), 'approved', (p_approval->>'approvedAt')::timestamptz,
     (p_approval->>'approvedBy')::uuid
   )
   ON CONFLICT DO NOTHING
@@ -496,6 +557,12 @@ BEGIN
       'contentVersion', inserted.content_version,
       'assetManifestHash', inserted.asset_manifest_hash,
       'campaignDate', inserted.campaign_date,
+      'scheduledAt', inserted.scheduled_at,
+      'timezone', inserted.timezone,
+      'calendarItemId', inserted.calendar_item_id,
+      'calendarSnapshotHash', inserted.calendar_snapshot_hash,
+      'calendarDaySnapshotHash', inserted.calendar_day_snapshot_hash,
+      'contextFingerprint', inserted.calendar_context_hash,
       'status', inserted.status,
       'approvedAt', inserted.approved_at,
       'approvedBy', inserted.approved_by
@@ -513,6 +580,12 @@ BEGIN
     AND content_version = p_approval->>'contentVersion'
     AND asset_manifest_hash = p_approval->>'assetManifestHash'
     AND campaign_date = approval_campaign_date
+    AND scheduled_at = approval_scheduled_at
+    AND timezone = approval_timezone
+    AND calendar_item_id = approval_calendar_item_id
+    AND calendar_snapshot_hash = approval_calendar_snapshot_hash
+    AND calendar_day_snapshot_hash = approval_calendar_day_snapshot_hash
+    AND coalesce(calendar_context_hash, '') IS NOT DISTINCT FROM coalesce(NULLIF(p_approval->>'contextFingerprint', ''), '')
     AND status = 'approved';
   IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_APPROVAL_IMMUTABLE'; END IF;
 
@@ -526,9 +599,216 @@ BEGIN
     'contentVersion', existing.content_version,
     'assetManifestHash', existing.asset_manifest_hash,
     'campaignDate', existing.campaign_date,
+    'scheduledAt', existing.scheduled_at,
+    'timezone', existing.timezone,
+    'calendarItemId', existing.calendar_item_id,
+    'calendarSnapshotHash', existing.calendar_snapshot_hash,
+    'calendarDaySnapshotHash', existing.calendar_day_snapshot_hash,
+    'contextFingerprint', existing.calendar_context_hash,
     'status', existing.status,
     'approvedAt', existing.approved_at,
     'approvedBy', existing.approved_by
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.prepare_meta_organic_calendar_publish_review(
+  p_user_id UUID,
+  p_pod_id UUID,
+  p_scheduled_date DATE
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  pod public.pods%ROWTYPE;
+  item RECORD;
+  metadata JSONB;
+  target JSONB;
+  draft public.social_posts%ROWTYPE;
+  latest_creative_review public.pod_preferences%ROWTYPE;
+  connection private.meta_organic_connections%ROWTYPE;
+  export_row private.meta_organic_publish_exports%ROWTYPE;
+  entries JSONB := '[]'::jsonb;
+  scheduled_at TIMESTAMPTZ := (p_scheduled_date::text || 'T12:00:00.000Z')::timestamptz;
+  content_version TEXT;
+  target_provider TEXT;
+  target_account_id TEXT;
+  target_connection_id UUID;
+  calendar_snapshot_hash TEXT;
+  calendar_day_snapshot_hash TEXT;
+BEGIN
+  IF p_user_id IS NULL OR p_pod_id IS NULL OR p_scheduled_date IS NULL OR scheduled_at <= now() THEN
+    RAISE EXCEPTION 'PUBLISH_REVIEW_INPUT_REQUIRED';
+  END IF;
+
+  SELECT * INTO pod
+  FROM public.pods
+  WHERE id = p_pod_id
+    AND user_id = p_user_id
+    AND status IN ('active','direction_locked');
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_TENANT_MISMATCH'; END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public.calendar_items
+    WHERE pod_id = p_pod_id
+      AND scheduled_date = p_scheduled_date
+      AND platform NOT IN ('facebook','instagram')
+  ) THEN
+    RAISE EXCEPTION 'PUBLISH_UNSUPPORTED_CALENDAR_PLATFORM';
+  END IF;
+
+  SELECT encode(sha256(convert_to(private.meta_organic_canonical_json(coalesce(jsonb_agg(jsonb_build_object(
+    'id', day_item.id,
+    'podId', day_item.pod_id,
+    'scheduledDate', day_item.scheduled_date,
+    'platform', day_item.platform,
+    'caption', day_item.caption,
+    'creativeNote', day_item.creative_note,
+    'createdAt', day_item.created_at
+  ) ORDER BY day_item.created_at, day_item.id), '[]'::jsonb)), 'UTF8')), 'hex')
+  INTO calendar_day_snapshot_hash
+  FROM public.calendar_items day_item
+  WHERE day_item.pod_id = p_pod_id
+    AND day_item.scheduled_date = p_scheduled_date;
+
+  FOR item IN
+    SELECT *
+    FROM public.calendar_items
+    WHERE pod_id = p_pod_id
+      AND scheduled_date = p_scheduled_date
+      AND platform IN ('facebook','instagram')
+    ORDER BY created_at ASC, id ASC
+  LOOP
+    BEGIN
+      metadata := coalesce(NULLIF(item.creative_note::text, ''), '{}')::jsonb;
+    EXCEPTION WHEN others THEN
+      RAISE EXCEPTION 'PUBLISH_REVIEW_CONTEXT_REQUIRED';
+    END;
+
+    IF metadata->>'kind' IS DISTINCT FROM 'dovroyn_calendar_metadata'
+      OR coalesce(jsonb_typeof(metadata->'targets'), '') <> 'array'
+      OR jsonb_array_length(metadata->'targets') = 0
+      OR coalesce(metadata->'creative'->>'post_id', '') = '' THEN
+      RAISE EXCEPTION 'PUBLISH_REVIEW_CONTEXT_REQUIRED';
+    END IF;
+
+    SELECT * INTO draft
+    FROM public.social_posts
+    WHERE id = (metadata->'creative'->>'post_id')::uuid
+      AND pod_id = p_pod_id
+      AND platform = item.platform
+      AND body = item.caption
+      AND status IN ('approved','scheduled');
+    IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_DRAFT_CONTEXT_REQUIRED'; END IF;
+    content_version := md5(draft.body);
+
+    SELECT * INTO latest_creative_review
+    FROM public.pod_preferences
+    WHERE pod_id = p_pod_id
+      AND preference_type = 'creative_review'
+      AND active IS TRUE
+      AND preference_value->>'post_id' = draft.id::text
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1;
+    IF NOT FOUND
+      OR latest_creative_review.preference_value->>'status' IS DISTINCT FROM 'approved'
+      OR latest_creative_review.preference_value->>'content_snapshot' IS DISTINCT FROM draft.body
+      OR (latest_creative_review.preference_value->>'approved_at')::timestamptz IS DISTINCT FROM (metadata->'creative'->>'approved_at')::timestamptz
+      OR metadata->'creative'->>'content_snapshot' IS DISTINCT FROM draft.body THEN
+      RAISE EXCEPTION 'PUBLISH_EXPORT_SUPERSEDED';
+    END IF;
+
+    calendar_snapshot_hash := encode(sha256(convert_to(private.meta_organic_canonical_json(jsonb_build_object(
+      'id', item.id,
+      'podId', item.pod_id,
+      'scheduledDate', item.scheduled_date,
+      'platform', item.platform,
+      'caption', item.caption,
+      'creativeNote', item.creative_note,
+      'createdAt', item.created_at
+    )), 'UTF8')), 'hex');
+
+    FOR target IN SELECT * FROM jsonb_array_elements(metadata->'targets')
+    LOOP
+      target_provider := coalesce(target->>'provider', item.platform);
+      target_account_id := coalesce(target->>'providerAccountId', target->>'provider_account_id');
+      target_connection_id := NULLIF(coalesce(target->>'accountConnectionId', target->>'account_connection_id', target->>'connectionId'), '')::uuid;
+      IF target_provider IS DISTINCT FROM item.platform OR coalesce(target_account_id, '') !~ '^[1-9][0-9]{0,31}$' THEN
+        RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED';
+      END IF;
+
+      SELECT * INTO connection
+      FROM private.meta_organic_connections
+      WHERE user_id = p_user_id
+        AND pod_id = p_pod_id
+        AND provider = target_provider
+        AND provider_account_id = target_account_id
+        AND (target_connection_id IS NULL OR id = target_connection_id)
+        AND status = 'connected'
+        AND expires_at > now() + interval '1 minute';
+      IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED'; END IF;
+
+      SELECT * INTO export_row
+      FROM private.meta_organic_publish_exports
+      WHERE user_id = p_user_id
+        AND pod_id = p_pod_id
+        AND draft_id = draft.id
+        AND account_connection_id = connection.id
+        AND media_type = 'image/jpeg'
+        AND provider_readable_url_expires_at > scheduled_at + interval '10 minutes'
+        AND manifest->'authority'->>'userId' = p_user_id::text
+        AND manifest->'authority'->>'podId' = p_pod_id::text
+        AND manifest->'authority'->>'postId' = draft.id::text
+        AND manifest->'authority'->>'provider' = target_provider
+        AND manifest->'authority'->>'accountConnectionId' = connection.id::text
+        AND manifest->'authority'->>'providerAccountId' = connection.provider_account_id
+        AND manifest->'authority'->>'creativeApprovalId' = latest_creative_review.id::text
+        AND manifest->'authority'->>'contentVersion' = content_version
+        AND manifest->>'manifestHash' = manifest_hash
+        AND manifest->'output'->>'providerReadableUrl' = provider_readable_url
+        AND manifest->'output'->>'objectPath' = object_version
+        AND immutable
+        AND status = 'exported'
+      ORDER BY exported_at DESC
+      LIMIT 1;
+      IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_EXPORT_CONTEXT_REQUIRED'; END IF;
+
+      entries := entries || jsonb_build_array(jsonb_build_object(
+        'calendarItemId', item.id,
+        'calendarCreatedAt', item.created_at,
+        'calendarSnapshotHash', calendar_snapshot_hash,
+        'provider', item.platform,
+        'draftId', draft.id,
+        'caption', draft.body,
+        'contentVersion', content_version,
+        'creativeApprovalId', latest_creative_review.id,
+        'creativeApprovedAt', latest_creative_review.preference_value->>'approved_at',
+        'accountConnectionId', connection.id,
+        'providerAccountId', connection.provider_account_id,
+        'accountLabel', connection.account_label,
+        'assetManifestHash', export_row.manifest_hash,
+        'outputHash', export_row.output_hash,
+        'imageUrl', export_row.provider_readable_url,
+        'imageUrlExpiresAt', export_row.provider_readable_url_expires_at
+      ));
+    END LOOP;
+  END LOOP;
+
+  IF jsonb_array_length(entries) = 0 THEN
+    RAISE EXCEPTION 'PUBLISH_REVIEW_EMPTY';
+  END IF;
+
+  RETURN jsonb_build_object(
+    'userId', p_user_id,
+    'podId', p_pod_id,
+    'scheduledDate', p_scheduled_date,
+    'scheduledAt', scheduled_at,
+    'timezone', 'UTC',
+    'calendarDaySnapshotHash', calendar_day_snapshot_hash,
+    'entries', entries
   );
 END;
 $$;
@@ -548,6 +828,7 @@ DECLARE
   p_pod_id UUID := (p_proposal->>'podId')::uuid;
   p_dedupe_key TEXT := p_proposal->>'dedupeKey';
   p_campaign_date DATE := (p_proposal->>'campaignDate')::date;
+  p_scheduled_at TIMESTAMPTZ := NULLIF(p_proposal->>'scheduledAt', '')::timestamptz;
   day_limit INTEGER;
   week_limit INTEGER;
   anchor_date DATE;
@@ -563,10 +844,18 @@ DECLARE
   date_already_reserved BOOLEAN;
   owner_week_date_already_reserved BOOLEAN;
   export_row private.meta_organic_publish_exports%ROWTYPE;
+  approval_row private.meta_organic_publish_approvals%ROWTYPE;
+  existing_approval_row private.meta_organic_publish_approvals%ROWTYPE;
   latest_creative_review public.pod_preferences%ROWTYPE;
+  calendar_row RECORD;
+  current_calendar_snapshot_hash TEXT;
+  current_calendar_day_snapshot_hash TEXT;
 BEGIN
   IF p_proposal->>'contractVersion' IS DISTINCT FROM 'meta_organic_publisher_pilot_v1' THEN
     RAISE EXCEPTION 'PUBLISH_CONTRACT_VERSION_REQUIRED';
+  END IF;
+  IF p_scheduled_at IS NULL OR (p_scheduled_at AT TIME ZONE 'UTC')::date IS DISTINCT FROM p_campaign_date OR p_scheduled_at <= now() THEN
+    RAISE EXCEPTION 'PUBLISH_SCHEDULE_APPROVAL_REQUIRED';
   END IF;
   SELECT * INTO pod FROM public.pods p WHERE p.id = p_pod_id AND p.user_id = p_user_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -658,6 +947,63 @@ BEGIN
     END IF;
   END IF;
 
+  SELECT * INTO approval_row
+  FROM private.meta_organic_publish_approvals
+  WHERE id = (p_proposal->>'approvalId')::uuid
+    AND user_id = p_user_id
+    AND pod_id = p_pod_id
+    AND draft_id = (p_proposal->>'draftId')::uuid
+    AND provider = p_proposal->>'provider'
+    AND account_connection_id = (p_proposal->>'accountConnectionId')::uuid
+    AND content_version = p_proposal->>'contentVersion'
+    AND asset_manifest_hash = p_proposal->>'assetManifestHash'
+    AND campaign_date = p_campaign_date
+    AND scheduled_at = p_scheduled_at
+    AND status = 'approved';
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_APPROVAL_CONTEXT_REQUIRED'; END IF;
+
+  SELECT id, pod_id, scheduled_date, platform, caption, creative_note, created_at INTO calendar_row
+  FROM public.calendar_items
+  WHERE id = approval_row.calendar_item_id
+    AND pod_id = p_pod_id
+    AND scheduled_date = p_campaign_date
+    AND platform = p_proposal->>'provider'
+    AND caption = (
+      SELECT body FROM public.social_posts
+      WHERE id = (p_proposal->>'draftId')::uuid
+        AND pod_id = p_pod_id
+    )
+  FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED'; END IF;
+  current_calendar_snapshot_hash := encode(sha256(convert_to(private.meta_organic_canonical_json(jsonb_build_object(
+    'id', calendar_row.id,
+    'podId', calendar_row.pod_id,
+    'scheduledDate', calendar_row.scheduled_date,
+    'platform', calendar_row.platform,
+    'caption', calendar_row.caption,
+    'creativeNote', calendar_row.creative_note,
+    'createdAt', calendar_row.created_at
+  )), 'UTF8')), 'hex');
+  IF current_calendar_snapshot_hash IS DISTINCT FROM approval_row.calendar_snapshot_hash THEN
+    RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED';
+  END IF;
+  SELECT encode(sha256(convert_to(private.meta_organic_canonical_json(coalesce(jsonb_agg(jsonb_build_object(
+    'id', day_item.id,
+    'podId', day_item.pod_id,
+    'scheduledDate', day_item.scheduled_date,
+    'platform', day_item.platform,
+    'caption', day_item.caption,
+    'creativeNote', day_item.creative_note,
+    'createdAt', day_item.created_at
+  ) ORDER BY day_item.created_at, day_item.id), '[]'::jsonb)), 'UTF8')), 'hex')
+  INTO current_calendar_day_snapshot_hash
+  FROM public.calendar_items day_item
+  WHERE day_item.pod_id = p_pod_id
+    AND day_item.scheduled_date = p_campaign_date;
+  IF current_calendar_day_snapshot_hash IS DISTINCT FROM approval_row.calendar_day_snapshot_hash THEN
+    RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED';
+  END IF;
+
   INSERT INTO private.meta_organic_publish_jobs (
     dedupe_key, user_id, pod_id, draft_id, provider, account_connection_id,
     content_version, asset_manifest_hash, approval_id, campaign_date, scheduled_at
@@ -673,7 +1019,7 @@ BEGIN
     p_proposal->>'assetManifestHash',
     (p_proposal->>'approvalId')::uuid,
     p_campaign_date,
-    NULLIF(p_proposal->>'scheduledAt', '')::timestamptz
+    p_scheduled_at
   )
   ON CONFLICT DO NOTHING
   RETURNING * INTO job;
@@ -692,9 +1038,193 @@ BEGIN
     IF NOT FOUND THEN
       RAISE EXCEPTION 'PUBLISH_DEDUPE_CONFLICT';
     END IF;
+    SELECT * INTO existing_approval_row
+    FROM private.meta_organic_publish_approvals
+    WHERE id = job.approval_id
+      AND user_id = p_user_id
+      AND pod_id = p_pod_id
+      AND draft_id = job.draft_id
+      AND provider = job.provider
+      AND account_connection_id = job.account_connection_id
+      AND content_version = job.content_version
+      AND asset_manifest_hash = job.asset_manifest_hash
+      AND campaign_date = job.campaign_date
+      AND status = 'approved';
+    IF NOT FOUND
+      OR job.scheduled_at IS DISTINCT FROM p_scheduled_at
+      OR existing_approval_row.scheduled_at IS DISTINCT FROM approval_row.scheduled_at
+      OR existing_approval_row.timezone IS DISTINCT FROM approval_row.timezone
+      OR existing_approval_row.calendar_item_id IS DISTINCT FROM approval_row.calendar_item_id
+      OR existing_approval_row.calendar_snapshot_hash IS DISTINCT FROM approval_row.calendar_snapshot_hash
+      OR existing_approval_row.calendar_day_snapshot_hash IS DISTINCT FROM approval_row.calendar_day_snapshot_hash
+      OR coalesce(existing_approval_row.calendar_context_hash, '') IS DISTINCT FROM coalesce(approval_row.calendar_context_hash, '') THEN
+      RAISE EXCEPTION 'PUBLISH_DEDUPE_CONTEXT_CONFLICT';
+    END IF;
   END IF;
 
   RETURN private.meta_organic_job_json(job) || jsonb_build_object('duplicate', NOT inserted);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.confirm_meta_organic_calendar_publish_review(p_request JSONB)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  p_user_id UUID := (p_request->>'userId')::uuid;
+  p_pod_id UUID := (p_request->>'podId')::uuid;
+  p_campaign_date DATE := (p_request->>'campaignDate')::date;
+  p_scheduled_at TIMESTAMPTZ := NULLIF(p_request->>'scheduledAt', '')::timestamptz;
+  p_timezone TEXT := coalesce(NULLIF(btrim(p_request->>'timezone'), ''), 'UTC');
+  p_day_hash TEXT := NULLIF(p_request->>'calendarDaySnapshotHash', '');
+  p_context_hash TEXT := NULLIF(p_request->>'contextFingerprint', '');
+  approvals JSONB := coalesce(p_request->'approvals', '[]'::jsonb);
+  pod public.pods%ROWTYPE;
+  locked_rows INTEGER := 0;
+  current_day_hash TEXT;
+  prepared JSONB;
+  expected JSONB;
+  approval JSONB;
+  persisted JSONB;
+  job JSONB;
+  queued JSONB := '[]'::jsonb;
+  expected_count INTEGER;
+  approval_count INTEGER;
+  match_count INTEGER;
+  result_status TEXT := 'queued';
+BEGIN
+  IF p_user_id IS NULL
+    OR p_pod_id IS NULL
+    OR p_campaign_date IS NULL
+    OR p_scheduled_at IS NULL
+    OR (p_scheduled_at AT TIME ZONE 'UTC')::date IS DISTINCT FROM p_campaign_date
+    OR p_scheduled_at <= now()
+    OR coalesce(p_day_hash, '') !~ '^[a-f0-9]{64}$'
+    OR coalesce(jsonb_typeof(approvals), '') IS DISTINCT FROM 'array'
+    OR jsonb_array_length(approvals) = 0 THEN
+    RAISE EXCEPTION 'PUBLISH_REVIEW_INPUT_REQUIRED';
+  END IF;
+
+  SELECT * INTO pod
+  FROM public.pods
+  WHERE id = p_pod_id
+    AND user_id = p_user_id
+    AND status IN ('active','direction_locked')
+  FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_TENANT_MISMATCH'; END IF;
+
+  -- Confirmation is short-lived and proposed-only: this table lock blocks
+  -- concurrent INSERT/UPDATE/DELETE, including moving another row from a
+  -- different date into the reviewed day after the day hash is checked.
+  LOCK TABLE public.calendar_items IN SHARE MODE;
+
+  PERFORM 1
+  FROM (
+    SELECT id
+    FROM public.calendar_items
+    WHERE pod_id = p_pod_id
+      AND scheduled_date = p_campaign_date
+    ORDER BY created_at ASC, id ASC
+    FOR UPDATE
+  ) locked_day_rows;
+  GET DIAGNOSTICS locked_rows = ROW_COUNT;
+  IF locked_rows = 0 THEN RAISE EXCEPTION 'PUBLISH_REVIEW_EMPTY'; END IF;
+
+  SELECT encode(sha256(convert_to(private.meta_organic_canonical_json(coalesce(jsonb_agg(jsonb_build_object(
+    'id', day_item.id,
+    'podId', day_item.pod_id,
+    'scheduledDate', day_item.scheduled_date,
+    'platform', day_item.platform,
+    'caption', day_item.caption,
+    'creativeNote', day_item.creative_note,
+    'createdAt', day_item.created_at
+  ) ORDER BY day_item.created_at, day_item.id), '[]'::jsonb)), 'UTF8')), 'hex')
+  INTO current_day_hash
+  FROM public.calendar_items day_item
+  WHERE day_item.pod_id = p_pod_id
+    AND day_item.scheduled_date = p_campaign_date;
+  IF current_day_hash IS DISTINCT FROM p_day_hash THEN
+    RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED';
+  END IF;
+
+  prepared := public.prepare_meta_organic_calendar_publish_review(p_user_id, p_pod_id, p_campaign_date);
+  IF (prepared->>'calendarDaySnapshotHash') IS DISTINCT FROM p_day_hash
+    OR (prepared->>'scheduledAt')::timestamptz IS DISTINCT FROM p_scheduled_at
+    OR coalesce(prepared->>'timezone', 'UTC') IS DISTINCT FROM p_timezone THEN
+    RAISE EXCEPTION 'PUBLISH_REVIEW_STALE';
+  END IF;
+
+  expected_count := jsonb_array_length(prepared->'entries');
+  approval_count := jsonb_array_length(approvals);
+  IF expected_count IS DISTINCT FROM approval_count THEN
+    RAISE EXCEPTION 'PUBLISH_REVIEW_CONTEXT_CHANGED';
+  END IF;
+
+  FOR expected IN SELECT * FROM jsonb_array_elements(prepared->'entries')
+  LOOP
+    SELECT count(*)::integer INTO match_count
+    FROM jsonb_array_elements(approvals) supplied
+    WHERE supplied->>'provider' = expected->>'provider'
+      AND supplied->>'calendarItemId' = expected->>'calendarItemId'
+      AND supplied->>'draftId' = expected->>'draftId'
+      AND supplied->>'accountConnectionId' = expected->>'accountConnectionId'
+      AND supplied->>'contentVersion' = expected->>'contentVersion'
+      AND supplied->>'assetManifestHash' = expected->>'assetManifestHash'
+      AND supplied->>'calendarDaySnapshotHash' = p_day_hash
+      AND coalesce(supplied->>'contextFingerprint', '') IS NOT DISTINCT FROM coalesce(p_context_hash, '');
+    IF match_count IS DISTINCT FROM 1 THEN
+      RAISE EXCEPTION 'PUBLISH_REVIEW_CONTEXT_CHANGED';
+    END IF;
+  END LOOP;
+
+  FOR approval IN SELECT * FROM jsonb_array_elements(approvals)
+  LOOP
+    IF approval->>'userId' IS DISTINCT FROM p_user_id::text
+      OR approval->>'podId' IS DISTINCT FROM p_pod_id::text
+      OR (approval->>'campaignDate')::date IS DISTINCT FROM p_campaign_date
+      OR NULLIF(approval->>'scheduledAt', '')::timestamptz IS DISTINCT FROM p_scheduled_at
+      OR coalesce(NULLIF(btrim(approval->>'timezone'), ''), 'UTC') IS DISTINCT FROM p_timezone
+      OR approval->>'calendarDaySnapshotHash' IS DISTINCT FROM p_day_hash
+      OR coalesce(approval->>'contextFingerprint', '') IS DISTINCT FROM coalesce(p_context_hash, '') THEN
+      RAISE EXCEPTION 'PUBLISH_REVIEW_CONTEXT_CHANGED';
+    END IF;
+
+    persisted := public.persist_meta_organic_publish_approval(approval);
+    job := public.enqueue_meta_organic_publish_job(jsonb_build_object(
+      'contractVersion', 'meta_organic_publisher_pilot_v1',
+      'provider', persisted->>'provider',
+      'userId', persisted->>'userId',
+      'podId', persisted->>'podId',
+      'draftId', persisted->>'draftId',
+      'accountConnectionId', persisted->>'accountConnectionId',
+      'contentVersion', persisted->>'contentVersion',
+      'assetManifestHash', persisted->>'assetManifestHash',
+      'approvalId', persisted->>'id',
+      'campaignDate', persisted->>'campaignDate',
+      'scheduledAt', persisted->>'scheduledAt',
+      'dedupeKey', encode(sha256(convert_to(private.meta_organic_canonical_json(jsonb_build_object(
+        'draftId', persisted->>'draftId',
+        'accountConnectionId', persisted->>'accountConnectionId',
+        'contentVersion', persisted->>'contentVersion',
+        'assetManifestHash', persisted->>'assetManifestHash',
+        'campaignDate', persisted->>'campaignDate'
+      )), 'UTF8')), 'hex')
+    ));
+    queued := queued || jsonb_build_array(job);
+    IF coalesce(job->>'state', 'queued') NOT IN ('queued','leased','retry') THEN
+      result_status := 'queue_blocked';
+    END IF;
+  END LOOP;
+
+  RETURN jsonb_build_object(
+    'status', result_status,
+    'queued', queued,
+    'failures', '[]'::jsonb,
+    'scheduledAt', p_scheduled_at,
+    'timezone', p_timezone
+  );
 END;
 $$;
 
@@ -808,6 +1338,9 @@ DECLARE
   latest_creative_review public.pod_preferences%ROWTYPE;
   connection private.meta_organic_connections%ROWTYPE;
   credential private.meta_organic_credentials%ROWTYPE;
+  calendar_row RECORD;
+  current_calendar_snapshot_hash TEXT;
+  current_calendar_day_snapshot_hash TEXT;
   required_scopes TEXT[];
   existing_dates JSONB;
   anchor_date DATE;
@@ -850,8 +1383,47 @@ BEGIN
     AND content_version = job.content_version
     AND asset_manifest_hash = job.asset_manifest_hash
     AND campaign_date = job.campaign_date
+    AND scheduled_at = job.scheduled_at
     AND status = 'approved';
   IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_APPROVAL_CONTEXT_REQUIRED'; END IF;
+
+  SELECT id, pod_id, scheduled_date, platform, caption, creative_note, created_at INTO calendar_row
+  FROM public.calendar_items
+  WHERE id = approval.calendar_item_id
+    AND pod_id = job.pod_id
+    AND scheduled_date = job.campaign_date
+    AND platform = job.provider
+    AND caption = draft.body
+  FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED'; END IF;
+  current_calendar_snapshot_hash := encode(sha256(convert_to(private.meta_organic_canonical_json(jsonb_build_object(
+    'id', calendar_row.id,
+    'podId', calendar_row.pod_id,
+    'scheduledDate', calendar_row.scheduled_date,
+    'platform', calendar_row.platform,
+    'caption', calendar_row.caption,
+    'creativeNote', calendar_row.creative_note,
+    'createdAt', calendar_row.created_at
+  )), 'UTF8')), 'hex');
+  IF current_calendar_snapshot_hash IS DISTINCT FROM approval.calendar_snapshot_hash THEN
+    RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED';
+  END IF;
+  SELECT encode(sha256(convert_to(private.meta_organic_canonical_json(coalesce(jsonb_agg(jsonb_build_object(
+    'id', day_item.id,
+    'podId', day_item.pod_id,
+    'scheduledDate', day_item.scheduled_date,
+    'platform', day_item.platform,
+    'caption', day_item.caption,
+    'creativeNote', day_item.creative_note,
+    'createdAt', day_item.created_at
+  ) ORDER BY day_item.created_at, day_item.id), '[]'::jsonb)), 'UTF8')), 'hex')
+  INTO current_calendar_day_snapshot_hash
+  FROM public.calendar_items day_item
+  WHERE day_item.pod_id = job.pod_id
+    AND day_item.scheduled_date = job.campaign_date;
+  IF current_calendar_day_snapshot_hash IS DISTINCT FROM approval.calendar_day_snapshot_hash THEN
+    RAISE EXCEPTION 'PUBLISH_CALENDAR_CONTEXT_CHANGED';
+  END IF;
 
   SELECT * INTO export_row FROM private.meta_organic_publish_exports
   WHERE manifest_hash = job.asset_manifest_hash
@@ -961,6 +1533,11 @@ BEGIN
       'contentVersion', approval.content_version,
       'assetManifestHash', approval.asset_manifest_hash,
       'campaignDate', approval.campaign_date,
+      'scheduledAt', approval.scheduled_at,
+      'timezone', approval.timezone,
+      'calendarItemId', approval.calendar_item_id,
+      'calendarSnapshotHash', approval.calendar_snapshot_hash,
+      'contextFingerprint', approval.calendar_context_hash,
       'approvedAt', approval.approved_at,
       'status', approval.status
     ),
@@ -1010,6 +1587,8 @@ AS $$
         AND to_regclass('private.meta_organic_provider_stages') IS NOT NULL AS private_tables_ready,
       COALESCE(has_function_privilege('service_role', to_regprocedure('public.claim_meta_organic_publish_job(text,timestamp with time zone,integer)'), 'EXECUTE'), false)
         AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.persist_meta_organic_publish_approval(jsonb)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.prepare_meta_organic_calendar_publish_review(uuid,uuid,date)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.confirm_meta_organic_calendar_publish_review(jsonb)'), 'EXECUTE'), false)
         AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.get_meta_organic_publish_context(uuid,text,text)'), 'EXECUTE'), false)
         AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.get_meta_organic_publish_credential_lease(uuid,text,text)'), 'EXECUTE'), false)
         AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.get_meta_organic_reconciliation_credential_lease(uuid,text,text)'), 'EXECUTE'), false)
@@ -2014,6 +2593,8 @@ $$;
 
 REVOKE ALL ON FUNCTION public.enqueue_meta_organic_publish_job(JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.persist_meta_organic_publish_approval(JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.prepare_meta_organic_calendar_publish_review(UUID, UUID, DATE) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.confirm_meta_organic_calendar_publish_review(JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.claim_meta_organic_publish_job(TEXT, TIMESTAMPTZ, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.get_meta_organic_publish_context(UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.get_meta_organic_publisher_readiness() FROM PUBLIC, anon, authenticated;
@@ -2039,6 +2620,8 @@ REVOKE ALL ON FUNCTION private.meta_organic_require_reconciliation_claim(UUID, T
 
 GRANT EXECUTE ON FUNCTION public.enqueue_meta_organic_publish_job(JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.persist_meta_organic_publish_approval(JSONB) TO service_role;
+GRANT EXECUTE ON FUNCTION public.prepare_meta_organic_calendar_publish_review(UUID, UUID, DATE) TO service_role;
+GRANT EXECUTE ON FUNCTION public.confirm_meta_organic_calendar_publish_review(JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.claim_meta_organic_publish_job(TEXT, TIMESTAMPTZ, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION public.get_meta_organic_publish_context(UUID, TEXT, TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.get_meta_organic_publisher_readiness() TO service_role;

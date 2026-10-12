@@ -140,6 +140,233 @@ test('duplicate month: repeated calendar generation returns existing Pod rows wi
   assert.ok([...db.requests[0].query].some(([key, value]) => key === 'scheduled_date' && value === 'lt.2026-11-01'));
 });
 
+test('calendar publishing review requires exact rendered image load before confirm and ignores stale errors', async () => {
+  const calls = [];
+  const workspace = savedWorkspace({
+    calendarItems: [{
+      id: 'cal-publish-1',
+      pod_id: 'one',
+      platform: 'facebook',
+      scheduled_date: '2026-10-12',
+      content_type: 'Post',
+      caption: 'Calendar caption',
+      status: 'draft',
+    }],
+  });
+  const ui = await workspaceHarness(workspace, {
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [] }),
+      prepareMetaCalendarPublishingReview: async (_input) => ({
+        preparationToken: 'prepared-token',
+        scheduledAt: '2026-10-12T12:00:00.000Z',
+        timezone: 'UTC',
+        expiresAt: '2026-10-12T00:15:00.000Z',
+        entries: [{
+          reviewEntryId: 'c70be4586fdfcc00bcbb4c711b4bb2d5567bff7c726acbec27dce562a6c2031d',
+          calendarItemId: 'cal-publish-1',
+          provider: 'facebook',
+          accountConnectionId: 'conn-page',
+          accountLabel: 'Main Page',
+          assetManifestHash: 'a'.repeat(64),
+          outputHash: 'a'.repeat(64),
+          imageUrl: 'https://cdn.example.test/exact.jpg',
+          caption: 'Calendar caption',
+        }],
+      }),
+      confirmMetaCalendarPublishingReview: async (input) => { calls.push(input); return { status: 'queued', queued: [{ id: 'job-1', accountConnectionId: 'conn-page', assetManifestHash: 'a'.repeat(64), state: 'queued' }], failures: [] }; },
+    },
+  });
+  await ui.tab('Calendar');
+  await ui.button('Review 2026-10-12').props.onClick();
+  await ui.flush();
+  const confirm = ui.button('Confirm publishing approval');
+  assert.equal(confirm.props.disabled, true);
+  const image = ui.nodes().find((node) => node.type === 'img' && node.props.alt === 'Main Page reviewed artwork');
+  image.props.onLoad();
+  await ui.flush();
+  assert.equal(ui.button('Confirm publishing approval').props.disabled, false);
+  await ui.button('Confirm publishing approval').props.onClick();
+  await ui.flush();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].loadedEntryIds, ['c70be4586fdfcc00bcbb4c711b4bb2d5567bff7c726acbec27dce562a6c2031d']);
+  assert.match(ui.text(), /Publishing approval is queued/);
+  assert.match(ui.text(), /Queue status:\s+queued/);
+});
+
+test('calendar publishing review ignores stale image events from a replaced candidate', async () => {
+  let prepareCount = 0;
+  const workspace = savedWorkspace({
+    calendarItems: [{
+      id: 'cal-publish-1',
+      pod_id: 'one',
+      platform: 'facebook',
+      scheduled_date: '2026-10-12',
+      content_type: 'Post',
+      caption: 'Calendar caption',
+      status: 'draft',
+    }],
+  });
+  const ui = await workspaceHarness(workspace, {
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [] }),
+      prepareMetaCalendarPublishingReview: async () => {
+        prepareCount += 1;
+        const hash = prepareCount === 1 ? 'a'.repeat(64) : 'b'.repeat(64);
+        return {
+          preparationToken: `token-${prepareCount}`,
+          scheduledAt: '2026-10-12T12:00:00.000Z',
+          timezone: 'UTC',
+          expiresAt: '2026-10-12T00:15:00.000Z',
+          entries: [{
+            reviewEntryId: prepareCount === 1
+              ? 'c70be4586fdfcc00bcbb4c711b4bb2d5567bff7c726acbec27dce562a6c2031d'
+              : '75184cf004e59348eb395479286e91753ff2b95187a572b418a4318307fe4eb9',
+            calendarItemId: 'cal-publish-1',
+            provider: 'facebook',
+            accountConnectionId: 'conn-page',
+            accountLabel: 'Main Page',
+            outputHash: hash,
+            imageUrl: `https://cdn.example.test/${prepareCount}.jpg`,
+            caption: 'Calendar caption',
+          }],
+        };
+      },
+      confirmMetaCalendarPublishingReview: async () => ({ status: 'queued', queued: [{ id: 'job-1' }], failures: [] }),
+    },
+  });
+  await ui.tab('Calendar');
+  await ui.button('Review 2026-10-12').props.onClick();
+  await ui.flush();
+  const oldImage = ui.nodes().find((node) => node.type === 'img' && node.props.src === 'https://cdn.example.test/1.jpg');
+  await ui.button('Review 2026-10-12').props.onClick();
+  await ui.flush();
+  oldImage.props.onLoad();
+  await ui.flush();
+  assert.equal(ui.button('Confirm publishing approval').props.disabled, true);
+  const newImage = ui.nodes().find((node) => node.type === 'img' && node.props.src === 'https://cdn.example.test/2.jpg');
+  newImage.props.onLoad();
+  await ui.flush();
+  assert.equal(ui.button('Confirm publishing approval').props.disabled, false);
+  assert.match(ui.text(), /12 Oct 2026, 12:00 UTC/);
+});
+
+test('calendar publishing review requires every account-specific render for one calendar row', async () => {
+  const calls = [];
+  const workspace = savedWorkspace({
+    calendarItems: [{
+      id: 'cal-publish-1',
+      pod_id: 'one',
+      platform: 'facebook',
+      scheduled_date: '2026-10-12',
+      content_type: 'Post',
+      caption: 'Calendar caption',
+      status: 'draft',
+    }],
+  });
+  const ui = await workspaceHarness(workspace, {
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [] }),
+      prepareMetaCalendarPublishingReview: async () => ({
+        preparationToken: 'prepared-token',
+        scheduledAt: '2026-10-12T12:00:00.000Z',
+        timezone: 'UTC',
+        expiresAt: '2026-10-12T00:15:00.000Z',
+        entries: [
+          {
+            reviewEntryId: '1111111111111111111111111111111111111111111111111111111111111111',
+            calendarItemId: 'cal-publish-1',
+            provider: 'facebook',
+            accountConnectionId: 'conn-page-a',
+            accountLabel: 'Main Page',
+            outputHash: 'a'.repeat(64),
+            imageUrl: 'https://cdn.example.test/main-page.jpg',
+            caption: 'Calendar caption',
+          },
+          {
+            reviewEntryId: '2222222222222222222222222222222222222222222222222222222222222222',
+            calendarItemId: 'cal-publish-1',
+            provider: 'facebook',
+            accountConnectionId: 'conn-page-b',
+            accountLabel: 'Second Page',
+            outputHash: 'b'.repeat(64),
+            imageUrl: 'https://cdn.example.test/second-page.jpg',
+            caption: 'Calendar caption',
+          },
+        ],
+      }),
+      confirmMetaCalendarPublishingReview: async (input) => { calls.push(input); return { status: 'queued', queued: [{ id: 'job-1' }, { id: 'job-2' }], failures: [] }; },
+    },
+  });
+  await ui.tab('Calendar');
+  await ui.button('Review 2026-10-12').props.onClick();
+  await ui.flush();
+  const mainImage = ui.nodes().find((node) => node.type === 'img' && node.props.alt === 'Main Page reviewed artwork');
+  const secondImage = ui.nodes().find((node) => node.type === 'img' && node.props.alt === 'Second Page reviewed artwork');
+  mainImage.props.onLoad();
+  await ui.flush();
+  assert.equal(ui.button('Confirm publishing approval').props.disabled, true, 'one account image cannot acknowledge the whole calendar row');
+  secondImage.props.onLoad();
+  await ui.flush();
+  assert.equal(ui.button('Confirm publishing approval').props.disabled, false);
+  await ui.button('Confirm publishing approval').props.onClick();
+  await ui.flush();
+  assert.deepEqual(calls[0].loadedEntryIds, [
+    '1111111111111111111111111111111111111111111111111111111111111111',
+    '2222222222222222222222222222222222222222222222222222222222222222',
+  ]);
+});
+
+test('blocked calendar publishing review shows per-account outcome and prepare-again path', async () => {
+  const workspace = savedWorkspace({
+    calendarItems: [{
+      id: 'cal-publish-1',
+      pod_id: 'one',
+      platform: 'facebook',
+      scheduled_date: '2026-10-12',
+      content_type: 'Post',
+      caption: 'Calendar caption',
+      status: 'draft',
+    }],
+  });
+  const ui = await workspaceHarness(workspace, {
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [] }),
+      prepareMetaCalendarPublishingReview: async () => ({
+        preparationToken: 'prepared-token',
+        scheduledAt: '2026-10-12T12:00:00.000Z',
+        timezone: 'UTC',
+        expiresAt: '2026-10-12T00:15:00.000Z',
+        entries: [{
+          reviewEntryId: '3333333333333333333333333333333333333333333333333333333333333333',
+          calendarItemId: 'cal-publish-1',
+          provider: 'facebook',
+          accountConnectionId: 'conn-page',
+          accountLabel: 'Main Page',
+          assetManifestHash: 'c'.repeat(64),
+          outputHash: 'c'.repeat(64),
+          imageUrl: 'https://cdn.example.test/blocked.jpg',
+          caption: 'Calendar caption',
+        }],
+      }),
+      confirmMetaCalendarPublishingReview: async () => ({
+        status: 'queue_blocked',
+        queued: [{ id: 'job-1', accountConnectionId: 'conn-page', assetManifestHash: 'c'.repeat(64), state: 'unknown', duplicate: true }],
+        failures: [{ accountConnectionId: 'conn-page', assetManifestHash: 'c'.repeat(64), reason: 'PUBLISH_OUTCOME_UNKNOWN' }],
+      }),
+    },
+  });
+  await ui.tab('Calendar');
+  await ui.button('Review 2026-10-12').props.onClick();
+  await ui.flush();
+  ui.nodes().find((node) => node.type === 'img' && node.props.alt === 'Main Page reviewed artwork').props.onLoad();
+  await ui.flush();
+  await ui.button('Confirm publishing approval').props.onClick();
+  await ui.flush();
+  assert.match(ui.text(), /Queue status:\s+unknown/);
+  assert.match(ui.text(), /PUBLISH_OUTCOME_UNKNOWN/);
+  assert.ok(ui.button('Prepare again'));
+});
+
 test('invalid calendar dates or mixed months cannot write a partial calendar', async () => {
   const db = database();
   for (const dates of [['2026-02-30'], ['2026-10-01', '2026-11-01']]) {
@@ -291,7 +518,7 @@ async function workspaceHarness(workspace, services = {}) {
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
     '../lib/aiClient': services.ai || {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
-    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, isMetaOrganicProvider: (provider) => ['instagram', 'facebook'].includes(provider), loadMetaAccountSelection: async () => ({ pages: [], instagramAccounts: [] }), loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), selectMetaAccounts: async () => ({}), summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }), ...(services.metaOrganic || {}) },
+    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, isMetaOrganicProvider: (provider) => ['instagram', 'facebook'].includes(provider), loadMetaAccountSelection: async () => ({ pages: [], instagramAccounts: [] }), loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), selectMetaAccounts: async () => ({}), prepareMetaCalendarPublishingReview: async () => { throw new Error('Calendar publishing review unavailable.'); }, confirmMetaCalendarPublishingReview: async () => { throw new Error('Calendar publishing confirmation unavailable.'); }, summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }), ...(services.metaOrganic || {}) },
     '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let commandItems = [];

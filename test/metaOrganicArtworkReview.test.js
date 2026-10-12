@@ -131,6 +131,42 @@ test('prepare blocks nonmember uploads before storage reads', async (t) => {
   assert.equal(reads, 0);
 });
 
+test('prepare blocks unsupported providers and missing account targets before storage or approval writes', async (t) => {
+  for (const scenario of ['non_meta_provider', 'missing_targets']) {
+    const harness = createRestHarness();
+    if (scenario === 'non_meta_provider') {
+      harness.rows.post.platform = 'linkedin';
+      harness.rows.snapshot.preference_value.platform = 'linkedin';
+      harness.rows.snapshot.preference_value.targets = [{ provider: 'linkedin', providerAccountId: '301', accountLabel: 'Company Page' }];
+    } else {
+      harness.rows.snapshot.preference_value.targets = [];
+    }
+    const originalFetch = globalThis.fetch;
+    const originalEnv = { ...process.env };
+    globalThis.fetch = harness.fetchImpl;
+    Object.assign(process.env, env);
+    let reads = 0;
+    try {
+      await assert.rejects(() => prepareArtworkReview({
+        accessToken: 'token',
+        user,
+        input: { podId, postId, headline: 'Release check', image: { kind: 'upload', storage_path: uploadPath } },
+        storage: { async readPodAsset() { reads += 1; return { bytes: imageBytes, contentType: 'image/jpeg', objectVersion: 'v1' }; } },
+        env,
+      }), (error) => scenario === 'non_meta_provider'
+        ? error.code === 'ARTWORK_PROVIDER_UNSUPPORTED'
+        : error.code === 'ARTWORK_TARGETS_REQUIRED');
+      assert.equal(reads, 0);
+      assert.equal(harness.rows.approvalRows.length, 0);
+      assert.equal(harness.calls.some((call) => (call.url.includes('/rest/v1/social_posts') && call.method === 'PATCH')
+        || (call.url.includes('/rest/v1/pod_preferences') && ['PATCH', 'POST'].includes(call.method))), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      restoreEnv(originalEnv);
+    }
+  }
+});
+
 test('authenticated prepare then explicit approval exports per saved account and reports partial failure', async (t) => {
   const harness = createRestHarness({ otherPreferenceCount: 30 });
   const originalFetch = globalThis.fetch;
@@ -194,6 +230,37 @@ test('authenticated prepare then explicit approval exports per saved account and
   assert.equal(harness.rows.persistedAttestation.approvalId, 'approval-1');
 });
 
+test('approval blocks removed account targets before post or approval mutations', async (t) => {
+  const harness = createRestHarness();
+  const originalFetch = globalThis.fetch;
+  const originalEnv = { ...process.env };
+  globalThis.fetch = harness.fetchImpl;
+  Object.assign(process.env, env);
+  t.after(() => { globalThis.fetch = originalFetch; restoreEnv(originalEnv); });
+  const storage = { async readPodAsset() { return { bytes: imageBytes, contentType: 'image/jpeg', objectVersion: 'object-v1' }; } };
+  const prepared = await prepareArtworkReview({
+    accessToken: 'token',
+    user,
+    input: { podId, postId, headline: 'Review headline', image: { kind: 'upload', storage_path: uploadPath } },
+    storage,
+    now: Date.parse('2026-10-12T01:00:00Z'),
+    env,
+  });
+  harness.rows.snapshot.preference_value.targets = [];
+  await assert.rejects(() => approveArtworkReviewAndExport({
+    accessToken: 'token',
+    user,
+    input: { podId, postId, preparationToken: prepared.preparationToken, accountSnapshotFingerprint: prepared.accountSnapshotFingerprint },
+    storage,
+    store: createInMemoryMetaOrganicArtworkExportStore([]),
+    now: Date.parse('2026-10-12T01:01:00Z'),
+    env,
+  }), (error) => error.code === 'ARTWORK_TARGETS_REQUIRED');
+  assert.equal(harness.rows.post.status, 'draft');
+  assert.equal(harness.rows.approvalRows.length, 0);
+  assert.equal(harness.rows.persistedAttestation, undefined);
+});
+
 test('missing private attestation RPC schema blocks approval without success', async (t) => {
   const harness = createRestHarness({ schemaAvailable: false });
   const originalFetch = globalThis.fetch;
@@ -224,7 +291,7 @@ test('missing private attestation RPC schema blocks approval without success', a
   assert.equal(harness.rows.persistedAttestation, undefined);
 });
 
-for (const scenario of ['missing', 'revoked', 'mismatched_saved_connection', 'wrong_provider']) {
+for (const scenario of ['missing', 'revoked', 'mismatched_saved_connection', 'wrong_provider', 'saved_target_wrong_provider', 'malformed_target']) {
   test('prepare rejects every unavailable saved account: ' + scenario, async (t) => {
     const harness = createRestHarness({
       transformConnections: (rows) => scenario === 'missing' ? rows.slice(0, 1)
@@ -234,6 +301,10 @@ for (const scenario of ['missing', 'revoked', 'mismatched_saved_connection', 'wr
     });
     if (scenario === 'mismatched_saved_connection') {
       harness.rows.snapshot.preference_value.targets[1].accountConnectionId = 'conn-101';
+    } else if (scenario === 'saved_target_wrong_provider') {
+      harness.rows.snapshot.preference_value.targets[1].provider = 'linkedin';
+    } else if (scenario === 'malformed_target') {
+      harness.rows.snapshot.preference_value.targets[1].providerAccountId = '';
     }
     const originalFetch = globalThis.fetch;
     const originalEnv = { ...process.env };
@@ -246,7 +317,8 @@ for (const scenario of ['missing', 'revoked', 'mismatched_saved_connection', 'wr
       input: { podId, postId, headline: 'Both selected Pages', image: { kind: 'upload', storage_path: uploadPath } },
       storage: { async readPodAsset() { reads += 1; throw new Error('Should not read source'); } },
       env,
-    }), (error) => error.code === 'ARTWORK_TARGET_UNAVAILABLE' && error.providerAccountId === '201');
+    }), (error) => error.code === 'ARTWORK_TARGET_UNAVAILABLE'
+      && (scenario === 'malformed_target' ? error.providerAccountId === '' : error.providerAccountId === '201'));
     assert.equal(reads, 0);
     assert.equal(harness.rows.snapshot.preference_value.targets.length, 2);
     assert.equal(harness.rows.approvalRows.length, 0);
