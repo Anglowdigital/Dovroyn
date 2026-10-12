@@ -83,8 +83,12 @@ export async function loadMetaConnectionStatus({ accessToken, podId }) {
 export function summarizeMetaConnection(status = {}, provider = META_ORGANIC_PROVIDER) {
   const connections = Array.isArray(status) ? status : (status.connections || []);
   if (!Array.isArray(status) && status.available !== true) return { status: 'unavailable', label: 'Meta connection unavailable' };
-  const active = connections.find((connection) => connection.provider === provider && connection.status === 'connected');
-  if (active) return { status: 'connected', label: active.accountLabel || (provider === META_FACEBOOK_PROVIDER ? 'Facebook Page' : 'Instagram account') };
+  const activeConnections = connections.filter((connection) => connection.provider === provider && connection.status === 'connected');
+  if (activeConnections.length) {
+    const fallback = provider === META_FACEBOOK_PROVIDER ? 'Facebook Page' : 'Instagram account';
+    const labels = [...new Set(activeConnections.map((connection) => connection.accountLabel || fallback))];
+    return { status: 'connected', label: labels.join(' · '), labels };
+  }
   const failed = connections.find((connection) => connection.provider === provider && ['expired', 'revoked', 'error', 'reconnect_required'].includes(connection.status));
   if (failed) return { status: failed.status, label: 'Reconnect required' };
   return { status: 'setup-ready', label: 'Official Meta sign-in available' };

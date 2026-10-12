@@ -96,6 +96,27 @@ test('invalid platform input cannot issue a write; explicitly empty selection is
   assert.deepEqual((await state.persistPlatformSelection(db.client, 'one', [])).preference_value, { platforms: [] });
 });
 
+test('account targets persist explicit connected choices and post snapshots reload without retargeting', async () => {
+  const db = database({ pod_preferences: [
+    { id: 'old-targets', pod_id: 'one', preference_type: 'account_target_selection', active: true, created_at: '2026-10-01', preference_value: { targets: { instagram: { provider: 'instagram', providerAccountId: 'old-ig', accountLabel: 'Old IG' } } } },
+    { id: 'foreign-targets', pod_id: 'two', preference_type: 'account_target_selection', active: true, created_at: '2026-10-02', preference_value: { targets: { instagram: { provider: 'instagram', providerAccountId: 'two-ig', accountLabel: 'Two IG' } } } },
+  ] });
+  await state.persistAccountTargetSelection(db.client, 'one', {
+    instagram: { provider: 'instagram', providerAccountId: 'new-ig', accountLabel: 'New IG' },
+    facebook: { provider: 'facebook', providerAccountId: 'page-1', accountLabel: 'Main Page' },
+  });
+  await state.persistPostTargetSnapshots(db.client, 'one', [
+    { postId: 'post-1', platform: 'instagram', target: { provider: 'instagram', providerAccountId: 'new-ig', accountLabel: 'New IG' } },
+  ]);
+  const restored = state.restoreOperationalState({ pod: { id: 'one' }, preferences: db.tables.pod_preferences });
+  assert.equal(db.tables.pod_preferences.find((row) => row.id === 'old-targets').active, false);
+  assert.equal(db.tables.pod_preferences.find((row) => row.id === 'foreign-targets').active, true);
+  assert.deepEqual(restored.accountTargets.instagram, [{ provider: 'instagram', providerAccountId: 'new-ig', accountLabel: 'New IG' }]);
+  assert.deepEqual(restored.accountTargets.facebook, [{ provider: 'facebook', providerAccountId: 'page-1', accountLabel: 'Main Page' }]);
+  assert.deepEqual(restored.postTargets['post-1'], [{ provider: 'instagram', providerAccountId: 'new-ig', accountLabel: 'New IG' }]);
+  await assert.rejects(state.persistAccountTargetSelection(db.client, 'one', { instagram: { provider: 'facebook', providerAccountId: 'wrong', accountLabel: 'Wrong' } }));
+});
+
 test('unconfirmed platform write never deactivates the previously saved selection', async () => {
   for (const options of [{ fail: 'pod_preferences:POST' }, { empty: 'pod_preferences:POST' }]) {
     const db = database({}, options);
@@ -253,6 +274,7 @@ async function workspaceHarness(workspace, services = {}) {
     ...repositoryHarness({}),
     loadPodWorkspace: async () => workspace,
     savePlatformSelection: async () => {}, saveCalendarItems: async () => [], saveCampaignDecision: async () => {},
+    saveAccountTargetSelection: async () => {}, savePostTargetSnapshots: async () => [],
     saveBudgetPlan: async () => {}, savePreferenceDecision: async () => {}, saveHolidayPreference: async () => {},
     getAssetPreview: async (path) => `https://pod-assets.example/${path}`,
     savePodPrimarySource: async (id) => ({ ...workspace.pod, id }),
@@ -321,6 +343,21 @@ function savedWorkspace(extra = {}) {
     messages: [], posts: [], assets: [], campaigns: [], calendarItems: [], budgets: [], holidayPreferences: [], ...extra,
   };
 }
+
+const confirmRows = (id, posts) => posts.map((post) => ({
+  id: post.id,
+  pod_id: id,
+  platform: post.platformKey,
+  body: post.content,
+  status: 'draft',
+}));
+const confirmSnapshotRows = (id, snapshots) => snapshots.map((snapshot, index) => ({
+  id: `target-${index}`,
+  pod_id: id,
+  preference_type: 'social_post_target_snapshot',
+  preference_value: { postId: snapshot.postId, platform: snapshot.platform, targets: snapshot.targets },
+  active: true,
+}));
 
 test('live stale-state selection: saved platform wins over analysis and failed toggle reverts with an error', async () => {
   let call;
@@ -417,7 +454,7 @@ function repositoryHarness(client) {
   const source = readFileSync(new URL('../src/lib/podRepository.js', import.meta.url), 'utf8')
     .replace(/import\s+{[\s\S]*?}\s+from\s+'[^']+';/g, '').replace(/export /g, '');
   const bindings = { supabase: client, supabaseConfigured: true, ...state, ...direction, ...learning };
-  return new Function(...Object.keys(bindings), `${source}; return { loadPodWorkspace, saveBudgetPlan, restorePodAnalysisSnapshot, selectWebsiteIntelligenceSnapshot };`)(...Object.values(bindings));
+  return new Function(...Object.keys(bindings), `${source}; return { loadPodWorkspace, saveBudgetPlan, saveAccountTargetSelection, savePostTargetSnapshots, restorePodAnalysisSnapshot, selectWebsiteIntelligenceSnapshot };`)(...Object.values(bindings));
 }
 
 test('repository returns all operational collections with Pod scoping and names preference-read failures', async () => {
@@ -793,7 +830,7 @@ for (const actionCase of asyncActionCases) {
           uploadPodAsset: async () => uploadedResult,
           approvePodDirection: async (id) => ({ ...(id === 'one' ? a.pod : b.pod), status: 'direction_locked' }),
           savePodDirectionOverride: async (id) => ({ pod: { ...(id === 'one' ? a.pod : b.pod), status: 'awaiting_direction' } }),
-          saveSocialPosts: async () => [{ id: 'generated-post' }], updateSocialPost: async () => {},
+          saveSocialPosts: async (id, posts) => confirmRows(id, posts), updateSocialPost: async () => {},
           ai: { requestPodAnalysis: async () => analyzedResult, requestSocialContent: async () => generatedResult, askPodAssistant: async () => ({ answer: 'Own answer', memorySaved: true }) },
         };
         const owner = actionCase.ai ? services.ai : services;
@@ -957,7 +994,7 @@ test('live palette commands are queued before navigation or unmount and cannot e
       const calls = [];
       const ui = await workspaceHarness(a, { loadPodWorkspace: async (id) => id === 'one' ? a : b,
         savePodPrimarySource: async (id, values) => { calls.push(['source', id, values]); return (id === 'one' ? a : b).pod; },
-        saveSocialPosts: async (id) => { calls.push(['drafts', id]); return [{ id: `generated-${id}` }]; },
+        saveSocialPosts: async (id, posts) => { calls.push(['drafts', id]); return confirmRows(id, posts); },
         ai: {
           requestPodAnalysis: async (values) => { calls.push(['analysis', values.podId]); return analyzedResult; },
           requestSocialContent: async (values) => { calls.push(['content', values.podId]); return generatedResult; },
@@ -986,7 +1023,7 @@ test('palette content generation uses the latest saved platform selection rather
   const a = actionableWorkspace(); const calls = [];
   const ui = await workspaceHarness(a, {
     savePlatformSelection: async (...args) => { calls.push(['selection', ...args]); },
-    saveSocialPosts: async () => [{ id: 'generated-own-post' }],
+    saveSocialPosts: async (id, posts) => confirmRows(id, posts),
     ai: { requestSocialContent: async (...args) => { calls.push(['content', ...args]); return generatedResult; } },
   });
   await ui.tab('Social accounts');
@@ -998,4 +1035,136 @@ test('palette content generation uses the latest saved platform selection rather
   assert.equal(calls[1][0], 'content');
   assert.equal(calls[1][1].podId, 'one');
   assert.deepEqual(calls[1][1].platforms, ['instagram', 'email']);
+});
+
+test('live connected Meta cards show all labels and explicit account targets persist onto new drafts', async () => {
+  const calls = [];
+  const workspace = actionableWorkspace('one');
+  workspace.preferences = [{ active: true, preference_type: 'platform_selection', preference_value: { platforms: ['instagram', 'facebook'] } }];
+  workspace.analysis.social_recommendations = '["instagram","facebook"]';
+  const ui = await workspaceHarness(workspace, {
+    saveAccountTargetSelection: async (...args) => { calls.push(['target-selection', ...args]); return {}; },
+    saveSocialPosts: async (id, posts) => { calls.push(['drafts', id, posts]); return confirmRows(id, posts).reverse(); },
+    savePostTargetSnapshots: async (id, snapshots) => { calls.push(['snapshots', id, snapshots]); return confirmSnapshotRows(id, snapshots); },
+    ai: { requestSocialContent: async (payload) => { calls.push(['content', payload]); return { posts: [
+      { platformKey: 'instagram', platformName: 'Instagram', content: 'IG caption', characterCount: 10, contentStyle: 'Image' },
+      { platformKey: 'facebook', platformName: 'Facebook', content: 'FB caption', characterCount: 10, contentStyle: 'Post' },
+    ] }; } },
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [
+        { provider: 'instagram', providerAccountId: 'ig-1', accountLabel: 'Main Instagram', status: 'connected' },
+        { provider: 'instagram', providerAccountId: 'ig-2', accountLabel: 'Outlet Instagram', status: 'connected' },
+        { provider: 'facebook', providerAccountId: 'page-1', accountLabel: 'Main Page', status: 'connected' },
+        { provider: 'facebook', providerAccountId: 'page-2', accountLabel: 'Outlet Page', status: 'connected' },
+      ] }),
+      summarizeMetaConnection: (status, provider) => {
+        const labels = status.connections.filter((connection) => connection.provider === provider && connection.status === 'connected').map((connection) => connection.accountLabel);
+        return labels.length ? { status: 'connected', label: labels.join(' · '), labels } : { status: 'setup-ready', label: 'Official Meta sign-in available' };
+      },
+    },
+  });
+  await ui.tab('Social accounts');
+  assert.match(ui.text(), /Main Instagram · Outlet Instagram/);
+  assert.match(ui.text(), /Main Page · Outlet Page/);
+  const targetCheckbox = (label) => ui.nodes().find((node) => node.type === 'span' && node.children?.some((child) => child.type === 'input') && ui.text(node).includes(label)).children.find((node) => node.type === 'input');
+  await targetCheckbox('Outlet Instagram').props.onChange({ target: { checked: true } });
+  await ui.flush();
+  assert.equal(calls[0][0], 'target-selection');
+  assert.deepEqual(calls[0][2].instagram, [{ provider: 'instagram', providerAccountId: 'ig-2', accountLabel: 'Outlet Instagram' }]);
+  await targetCheckbox('Main Page').props.onChange({ target: { checked: true } });
+  await ui.flush();
+  await targetCheckbox('Outlet Page').props.onChange({ target: { checked: true } });
+  await ui.flush();
+  await ui.tab('Social content');
+  await ui.button('Generate content').props.onClick();
+  await ui.flush();
+  const snapshots = calls.find((call) => call[0] === 'snapshots');
+  const draftRows = calls.find((call) => call[0] === 'drafts')[2];
+  assert.deepEqual(snapshots[2], [
+    { postId: draftRows[0].id, platform: 'instagram', targets: [{ provider: 'instagram', providerAccountId: 'ig-2', accountLabel: 'Outlet Instagram' }] },
+    { postId: draftRows[1].id, platform: 'facebook', targets: [
+      { provider: 'facebook', providerAccountId: 'page-1', accountLabel: 'Main Page' },
+      { provider: 'facebook', providerAccountId: 'page-2', accountLabel: 'Outlet Page' },
+    ] },
+  ]);
+  assert.match(ui.text(), /Instagram .*Outlet Instagram/);
+  assert.match(ui.text(), /Facebook .*Main Page · Outlet Page/);
+});
+
+test('missing social post save confirmation blocks target binding before snapshots', async () => {
+  const workspace = actionableWorkspace('one');
+  workspace.preferences = [
+    { active: true, preference_type: 'platform_selection', preference_value: { platforms: ['instagram'] } },
+    { active: true, preference_type: 'account_target_selection', preference_value: { targets: { instagram: [{ provider: 'instagram', providerAccountId: 'ig-1', accountLabel: 'Main Instagram' }] } } },
+  ];
+  const calls = [];
+  const ui = await workspaceHarness(workspace, {
+    saveSocialPosts: async (id, posts) => { calls.push(['drafts', posts]); return []; },
+    savePostTargetSnapshots: async (...args) => { calls.push(['snapshots', ...args]); return []; },
+    ai: { requestSocialContent: async () => ({ posts: [{ platformKey: 'instagram', platformName: 'Instagram', content: 'IG caption', characterCount: 10, contentStyle: 'Image' }] }) },
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [{ provider: 'instagram', providerAccountId: 'ig-1', accountLabel: 'Main Instagram', status: 'connected' }] }),
+      summarizeMetaConnection: () => ({ status: 'connected', label: 'Main Instagram', labels: ['Main Instagram'] }),
+    },
+  });
+  await ui.tab('Social content');
+  await ui.button('Generate content').props.onClick();
+  await ui.flush();
+  assert.match(ui.text(), /Social drafts were not fully confirmed/);
+  assert.equal(calls.some((call) => call[0] === 'snapshots'), false);
+  assert.doesNotMatch(ui.text(), /IG caption/);
+});
+
+test('partial target snapshot acknowledgement strips targets from recoverable drafts and calendar rows', async () => {
+  const db = database();
+  const workspace = actionableWorkspace('one');
+  workspace.preferences = [
+    { active: true, preference_type: 'platform_selection', preference_value: { platforms: ['instagram'] } },
+    { active: true, preference_type: 'account_target_selection', preference_value: { targets: { instagram: { provider: 'instagram', providerAccountId: 'ig-1', accountLabel: 'Main Instagram' } } } },
+  ];
+  const ui = await workspaceHarness(workspace, {
+    saveCalendarItems: (id, items) => state.persistCalendarItems(db.client, id, items),
+    saveSocialPosts: async (id, posts) => confirmRows(id, posts),
+    savePostTargetSnapshots: async () => [],
+    ai: { requestSocialContent: async () => ({ posts: [{ platformKey: 'instagram', platformName: 'Instagram', content: 'IG caption', characterCount: 10, contentStyle: 'Image' }] }) },
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [{ provider: 'instagram', providerAccountId: 'ig-1', accountLabel: 'Main Instagram', status: 'connected' }] }),
+      summarizeMetaConnection: () => ({ status: 'connected', label: 'Main Instagram', labels: ['Main Instagram'] }),
+    },
+  });
+  await ui.tab('Social content');
+  await ui.button('Generate content').props.onClick();
+  await ui.flush();
+  assert.match(ui.text(), /Account target not saved/);
+  assert.doesNotMatch(ui.text(), /Instagram .*Main Instagram/);
+  await ui.tab('Calendar');
+  await ui.button('Generate calendar').props.onClick();
+  await ui.flush();
+  assert.equal(db.tables.calendar_items.some((item) => item.creative_note?.includes('Main Instagram')), false);
+});
+
+test('saved unavailable targets are historical only and are not used for new drafts', async () => {
+  const calls = [];
+  const workspace = actionableWorkspace('one');
+  workspace.preferences = [
+    { active: true, preference_type: 'platform_selection', preference_value: { platforms: ['instagram'] } },
+    { active: true, preference_type: 'account_target_selection', preference_value: { targets: { instagram: { provider: 'instagram', providerAccountId: 'revoked-ig', accountLabel: 'Revoked Instagram' } } } },
+  ];
+  workspace.posts = [{ id: 'post-old', pod_id: 'one', platform: 'instagram', body: 'Old caption', status: 'draft' }];
+  workspace.preferences.push({ active: true, preference_type: 'social_post_target_snapshot', preference_value: { postId: 'post-old', platform: 'instagram', target: { provider: 'instagram', providerAccountId: 'revoked-ig', accountLabel: 'Revoked Instagram' } } });
+  const ui = await workspaceHarness(workspace, {
+    saveSocialPosts: async (id, posts) => { calls.push(posts); return confirmRows(id, posts); },
+    savePostTargetSnapshots: async (...args) => { calls.push(args); return []; },
+    ai: { requestSocialContent: async () => ({ posts: [{ platformKey: 'instagram', platformName: 'Instagram', content: 'New caption', characterCount: 11, contentStyle: 'Image' }] }) },
+    metaOrganic: {
+      loadMetaConnectionStatus: async () => ({ available: true, connections: [{ provider: 'instagram', providerAccountId: 'current-ig', accountLabel: 'Current Instagram', status: 'connected' }] }),
+      summarizeMetaConnection: () => ({ status: 'connected', label: 'Current Instagram', labels: ['Current Instagram'] }),
+    },
+  });
+  await ui.tab('Social content');
+  assert.match(ui.text(), /Revoked Instagram · unavailable/);
+  await ui.button('Generate content').props.onClick();
+  await ui.flush();
+  assert.deepEqual(calls[0][0].targetAccounts, []);
+  assert.doesNotMatch(ui.text(), /New caption.*Revoked Instagram/);
 });

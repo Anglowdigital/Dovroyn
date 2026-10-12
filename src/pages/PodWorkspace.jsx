@@ -28,7 +28,7 @@ import {
 import { supabaseConfigured } from '../lib/supabaseClient';
 import { isPodDirectionApprovalCurrent, restorePodDirection } from '../lib/podDirection';
 import { buildCalendarItems, restoreOperationalState } from '../lib/podState';
-import { attachApprovedCalendarCreatives, resolveCalendarCreative } from '../lib/calendarCreative';
+import { attachApprovedCalendarCreatives, attachCalendarTargetSnapshots, decodeCalendarTargets, resolveCalendarCreative } from '../lib/calendarCreative';
 import { capturePodAction, isPodActionPending, startPodLifecycle } from '../lib/podLifecycle';
 import { normalizePodCompetitorSnapshot, normalizePodLearning, selectPodCompetitorSnapshot } from '../lib/podLearning';
 import { getPlan } from '../lib/plans';
@@ -43,6 +43,8 @@ import {
   loadPodWorkspace,
   restorePodAnalysisSnapshot,
   savePlatformSelection,
+  saveAccountTargetSelection,
+  savePostTargetSnapshots,
   saveCalendarItems,
   saveCampaignDecision,
   saveBudgetPlan,
@@ -139,6 +141,41 @@ function EmptyState({ icon: Icon, title, body, action, actionLabel }) {
       {action && <button className="button button-primary button-sm" type="button" onClick={action}>{actionLabel}</button>}
     </div>
   );
+}
+
+function confirmSavedSocialPosts(expectedPosts, savedRows, podId) {
+  const rows = Array.isArray(savedRows) ? savedRows : [];
+  if (rows.length !== expectedPosts.length) throw new Error('Social drafts were not fully confirmed.');
+  const byId = new Map(rows.map((row) => [row?.id, row]));
+  return expectedPosts.map((post) => {
+    const row = byId.get(post.id);
+    if (!row || row.pod_id !== podId || row.platform !== post.platformKey || row.body !== post.content || row.status !== 'draft') {
+      throw new Error('Social drafts returned mismatched rows.');
+    }
+    return { ...post, id: row.id };
+  });
+}
+
+const targetKey = (targets = []) => targets.map((target) => `${target.provider}:${target.providerAccountId}:${target.accountLabel}`).sort().join('|');
+
+function preferenceValue(value) {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function confirmPostTargetSnapshots(expectedSnapshots, savedRows, podId) {
+  const rows = Array.isArray(savedRows) ? savedRows : [];
+  if (rows.length !== expectedSnapshots.length) throw new Error('Account target snapshots were not fully confirmed.');
+  const expected = new Set(expectedSnapshots.map((snapshot) => `${snapshot.postId}:${snapshot.platform}:${targetKey(snapshot.targets)}`));
+  for (const row of rows) {
+    const value = preferenceValue(row?.preference_value);
+    const key = `${value?.postId || value?.post_id}:${value?.platform}:${targetKey(value?.targets || value?.target ? (Array.isArray(value.targets) ? value.targets : [value.target]) : [])}`;
+    if (row?.pod_id !== podId || row?.preference_type !== 'social_post_target_snapshot' || row?.active === false || !expected.delete(key)) {
+      throw new Error('Account target snapshots returned mismatched rows.');
+    }
+  }
+  if (expected.size) throw new Error('Account target snapshots returned incomplete rows.');
+  return rows;
 }
 
 function CompetitorSnapshotCards({ snapshot }) {
@@ -296,6 +333,7 @@ function LivePodWorkspace({ session, subscription }) {
   const [sourceUrl, setSourceUrl] = useState('');
   const [assets, setAssets] = useState([]);
   const [selectedPlatformKeys, setSelectedPlatformKeys] = useState([]);
+  const [accountTargetSelection, setAccountTargetSelection] = useState({});
   const [posts, setPosts] = useState([]);
   const [creativePreferences, setCreativePreferences] = useState([]);
   const [calendarItems, setCalendarItems] = useState([]);
@@ -362,6 +400,7 @@ function LivePodWorkspace({ session, subscription }) {
     setSourceUrl('');
     setAssets([]);
     setSelectedPlatformKeys([]);
+    setAccountTargetSelection({});
     setPosts([]);
     setCreativePreferences([]);
     setCalendarItems([]);
@@ -407,6 +446,7 @@ function LivePodWorkspace({ session, subscription }) {
       const operational = restoreOperationalState(workspace);
       hasPlatformSelection.current = operational.platformKeys !== null;
       setSelectedPlatformKeys(operational.platformKeys || []);
+      setAccountTargetSelection(operational.accountTargets || {});
       setCalendarItems(operational.calendarItems);
       setCampaign(operational.campaign);
       setBudget(operational.budget);
@@ -441,6 +481,7 @@ function LivePodWorkspace({ session, subscription }) {
             characterCount: post.body.length,
             contentStyle: platform?.rules?.contentStyle || 'Platform-specific',
             status: post.status,
+            targetAccounts: operational.postTargets?.[post.id] || [],
           };
         }));
       const persistedAssets = await Promise.all((workspace.assets || []).map(async (asset) => ({
@@ -576,6 +617,40 @@ function LivePodWorkspace({ session, subscription }) {
     });
   };
 
+  const connectedAccountsFor = (platformKey) => (metaConnectionStatus.connections || [])
+    .filter((connection) => connection.provider === platformKey && connection.status === 'connected' && connection.providerAccountId && connection.accountLabel)
+    .map((connection) => ({ provider: platformKey, providerAccountId: connection.providerAccountId, accountLabel: connection.accountLabel }));
+  const selectedTargetsFor = (platformKey) => Array.isArray(accountTargetSelection[platformKey]) ? accountTargetSelection[platformKey] : (accountTargetSelection[platformKey] ? [accountTargetSelection[platformKey]] : []);
+  const currentTargetsFor = (platformKey) => {
+    const current = new Map(connectedAccountsFor(platformKey).map((account) => [account.providerAccountId, account]));
+    return selectedTargetsFor(platformKey).flatMap((target) => current.get(target.providerAccountId) || []);
+  };
+  const targetIsCurrent = (target) => Boolean(target && connectedAccountsFor(target.provider).some((account) => account.providerAccountId === target.providerAccountId));
+
+  const saveAccountTarget = async (platformKey, providerAccountId, checked) => {
+    if (!beginAction() || actionPending('operational')) return;
+    const target = connectedAccountsFor(platformKey).find((account) => account.providerAccountId === providerAccountId) || null;
+    if (!target) return;
+    const previous = accountTargetSelection;
+    const next = { ...accountTargetSelection };
+    const existing = selectedTargetsFor(platformKey);
+    const selected = checked
+      ? [...existing.filter((account) => account.providerAccountId !== target.providerAccountId), target]
+      : existing.filter((account) => account.providerAccountId !== target.providerAccountId);
+    if (selected.length) next[platformKey] = selected;
+    else delete next[platformKey];
+    await saveOperational('account-targets', async (isCurrent) => {
+      setAccountTargetSelection(next);
+      try {
+        await saveAccountTargetSelection(pod.id, next);
+        if (isCurrent()) showNotice(`${getPlatform(platformKey)?.name || platformKey} targets saved. Existing drafts keep their saved targets.`);
+      } catch (error) {
+        if (isCurrent()) setAccountTargetSelection(previous);
+        throw error;
+      }
+    });
+  };
+
   const allTabs = useMemo(() => TAB_GROUPS.flatMap((group) => group.items), []);
   const deferPodAction = (action) => {
     const origin = beginAction();
@@ -650,7 +725,7 @@ function LivePodWorkspace({ session, subscription }) {
     const saved = await saveCampaignDecision(pod.id, {
       campaignId: campaign?.id, name: campaign?.name || `${pod.pod_name} campaign`, status,
       objective: campaign?.objective || analysis?.offer || null,
-      brief: campaign?.brief || { strategy: analysis?.opportunity || '', platforms: selectedPlatformKeys },
+      brief: campaign?.brief || { strategy: analysis?.opportunity || '', platforms: selectedPlatformKeys, accountTargets: accountTargetSelection },
     });
     if (!isCurrent()) return;
     setCampaign(saved);
@@ -892,12 +967,29 @@ function LivePodWorkspace({ session, subscription }) {
         contentDay: new Date().toISOString().slice(0, 10),
       });
       if (!action.isCurrent()) return;
-      const generated = result.posts.map((post, index) => ({ ...post, id: `${post.platformKey}-${Date.now()}-${index}`, status: 'Draft' }));
-      setPosts(generated);
+      const generated = result.posts.map((post) => ({ ...post, id: crypto.randomUUID(), status: 'Draft' }));
+      const targeted = generated.map((post) => ({ ...post, targetAccounts: currentTargetsFor(post.platformKey) }));
       if (pod?.id) {
-        const saved = await saveSocialPosts(action.podId, generated);
+        const saved = await saveSocialPosts(action.podId, targeted);
         if (!action.isCurrent()) return;
-        setPosts((current) => current.map((post, index) => ({ ...post, id: saved[index]?.id || post.id })));
+        const withIds = confirmSavedSocialPosts(targeted, saved, action.podId);
+        const snapshots = withIds.filter((post) => post.targetAccounts?.length).map((post) => ({ postId: post.id, platform: post.platformKey, targets: post.targetAccounts }));
+        if (snapshots.length) {
+          try {
+            const savedSnapshots = await savePostTargetSnapshots(action.podId, snapshots);
+            confirmPostTargetSnapshots(snapshots, savedSnapshots, action.podId);
+          } catch (error) {
+            if (!action.isCurrent()) return;
+            setPosts(withIds.map((post) => ({ ...post, targetAccounts: [], targetSaveFailed: Boolean(post.targetAccounts?.length) })));
+            setActiveTab('content');
+            showNotice(error.message || 'Drafts were saved, but account targets were not confirmed. Choose targets again before scheduling.');
+            return;
+          }
+        }
+        if (!action.isCurrent()) return;
+        setPosts(withIds);
+      } else {
+        setPosts(targeted);
       }
       setActiveTab('content');
       showNotice(`${generated.length} platform-specific drafts generated.`);
@@ -919,7 +1011,8 @@ function LivePodWorkspace({ session, subscription }) {
       const items = buildCalendarItems({ month: calendarMonth, posts, platformKeys: selectedPlatformKeys,
         weeklyPostingDays: plan.weeklyPostingDays, monthlyContentDays: plan.monthlyContentDays });
       if (!items.length) throw new Error('No calendar days are available. Check your plan allowance and selected platform drafts.');
-      const saved = await saveCalendarItems(pod.id, attachApprovedCalendarCreatives(items, { podId: pod.id, posts, preferences: creativePreferences, assets, sourceMedia: analysis?.source_media || [] }));
+      const targetedItems = attachCalendarTargetSnapshots(items, { posts });
+      const saved = await saveCalendarItems(pod.id, attachApprovedCalendarCreatives(targetedItems, { podId: pod.id, posts, preferences: creativePreferences, assets, sourceMedia: analysis?.source_media || [] }));
       if (!isCurrent()) return;
       setCalendarItems((current) => [...current.filter((item) => !item.scheduled_date.startsWith(calendarMonth)), ...saved]);
       showNotice('Calendar drafts saved for this month. Nothing was approved or published.');
@@ -1141,11 +1234,21 @@ function LivePodWorkspace({ session, subscription }) {
                 const selected = selectedPlatformKeys.includes(platform.key);
                 const recommended = recommendedKeys.includes(platform.key);
                 const connectionSummary = isMetaOrganicProvider(platform.key) ? summarizeMetaConnection(metaConnectionStatus, platform.key) : null;
+                const connectedAccounts = isMetaOrganicProvider(platform.key) ? connectedAccountsFor(platform.key) : [];
+                const savedTargets = selectedTargetsFor(platform.key);
+                const selectedIds = new Set(currentTargetsFor(platform.key).map((account) => account.providerAccountId));
+                const unavailableTargets = savedTargets.filter((target) => !selectedIds.has(target.providerAccountId));
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
                     <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
                     <PlatformMark platform={platform.key} size={28} />
-                    <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}{connectionSummary?.label || 'Provider setup required for live connection'}</small></div>
+                    <div><h3>{platform.name}</h3><p>{platform.focus}</p><small>{recommended ? 'Recommended by pod AI · ' : 'Your choice · '}{connectionSummary?.label || 'Provider setup required for live connection'}</small>
+                      {selected && unavailableTargets.length > 0 && <small>{unavailableTargets.map((target) => target.accountLabel).join(' · ')} saved previously · unavailable for new drafts</small>}
+                      {selected && connectedAccounts.length > 0 && <fieldset className="pod-account-targets" onClick={(event) => event.stopPropagation()}>
+                        <legend>Draft targets</legend>
+                        {connectedAccounts.map((account) => <span key={account.providerAccountId}><input type="checkbox" checked={selectedIds.has(account.providerAccountId)} disabled={Boolean(operationalMutation)} onChange={(event) => saveAccountTarget(platform.key, account.providerAccountId, event.target.checked)} />{account.accountLabel}</span>)}
+                      </fieldset>}
+                    </div>
                     {selected && <button className="button button-ghost button-sm" type="button" disabled={connectionMutation === platform.key || connectionSummary?.status === 'unavailable'} onClick={(event) => { event.preventDefault(); connectPlatform(platform); }}>{connectionMutation === platform.key ? 'Opening…' : connectionSummary?.status === 'unavailable' ? 'Unavailable' : connectionSummary?.status === 'connected' ? 'Reconnect' : 'Connect account'}</button>}
                   </label>
                 );
@@ -1159,7 +1262,12 @@ function LivePodWorkspace({ session, subscription }) {
         return (
           <div className="pod-panel-stack">
             <header className="pod-panel-heading"><div><p className="eyebrow">Social manager</p><h2>One campaign. A creative for every channel.</h2><p className="subtle">Generate channel-specific copy, choose your imagery, then edit and approve the visual creative. Nothing is published from this screen.</p></div><button className="button button-primary" type="button" disabled={Boolean(directionMutation) || contentGenerating || directionSaveFailed} onClick={generateContent}><Sparkles size={16} /> {contentGenerating ? 'Generating…' : 'Generate content'}</button></header>
-            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}</small></div><StatusPill>Draft</StatusPill></header><CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /><p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>)}</div>}
+            {posts.length === 0 ? <EmptyState icon={MessageSquareText} title="No content drafts yet" body="Approve the brand direction, then generate the campaign for every selected platform." /> : <div className="pod-post-list">{posts.map((post) => {
+              const targetText = (post.targetAccounts || []).length
+                ? post.targetAccounts.map((target) => `${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}`).join(' · ')
+                : (post.targetSaveFailed ? 'Account target not saved' : '');
+              return <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}{targetText ? ` · ${targetText}` : ''}</small></div><StatusPill>Draft</StatusPill></header><CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /><p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>;
+            })}</div>}
           </div>
         );
       }
@@ -1180,6 +1288,10 @@ function LivePodWorkspace({ session, subscription }) {
                   const dateItems = monthItems.filter((item) => item.scheduled_date === `${calendarMonth}-${String(date).padStart(2, '0')}`);
                   const isPostDay = dateItems.length > 0;
                   const artwork = resolveCalendarCreative(dateItems[0], { podId: pod.id, assets, sourceMedia: analysis?.source_media || [] });
+                  const targetBadges = dateItems.flatMap((item) => {
+                    const targets = decodeCalendarTargets(item.creative_note);
+                    return targets.length ? targets.map((target) => ({ item, target })) : [{ item, target: null }];
+                  });
                   return (
                     <div key={date} className={`pod-cal-day${isPostDay ? ' pod-cal-post' : ''}`}>
                       <span className="pod-cal-date">{date}</span>
@@ -1188,7 +1300,7 @@ function LivePodWorkspace({ session, subscription }) {
                           <span className="pod-cal-thumb">{artwork?.imageUrl ? <img src={artwork.imageUrl} alt="" /> : <Sparkles size={14} />}</span>
                           <strong>{artwork?.snapshot.headline || dateItems[0].caption || dateItems[0].content_type}</strong>
                           <small>{[...new Set(dateItems.map((item) => item.status))].join(' · ')}</small>
-                          <span className="pod-cal-badges">{[...new Set(dateItems.map((item) => item.platform))].map((key) => <span key={key}>{getPlatform(key)?.name || key}</span>)}</span>
+                          <span className="pod-cal-badges">{[...new Map(targetBadges.map(({ item, target }) => [target ? `${item.platform}:${target.providerAccountId}` : item.platform, `${getPlatform(item.platform)?.name || item.platform}${target ? ` · ${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}` : ''}`])).entries()].map(([key, label]) => <span key={key}>{label}</span>)}</span>
                         </>
                       )}
                     </div>
@@ -1198,7 +1310,9 @@ function LivePodWorkspace({ session, subscription }) {
             ) : <EmptyState icon={CalendarDays} title="Calendar not generated" body="Generate content drafts first, then the pod can place them within the paid allowance period." />}
             {monthItems.length > 0 && <section className="calendar-artwork-list" aria-label="Saved calendar artwork">{monthItems.map((item, index) => {
               const creative = resolveCalendarCreative(item, { podId: pod.id, assets, sourceMedia: analysis?.source_media || [] });
-              return <details key={item.id || index}><summary>{item.scheduled_date} · {getPlatform(item.platform)?.name || item.platform} · {creative ? 'Saved artwork' : 'Caption only'}</summary>
+              const targets = decodeCalendarTargets(item.creative_note);
+              const targetLabel = targets.map((target) => `${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}`).join(' · ');
+              return <details key={item.id || index}><summary>{item.scheduled_date} · {getPlatform(item.platform)?.name || item.platform}{targetLabel ? ` · ${targetLabel}` : ''} · {creative ? 'Saved artwork' : 'Caption only'}</summary>
                 {creative ? <><div className="calendar-artwork-preview">{creative.imageUrl && <img src={creative.imageUrl} alt={creative.imageAlt} />}<h3>{creative.snapshot.headline}</h3><p>{creative.snapshot.call_to_action}</p></div><small>Artwork snapshot approved {new Date(creative.snapshot.approved_at).toLocaleDateString()}. Calendar status: {item.status}. This does not authorise publishing.</small></> : <p>No matching approved artwork snapshot is available for this entry.</p>}
                 <p>{item.caption}</p></details>;
             })}</section>}

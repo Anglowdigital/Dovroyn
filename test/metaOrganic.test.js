@@ -35,6 +35,7 @@ import {
   validateGrantedScopes,
   validateOAuthCookie,
 } from '../api/_lib/metaOrganic.js';
+import { summarizeMetaConnection } from '../src/lib/metaOrganic.js';
 
 const activePaidSubscription = Object.freeze({
   tier: 'starter',
@@ -700,6 +701,20 @@ test('status normalization handles labels, provenance, and expired or invalid cr
     status: 'connected',
     expiresAt: '2099-01-01T00:00:00.000Z',
   }, Date.parse('2026-01-01T00:00:00.000Z')).status, 'reconnect_required');
+});
+
+test('client Meta summaries list every connected account label', () => {
+  const summary = summarizeMetaConnection({
+    available: true,
+    connections: [
+      { provider: 'facebook', providerAccountId: 'page-1', accountLabel: 'Main Page', status: 'connected' },
+      { provider: 'facebook', providerAccountId: 'page-2', accountLabel: 'Outlet Page', status: 'connected' },
+      { provider: 'instagram', providerAccountId: 'ig-1', accountLabel: 'Main IG', status: 'connected' },
+    ],
+  }, 'facebook');
+  assert.equal(summary.status, 'connected');
+  assert.deepEqual(summary.labels, ['Main Page', 'Outlet Page']);
+  assert.equal(summary.label, 'Main Page · Outlet Page');
 });
 
 test('AES-GCM token encryption is decryptable with mock key and does not expose raw token', () => {

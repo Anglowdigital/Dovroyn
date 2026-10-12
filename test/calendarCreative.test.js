@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attachApprovedCalendarCreatives, decodeCalendarCreative, resolveCalendarCreative } from '../src/lib/calendarCreative.js';
+import { attachApprovedCalendarCreatives, attachCalendarTargetSnapshots, decodeCalendarCreative, decodeCalendarTargets, resolveCalendarCreative } from '../src/lib/calendarCreative.js';
 
 const asset = { storagePath: 'pod/photo.jpg', preview: 'https://storage.test/photo?signature=secret', name: 'Brand photo' };
 const post = { id: 'post1', platformKey: 'instagram', content: 'Actual approved caption' };
@@ -52,4 +52,18 @@ test('selected platforms keep exactly the same campaign dates and allowance coun
   assert.deepEqual(attached.map(({ creative_note, ...item }) => item), sameDateItems);
   assert.equal(new Set(attached.map(item => item.scheduled_date)).size, 2);
   assert.ok(attached.every(item => decodeCalendarCreative(item.creative_note)));
+});
+
+test('calendar metadata keeps selected account targets alongside approved artwork', () => {
+  const targets = [
+    { provider: 'instagram', providerAccountId: 'ig-1', accountLabel: 'Main Instagram' },
+    { provider: 'instagram', providerAccountId: 'ig-2', accountLabel: 'Outlet Instagram' },
+  ];
+  const targeted = attachCalendarTargetSnapshots(items, { posts: [{ ...post, targetAccounts: targets }] });
+  assert.deepEqual(targeted.map(({ creative_note, ...item }) => item), items);
+  assert.deepEqual(decodeCalendarTargets(targeted[0].creative_note), targets);
+  const attached = attachApprovedCalendarCreatives(targeted, options);
+  assert.equal(new Set(attached.map(item => item.scheduled_date)).size, 2);
+  assert.equal(resolveCalendarCreative(attached[0], options).snapshot.headline, review.headline);
+  assert.deepEqual(decodeCalendarTargets(attached[0].creative_note), targets);
 });
