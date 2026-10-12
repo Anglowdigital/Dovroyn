@@ -23,10 +23,11 @@ export function normalizeAccountTarget(value, expectedPlatform = '') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const provider = cleanText(value.provider || value.platform, 40).toLowerCase();
   const providerAccountId = cleanText(value.providerAccountId || value.provider_account_id || value.accountId || value.id, 100);
+  const accountConnectionId = cleanText(value.accountConnectionId || value.account_connection_id || value.connectionId, 120);
   const accountLabel = cleanText(value.accountLabel || value.account_label || value.label, 200);
   if (!provider || !providerAccountId || !accountLabel) return null;
   if (expectedPlatform && provider !== expectedPlatform) return null;
-  return { provider, providerAccountId, accountLabel };
+  return { provider, providerAccountId, accountLabel, ...(accountConnectionId ? { accountConnectionId } : {}) };
 }
 
 export function normalizeAccountTargets(value, expectedPlatform = '') {

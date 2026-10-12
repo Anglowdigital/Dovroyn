@@ -36,7 +36,7 @@ import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askPodAssistant, requestCompetitorSnapshot, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
-import { initiateMetaOrganicConnection, isMetaOrganicProvider, loadMetaAccountSelection, loadMetaConnectionStatus, selectMetaAccounts, summarizeMetaConnection } from '../lib/metaOrganic';
+import { confirmMetaCalendarPublishingReview, initiateMetaOrganicConnection, isMetaOrganicProvider, loadMetaAccountSelection, loadMetaConnectionStatus, prepareMetaCalendarPublishingReview, selectMetaAccounts, summarizeMetaConnection } from '../lib/metaOrganic';
 import {
   approvePodDirection,
   getAssetPreview,
@@ -96,6 +96,39 @@ const TAB_GROUPS = [
     ],
   },
 ];
+
+function formatUtcDateTime(value) {
+  const time = Date.parse(value || '');
+  if (!Number.isFinite(time)) return 'Reviewed publishing time';
+  return new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'UTC',
+    hour12: false,
+  }).format(new Date(time)) + ' UTC';
+}
+
+function jobField(row, camel) {
+  const snake = camel.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  return row?.[camel] ?? row?.[snake];
+}
+
+function publishingEntryOutcome(review, entry) {
+  const jobs = Array.isArray(review?.queued) ? review.queued : [];
+  const failures = Array.isArray(review?.failures) ? review.failures : [];
+  const sameEntry = (row) => jobField(row, 'accountConnectionId') === entry.accountConnectionId
+    && (!jobField(row, 'assetManifestHash') || jobField(row, 'assetManifestHash') === entry.assetManifestHash);
+  const job = jobs.find(sameEntry);
+  const failure = failures.find(sameEntry);
+  if (job) {
+    const state = jobField(job, 'state') || (job.duplicate ? 'duplicate' : 'queued');
+    return { label: state === 'queued' ? 'queued' : state, detail: job.duplicate ? 'Existing durable job reused.' : 'Durable job recorded.' };
+  }
+  if (failure) return { label: 'blocked', detail: failure.reason || 'Queue blocked.' };
+  if (review?.status === 'queued') return { label: 'unknown', detail: 'No durable account result was returned.' };
+  if (review?.status === 'blocked') return { label: 'blocked', detail: 'Not queued.' };
+  return null;
+}
 
 const INITIAL_ANALYSIS = {
   summary: 'A premium skincare brand that makes effective routines feel calm, clear, and attainable.',
@@ -360,9 +393,11 @@ function LivePodWorkspace({ session, subscription }) {
   const podLifecycle = useRef({ current: null, podId });
   podLifecycle.current.podId = podId;
   const hasPlatformSelection = useRef(false);
+  const calendarPublishGeneration = useRef(0);
   const [modal, setModal] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState('');
+  const [calendarPublishReview, setCalendarPublishReview] = useState(null);
 
   const plan = getPlan(subscription?.tier || 'free');
   const sourceLocked = Boolean(pod?.source_locked_at || analysis);
@@ -370,6 +405,11 @@ function LivePodWorkspace({ session, subscription }) {
   const brandPhotos = assets.filter((asset) => asset.assetRole === 'brand_photo');
   const selectedSource = POD_SOURCE_TYPES.find((source) => source.value === sourceType);
   const monthItems = calendarItems.filter((item) => item.scheduled_date.startsWith(calendarMonth));
+  const calendarPublishSourceFingerprint = JSON.stringify({
+    calendar: monthItems.map((item) => [item.id, item.scheduled_date, item.platform, item.caption, item.status, item.creative_note]),
+    accounts: accountTargetSelection,
+    posts: posts.map((post) => [post.id, post.platformKey, post.content, post.status, post.targetAccounts]),
+  });
   const campaignState = campaign?.status ? campaign.status[0].toUpperCase() + campaign.status.slice(1) : 'Draft';
   const targetCountry = pod?.target_country === 'Australia' ? 'AU' : String(pod?.target_country || '').trim().toUpperCase();
   const budgetCurrency = targetCountry === 'AU' ? 'AUD' : '';
@@ -414,6 +454,7 @@ function LivePodWorkspace({ session, subscription }) {
     setBudgetDecision('pending');
     setModal(null);
     setPaletteOpen(false);
+    setCalendarPublishReview(null);
     setCompetitorBusy(false);
     setCompetitorError('');
     setCompetitorUrls(['', '', '']);
@@ -533,6 +574,11 @@ function LivePodWorkspace({ session, subscription }) {
   }, [podId]);
 
   useEffect(() => {
+    calendarPublishGeneration.current += 1;
+    setCalendarPublishReview(null);
+  }, [calendarPublishSourceFingerprint]);
+
+  useEffect(() => {
     const onKeyDown = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -619,7 +665,12 @@ function LivePodWorkspace({ session, subscription }) {
 
   const connectedAccountsFor = (platformKey) => (metaConnectionStatus.connections || [])
     .filter((connection) => connection.provider === platformKey && connection.status === 'connected' && connection.providerAccountId && connection.accountLabel)
-    .map((connection) => ({ provider: platformKey, providerAccountId: connection.providerAccountId, accountLabel: connection.accountLabel }));
+    .map((connection) => ({
+      provider: platformKey,
+      providerAccountId: connection.providerAccountId,
+      ...(connection.id ? { accountConnectionId: connection.id } : {}),
+      accountLabel: connection.accountLabel,
+    }));
   const selectedTargetsFor = (platformKey) => Array.isArray(accountTargetSelection[platformKey]) ? accountTargetSelection[platformKey] : (accountTargetSelection[platformKey] ? [accountTargetSelection[platformKey]] : []);
   const currentTargetsFor = (platformKey) => {
     const current = new Map(connectedAccountsFor(platformKey).map((account) => [account.providerAccountId, account]));
@@ -1019,6 +1070,79 @@ function LivePodWorkspace({ session, subscription }) {
     });
   };
 
+  const prepareCalendarPublishing = async (scheduledDate) => {
+    const action = beginAction(`calendar-publish:${scheduledDate}`);
+    if (!action) return;
+    const generation = calendarPublishGeneration.current + 1;
+    calendarPublishGeneration.current = generation;
+    setCalendarPublishReview({ date: scheduledDate, status: 'preparing', loadedEntryIds: new Set(), error: '', generation });
+    try {
+      const result = await prepareMetaCalendarPublishingReview({
+        accessToken: session?.access_token,
+        podId: action.podId,
+        scheduledDate,
+      });
+      if (!action.isCurrent() || calendarPublishGeneration.current !== generation) return;
+      setCalendarPublishReview({
+        date: scheduledDate,
+        status: 'ready',
+        generation,
+        token: result.preparationToken,
+        entries: result.entries || [],
+        scheduledAt: result.scheduledAt,
+        timezone: result.timezone || 'UTC',
+        expiresAt: result.expiresAt,
+        loadedEntryIds: new Set(),
+        error: '',
+      });
+    } catch (error) {
+      if (action.isCurrent() && calendarPublishGeneration.current === generation) setCalendarPublishReview({ date: scheduledDate, status: 'error', loadedEntryIds: new Set(), error: error.message || 'Publishing review could not be prepared.', generation });
+    } finally {
+      action.finish();
+    }
+  };
+
+  const markCalendarPublishImageLoaded = (entryId, token, generation, ok) => {
+    setCalendarPublishReview((current) => {
+      if (!current || current.status !== 'ready' || current.token !== token || current.generation !== generation) return current;
+      const loadedEntryIds = new Set(current.loadedEntryIds || []);
+      if (ok) loadedEntryIds.add(entryId);
+      else loadedEntryIds.delete(entryId);
+      return { ...current, loadedEntryIds, imageError: ok ? '' : 'A rendered image could not be loaded. Prepare the review again.' };
+    });
+  };
+
+  const confirmCalendarPublishing = async () => {
+    const review = calendarPublishReview;
+    if (!review || review.status !== 'ready') return;
+    const generation = review.generation;
+    const token = review.token;
+    const action = beginAction(`calendar-confirm:${review.date}`);
+    if (!action) return;
+    setCalendarPublishReview((current) => current?.date === review.date && current?.token === token && current?.generation === generation ? { ...current, status: 'confirming' } : current);
+    try {
+      const result = await confirmMetaCalendarPublishingReview({
+        accessToken: session?.access_token,
+        podId: action.podId,
+        scheduledDate: review.date,
+        preparationToken: token,
+        loadedEntryIds: [...(review.loadedEntryIds || [])],
+      });
+      if (!action.isCurrent() || calendarPublishGeneration.current !== generation) return;
+      setCalendarPublishReview((current) => current?.date === review.date && current?.token === token && current?.generation === generation ? {
+        ...current,
+        status: result.status === 'queued' ? 'queued' : 'blocked',
+        queued: result.queued || [],
+        failures: result.failures || [],
+      } : current);
+      showNotice(result.status === 'queued' ? 'Publishing approval saved and queued for the reviewed time.' : 'Publishing approval was not fully queued. Review the account status.');
+    } catch (error) {
+      if (action.isCurrent() && calendarPublishGeneration.current === generation) setCalendarPublishReview((current) => current?.date === review.date && current?.token === token && current?.generation === generation ? { ...current, status: 'error', error: error.message || 'Publishing approval could not be confirmed.' } : current);
+    } finally {
+      action.finish();
+    }
+  };
+
   const savePostEdit = async (post) => {
     const action = beginAction(`draft:${post.id}`);
     if (!action) return;
@@ -1246,7 +1370,7 @@ function LivePodWorkspace({ session, subscription }) {
                       {selected && unavailableTargets.length > 0 && <small>{unavailableTargets.map((target) => target.accountLabel).join(' · ')} saved previously · unavailable for new drafts</small>}
                       {selected && connectedAccounts.length > 0 && <fieldset className="pod-account-targets" onClick={(event) => event.stopPropagation()}>
                         <legend>Draft targets</legend>
-                        {connectedAccounts.map((account) => <span key={account.providerAccountId}><input type="checkbox" checked={selectedIds.has(account.providerAccountId)} disabled={Boolean(operationalMutation)} onChange={(event) => saveAccountTarget(platform.key, account.providerAccountId, event.target.checked)} />{account.accountLabel}</span>)}
+                        {connectedAccounts.map((account) => <span key={account.providerAccountId}><input type="checkbox" aria-label={account.accountLabel} checked={selectedIds.has(account.providerAccountId)} disabled={Boolean(operationalMutation)} onChange={(event) => saveAccountTarget(platform.key, account.providerAccountId, event.target.checked)} />{account.accountLabel}</span>)}
                       </fieldset>}
                     </div>
                     {selected && <button className="button button-ghost button-sm" type="button" disabled={connectionMutation === platform.key || connectionSummary?.status === 'unavailable'} onClick={(event) => { event.preventDefault(); connectPlatform(platform); }}>{connectionMutation === platform.key ? 'Opening…' : connectionSummary?.status === 'unavailable' ? 'Unavailable' : connectionSummary?.status === 'connected' ? 'Reconnect' : 'Connect account'}</button>}
@@ -1266,7 +1390,11 @@ function LivePodWorkspace({ session, subscription }) {
               const targetText = (post.targetAccounts || []).length
                 ? post.targetAccounts.map((target) => `${target.accountLabel}${targetIsCurrent(target) ? '' : ' · unavailable'}`).join(' · ')
                 : (post.targetSaveFailed ? 'Account target not saved' : '');
-              return <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}{targetText ? ` · ${targetText}` : ''}</small></div><StatusPill>Draft</StatusPill></header><CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /><p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>;
+              const metaPost = isMetaOrganicProvider(post.platformKey);
+              const currentTargets = metaPost ? (post.targetAccounts || []).filter(targetIsCurrent) : [];
+              const completeCurrentTargets = currentTargets.length > 0 && currentTargets.length === (post.targetAccounts || []).length;
+              const canReviewExactMetaArtwork = metaPost && metaConnectionStatus.available === true && completeCurrentTargets && !post.targetSaveFailed;
+              return <article key={post.id} className="pod-post-card"><header><PlatformMark platform={post.platformKey} /><div><strong>{post.platformName}</strong><small>{post.characterCount} characters · {post.contentStyle}{targetText ? ` · ${targetText}` : ''}</small></div><StatusPill>Draft</StatusPill></header>{canReviewExactMetaArtwork ? <CreativeReview podId={pod.id} post={post} brandName={pod.brand_name || pod.pod_name} assets={assets} sourceMedia={analysis?.source_media || []} savedPreferences={creativePreferences} accessToken={session?.access_token} onSaved={(row) => setCreativePreferences(current => [...current, row])} onNotice={showNotice} /> : <p className="pod-honesty-note">{metaPost ? 'Exact Meta artwork review needs current saved Meta account targets and available private review storage. Save account targets, then regenerate or save drafts before review.' : 'This platform is planning-only in this release. Exact rendered Meta artwork review is available only for Facebook and Instagram posts with saved account targets.'}</p>}<p className="pod-photo-source">Post caption — save edits separately from your visual creative.</p><textarea value={post.content} onChange={(event) => setPosts((current) => current.map((item) => item.id === post.id ? { ...item, content: event.target.value, characterCount: event.target.value.length } : item))} rows={5} aria-label={`${post.platformName} post caption`} /><footer><button className="button button-ghost button-sm" type="button" onClick={() => savePostEdit(post)}>Save edit</button><button className="button button-primary button-sm" type="button" onClick={() => { setActiveTab('calendar'); showNotice('Generate the calendar to save these drafts within your posting allowance.'); }}>Add to calendar</button></footer></article>;
             })}</div>}
           </div>
         );
@@ -1316,6 +1444,24 @@ function LivePodWorkspace({ session, subscription }) {
                 {creative ? <><div className="calendar-artwork-preview">{creative.imageUrl && <img src={creative.imageUrl} alt={creative.imageAlt} />}<h3>{creative.snapshot.headline}</h3><p>{creative.snapshot.call_to_action}</p></div><small>Artwork snapshot approved {new Date(creative.snapshot.approved_at).toLocaleDateString()}. Calendar status: {item.status}. This does not authorise publishing.</small></> : <p>No matching approved artwork snapshot is available for this entry.</p>}
                 <p>{item.caption}</p></details>;
             })}</section>}
+            {monthItems.length > 0 && <section className="calendar-publish-review" aria-label="Meta publishing review">
+              <header><div><small>Publishing approval</small><h3>Review exact exported images before queueing</h3></div></header>
+              <div className="calendar-publish-dates">{[...new Set(monthItems.map((item) => item.scheduled_date))].map((date) => <button key={date} className="button button-ghost button-sm" type="button" disabled={calendarPublishReview?.status === 'preparing' || calendarPublishReview?.status === 'confirming'} onClick={() => prepareCalendarPublishing(date)}>{calendarPublishReview?.date === date && calendarPublishReview?.status === 'preparing' ? 'Preparing...' : `Review ${date}`}</button>)}</div>
+              {calendarPublishReview?.status === 'error' && <p role="alert" className="pod-honesty-note">{calendarPublishReview.error}</p>}
+              {calendarPublishReview && ['ready', 'confirming', 'queued', 'blocked'].includes(calendarPublishReview.status) && <article className="calendar-publish-candidate">
+                <header><div><small>{calendarPublishReview.date} · {calendarPublishReview.timezone}</small><h3>{formatUtcDateTime(calendarPublishReview.scheduledAt)}</h3></div><StatusPill>{calendarPublishReview.status}</StatusPill></header>
+                <div className="calendar-publish-entries">{(calendarPublishReview.entries || []).map((entry) => {
+                  const outcome = publishingEntryOutcome(calendarPublishReview, entry);
+                  return <div key={entry.reviewEntryId} className="calendar-publish-entry">
+                    <img src={entry.imageUrl} alt={`${entry.accountLabel} reviewed artwork`} onLoad={() => markCalendarPublishImageLoaded(entry.reviewEntryId, calendarPublishReview.token, calendarPublishReview.generation, true)} onError={() => markCalendarPublishImageLoaded(entry.reviewEntryId, calendarPublishReview.token, calendarPublishReview.generation, false)} />
+                    <div><strong>{entry.accountLabel}</strong><small>{getPlatform(entry.provider)?.name || entry.provider} · {entry.outputHash?.slice(0, 12)}</small><p>{entry.caption}</p>{outcome && <small>Queue status: {outcome.label} · {outcome.detail}</small>}</div>
+                  </div>;
+                })}</div>
+                {calendarPublishReview.imageError && <p role="alert" className="pod-honesty-note">{calendarPublishReview.imageError}</p>}
+                {calendarPublishReview.status === 'blocked' && <p role="alert" className="pod-honesty-note">Some accounts were not queued: {(calendarPublishReview.failures || []).map((failure) => failure.reason).join(' · ')}</p>}
+                {calendarPublishReview.status === 'queued' ? <p className="pod-decision-note">Publishing approval is queued for the exact reviewed time. Provider dispatch still depends on the inactive scheduler activation gates.</p> : calendarPublishReview.status === 'blocked' ? <button className="button button-ghost button-sm" type="button" onClick={() => prepareCalendarPublishing(calendarPublishReview.date)}>Prepare again</button> : <button className="button button-primary button-sm" type="button" disabled={calendarPublishReview.status === 'confirming' || (calendarPublishReview.loadedEntryIds?.size || 0) !== (calendarPublishReview.entries?.length || 0)} onClick={confirmCalendarPublishing}>{calendarPublishReview.status === 'confirming' ? 'Confirming...' : 'Confirm publishing approval'}</button>}
+              </article>}
+            </section>}
           </div>
         );
       }

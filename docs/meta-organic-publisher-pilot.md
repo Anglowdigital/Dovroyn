@@ -1,15 +1,15 @@
 # Meta Organic Publisher Pilot Foundation
 
-Status: disabled-by-default foundation only. No scheduler, deployment, live Meta request, secret access, database grant, or applied migration is included.
+Status: disabled-by-default foundation only. No deployment, live Meta request, secret creation/access, database grant, cron registration, or applied migration is included.
 
 ## Scope
 
-This checkpoint adds a mocked/injectable publishing-worker foundation for:
+This checkpoint adds an injectable publishing-worker foundation for:
 
 - Facebook Page organic image posts.
 - Instagram professional account image posts via the Instagram Platform with Facebook Login.
 
-It does not implement ads, universal platform publishing, live Graph publishing, or automatic posting.
+It does not implement ads, universal platform publishing, activated live Graph publishing, or automatic posting.
 
 ## Official Contract Notes
 
@@ -29,12 +29,17 @@ The current discovery/selection foundation deliberately requests only read/selec
 - Exact dedupe key across draft, account connection, content version, asset manifest hash, and campaign date.
 - Immutable delivery identity across draft, account connection, content version, asset manifest hash, and campaign date. `approvalId` remains bound evidence on the job, but re-approval of the same delivery tuple cannot create a second deliverable.
 - Atomic claim/lease storage interface.
-- Human approval binding to pod owner, draft, content version, approved immutable export, account, and date.
+- Human approval binding to pod owner, draft, content version, approved immutable export, account, campaign date, exact UTC scheduled timestamp, and calendar-day snapshot.
 - Active paid tier and distinct campaign-date gate, with same-campaign-date multi-account posting allowed.
 - Bounded retry/backoff for known safe failures.
 - Final `unknown` state for ambiguous provider outcomes, which never re-enters automatic publish retries.
 - Injected read-only reconciliation foundation: a trusted mocked lookup can fence `unknown` to a reconciled/published receipt only when provider, account, and immutable delivery identity match exactly. Inconclusive, not-found, mismatched, or lookup-error outcomes remain `unknown`.
 - Per-account provider receipts.
+- Actual Graph adapter code is injectable and disabled unless explicitly wired into the inactive scheduler. It uses fixed `graph.facebook.com/{version}`, no redirects, bounded response bodies/deadlines, Page tokens only, and sanitized receipts.
+- Facebook Page publishing requires a proven `post_id`; a bare photo id is stored only as `photoId` and is not treated as a published Page post.
+- Instagram publishing persists the exact container checkpoint before polling/publishing, and any ambiguous outcome after container creation remains `unknown` with the durable container id.
+- Provider mutation stages are lease-fenced and durable; duplicate stage dispatch is rejected instead of retried blindly.
+- The scheduler entrypoint is present but inactive by default. It accepts an existing bearer secret from `META_ORGANIC_SCHEDULER_SECRET` or standard `CRON_SECRET`, requires publisher readiness before provider construction, and is not registered in `vercel.json`.
 
 The production storage adapter is intentionally an RPC interface. The proposed SQL in `supabase/proposed-migrations/20261012003000_proposed_meta_organic_publisher_pilot.sql` documents the tables and RPC names, but it is not applied.
 
@@ -64,13 +69,18 @@ PGLITE_MODULE=/tmp/dovroyn-pr48-sqlcheck/node_modules/@electric-sql/pglite/dist/
 
 The script fails clearly if `PGLITE_MODULE` is absent. It is intentionally outside `test/` so normal `npm test` stays portable on clean checkouts.
 
+The calendar publishing-review SQL fixture exercises the proposed atomic confirm RPC in a single PGlite connection. That proves the locked read/recheck/rollback contract and ACL shape, but it is not a substitute for a multi-session PostgreSQL concurrency test. The proposed confirm RPC takes a short transaction-scoped table lock on `public.calendar_items` after locking the pod and before reading the reviewed day, then locks the reviewed day rows in deterministic order before approval plus enqueue.
+
 ## Remaining Gates
 
-- Live storage adapters, source-byte preparation endpoints, rendered-JPEG review UI, and bucket policy/grant review must be implemented separately before activation. HTML previews, `creative_note` metadata, and legacy unpinned `creative_review` rows are still not publishable assets by themselves.
+- Applying proposed private schema/RPCs, granting service execution, configuring an existing scheduler bearer secret, and adding any production cron schedule remain approval-gated activation steps.
 - Publish permissions must be requested, reviewed, granted, and stored in private Meta connection storage before activation.
-- Token-kind handling must be upgraded to use Page access tokens for both Facebook Page publishing and Instagram-with-Facebook-Login publishing.
-- A live provider reconciliation adapter is still blocked; the current path is injected/mocked only and makes no Graph requests.
-- The release flag and scheduler registration must happen in a separate reviewed change.
+- Stored Instagram discovery-era user tokens are not relabelled; publishing requires a page-token credential with publish scopes.
+- Provider adapters and read-only reconciliation code remain inactive until reviewed runtime configuration, credentials, scopes, schema, cron registration, deployment, and final approval are complete.
 
 
 Signed export URLs and their exact expiry are covered by the immutable manifest digest. URL renewal requires a new manifest and explicit publishing approval; silent URL replacement is rejected. Live storage, source-byte preparation and rendered-JPEG review UI, renewal orchestration and real provider adapters remain activation prerequisites.
+
+### Exact publishing-time gate
+
+The explicit queue helper requires a durable approval response containing the exact requested scheduled timestamp. The proposed calendar publishing-review RPC records `scheduled_at`, timezone, calendar item hash, whole-day hash, and context fingerprint before enqueueing; changed times, changed calendar rows, changed targets, or stale immutable exports fail closed. Creative approval alone never supplies publishing consent. Scheduler reconciliation receives the same absolute deadline as publishing and stops claiming at the shorter lease-safe budget.

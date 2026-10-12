@@ -16,10 +16,11 @@ export function normalizeCalendarTarget(target, expectedPlatform = '') {
   if (!target || typeof target !== 'object' || Array.isArray(target)) return null;
   const provider = clean(target.provider || target.platform, 40).toLowerCase();
   const providerAccountId = clean(target.providerAccountId || target.provider_account_id || target.accountId || target.id, 100);
+  const accountConnectionId = clean(target.accountConnectionId || target.account_connection_id || target.connectionId, 120);
   const accountLabel = clean(target.accountLabel || target.account_label || target.label, 200);
   if (!provider || !providerAccountId || !accountLabel) return null;
   if (expectedPlatform && provider !== expectedPlatform) return null;
-  return { provider, providerAccountId, accountLabel };
+  return { provider, providerAccountId, accountLabel, ...(accountConnectionId ? { accountConnectionId } : {}) };
 }
 
 export function normalizeCalendarTargets(value, expectedPlatform = '') {

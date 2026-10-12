@@ -80,6 +80,58 @@ export async function loadMetaConnectionStatus({ accessToken, podId }) {
   };
 }
 
+export async function prepareMetaArtworkReview({ accessToken, podId, postId, headline, callToAction, image, imageRole, brandName }) {
+  if (!accessToken) throw new Error('Sign in before preparing artwork.');
+  const response = await fetch('/api/integrations/meta/artwork/prepare', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ podId, postId, headline, callToAction, image, imageRole, brandName }),
+  });
+  return parseJson(response);
+}
+
+export async function approveMetaArtworkReview({ accessToken, podId, postId, preparationToken, accountSnapshotFingerprint }) {
+  if (!accessToken) throw new Error('Sign in before approving artwork.');
+  const response = await fetch('/api/integrations/meta/artwork/approve', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ podId, postId, preparationToken, accountSnapshotFingerprint }),
+  });
+  return parseJson(response);
+}
+
+export async function prepareMetaCalendarPublishingReview({ accessToken, podId, scheduledDate }) {
+  if (!accessToken) throw new Error('Sign in before reviewing calendar publishing.');
+  const response = await fetch('/api/integrations/meta/calendar/prepare', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ podId, scheduledDate }),
+  });
+  return parseJson(response);
+}
+
+export async function confirmMetaCalendarPublishingReview({ accessToken, podId, scheduledDate, preparationToken, loadedEntryIds }) {
+  if (!accessToken) throw new Error('Sign in before confirming calendar publishing.');
+  const response = await fetch('/api/integrations/meta/calendar/confirm', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ podId, scheduledDate, preparationToken, loadedEntryIds }),
+  });
+  return parseJson(response);
+}
+
 export function summarizeMetaConnection(status = {}, provider = META_ORGANIC_PROVIDER) {
   const connections = Array.isArray(status) ? status : (status.connections || []);
   if (!Array.isArray(status) && status.available !== true) return { status: 'unavailable', label: 'Meta connection unavailable' };

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { transformWithOxc } from 'vite';
 import { creativeImageCandidates, imageReferenceKey, latestCreativeReview, creativeReviewPayload, initialCreativeHeadline, creativeReviewIsCurrent } from '../src/lib/creativeReview.js';
 
 test('only supplied safe imagery is selectable; uploads persist storage paths, not temporary URLs', () => {
@@ -49,4 +51,117 @@ test('caption changes invalidate approval and source brand logos retain logo tre
   assert.equal(creativeReviewIsCurrent({ status: 'approved' }, 'Original caption'), false);
   assert.equal(review.headline, 'My chosen headline');
   assert.equal(creativeImageCandidates([], [{ url: 'https://brand.test/logo.png', role: 'brand_logo' }])[0].role, 'logo');
+});
+
+async function creativeReviewHarness(services = {}) {
+  const slots = [];
+  const effects = [];
+  let cursor = 0;
+  let tree;
+  const h = (type, props, ...children) => typeof type === 'function'
+    ? type({ ...props, children }) : { type, props: props || {}, children: children.flat(Infinity).filter((child) => child != null && child !== false) };
+  const hooks = {
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
+      return [slots[index], (value) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }];
+    },
+    useRef(initial) { const index = cursor++; return slots[index] ||= { current: initial }; },
+    useEffect(fn, deps) {
+      const index = cursor++;
+      const previous = slots[index];
+      const changed = !previous || !Array.isArray(deps) || deps.length !== previous.length || deps.some((dep, depIndex) => !Object.is(dep, previous[depIndex]));
+      slots[index] = deps;
+      if (changed) effects.push(fn);
+    },
+    useId() { cursor++; return 'field-id'; },
+  };
+  const notices = [];
+  const saved = [];
+  const modules = {
+    react: hooks,
+    '../../lib/creativeReview.js': await import('../src/lib/creativeReview.js'),
+    '../../lib/metaOrganic.js': {
+      prepareMetaArtworkReview: services.prepareMetaArtworkReview || (async () => ({
+        preparationToken: 'prep-token',
+        accountSnapshotFingerprint: 'snapshot-hash',
+        image: { dataUrl: 'data:image/jpeg;base64,AAAA', dimensions: { width: 1080, height: 1350 } },
+      })),
+      approveMetaArtworkReview: services.approveMetaArtworkReview || (async () => ({ approval: { id: 'approval-1' }, exports: [{ manifestHash: 'm' }] })),
+    },
+  };
+  let source = readFileSync(new URL('../src/components/pod/CreativeReview.jsx', import.meta.url), 'utf8');
+  source = source.replace(/import\s+({[\s\S]*?}|[\w]+)\s+from\s+'([^']+)';/g, (_, names, module) => names.startsWith('{')
+    ? `const ${names} = modules[${JSON.stringify(module)}];` : `const ${names} = modules[${JSON.stringify(module)}].default;`)
+    .replace('export default function CreativeReview', 'function CreativeReview');
+  const { code } = await transformWithOxc(source, 'CreativeReview.jsx', { jsx: { runtime: 'classic', pragma: 'h' } });
+  const Component = new Function('modules', 'h', `${code}; return CreativeReview;`)(modules, h);
+  const props = {
+    podId: 'pod-1',
+    accessToken: 'token',
+    brandName: 'Brand',
+    post: { id: 'post-1', content: 'Fresh caption', platformName: 'Facebook', targetAccounts: [{ provider: 'facebook', providerAccountId: '101', accountLabel: 'Page' }] },
+    assets: [{ storagePath: 'owner/pod-1/image.jpg', preview: 'https://asset.example/image.jpg', assetRole: 'campaign_asset', name: 'Image', type: 'image/jpeg' }],
+    sourceMedia: [],
+    savedPreferences: [],
+    onNotice: (message) => notices.push(message),
+    onSaved: (row) => saved.push(row),
+  };
+  const render = () => { cursor = 0; effects.length = 0; tree = Component(props); effects.splice(0).forEach((effect) => effect()); return tree; };
+  const nodes = (node = tree) => typeof node !== 'object' ? [] : [node, ...(node.children || []).flatMap((child) => nodes(child))];
+  const text = (node = tree) => typeof node === 'object' ? (node.children || []).map(text).join(' ') : String(node);
+  const button = (label) => nodes().find((node) => node.type === 'button' && text(node).trim() === label);
+  render();
+  return { props, render, nodes, text, button, notices, saved, flush: async () => { await new Promise((resolve) => setImmediate(resolve)); render(); } };
+}
+
+test('fresh prepared render enables approval only after exact JPEG loads', async () => {
+  let approved = 0;
+  const harness = await creativeReviewHarness({ approveMetaArtworkReview: async () => { approved += 1; return { approval: { id: 'approval-1' }, exports: [{ manifestHash: 'm' }] }; } });
+  assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
+  harness.button('Prepare exact JPEG').props.onClick();
+  await harness.flush();
+  assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
+  const image = harness.nodes().find((node) => node.type === 'img' && node.props.alt === 'Exact rendered artwork for approval');
+  assert.ok(image, 'rendered JPEG preview is shown');
+  image.props.onLoad();
+  harness.render();
+  assert.equal(harness.button('Approve rendered JPEG').props.disabled, false);
+  harness.button('Approve rendered JPEG').props.onClick();
+  await harness.flush();
+  assert.equal(approved, 1);
+  assert.equal(harness.saved[0].id, 'approval-1');
+});
+
+for (const change of ['caption', 'accounts']) {
+  test(`late approval response cannot approve changed ${change}`, async () => {
+    let resolveApproval;
+    const pending = new Promise((resolve) => { resolveApproval = resolve; });
+    const harness = await creativeReviewHarness({ approveMetaArtworkReview: () => pending });
+    harness.button('Prepare exact JPEG').props.onClick();
+    await harness.flush();
+    harness.nodes().find((node) => node.type === 'img' && node.props.alt === 'Exact rendered artwork for approval').props.onLoad();
+    harness.render();
+    harness.button('Approve rendered JPEG').props.onClick();
+    harness.props.post = { ...harness.props.post, ...(change === 'caption' ? { content: 'Changed caption' } : { targetAccounts: [{ provider: 'facebook', providerAccountId: '202' }] }) };
+    harness.render();
+    resolveApproval({ approval: { id: 'old-approval' }, exports: [{ manifestHash: 'old' }] });
+    await harness.flush();
+    assert.equal(harness.saved.length, 0);
+    assert.match(harness.text(), /Unsaved draft/);
+    assert.equal(harness.notices.some((notice) => notice.startsWith('Creative approved')), false);
+  });
+}
+
+test('late preview response is discarded after caption changes', async () => {
+  let resolvePreview;
+  const pending = new Promise((resolve) => { resolvePreview = resolve; });
+  const harness = await creativeReviewHarness({ prepareMetaArtworkReview: () => pending });
+  harness.button('Prepare exact JPEG').props.onClick();
+  harness.props.post = { ...harness.props.post, content: 'Changed caption' };
+  harness.render();
+  resolvePreview({ preparationToken: 'old-token', image: { dataUrl: 'data:image/jpeg;base64,AAAA', dimensions: { width: 1080, height: 1350 } } });
+  await harness.flush();
+  assert.equal(harness.nodes().some((node) => node.type === 'img' && node.props.alt === 'Exact rendered artwork for approval'), false);
+  assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
 });

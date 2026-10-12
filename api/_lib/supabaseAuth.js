@@ -41,6 +41,28 @@ async function supabasePost(path, accessToken, body, prefer) {
   });
 }
 
+export async function supabaseAuthedGet(path, accessToken) {
+  return supabaseFetch(path, accessToken);
+}
+
+export async function supabaseAuthedPost(path, accessToken, body, prefer = 'return=representation') {
+  return supabasePost(path, accessToken, body, prefer);
+}
+
+export async function supabaseAuthedPatch(path, accessToken, body, prefer = 'return=representation') {
+  const { url, publishableKey } = getSupabaseServerConfig();
+  return fetch(`${url}${path}`, {
+    method: 'PATCH',
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...(prefer ? { Prefer: prefer } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 async function supabaseServicePost(path, body) {
   const { url, serviceRoleKey } = getSupabaseServiceConfig();
   return fetch(`${url}${path}`, {
@@ -51,6 +73,18 @@ async function supabaseServicePost(path, body) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+  });
+}
+
+export async function supabaseServiceFetch(path, options = {}) {
+  const { url, serviceRoleKey } = getSupabaseServiceConfig();
+  return fetch(`${url}${path}`, {
+    ...options,
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      ...(options.headers || {}),
+    },
   });
 }
 
