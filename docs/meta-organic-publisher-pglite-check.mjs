@@ -5,9 +5,11 @@ import { readFileSync } from 'node:fs';
 import {
   buildMetaOrganicPublishProposal,
   createRpcMetaOrganicPublishStore,
+  enqueueExplicitMetaOrganicPublishingApprovals,
   processNextMetaOrganicPublishJob,
   reconcileNextMetaOrganicPublishJob,
 } from '../api/_lib/metaOrganicPublisher.js';
+import { createMetaGraphOrganicProvider } from '../api/_lib/metaOrganicProvider.js';
 import {
   buildMetaOrganicArtworkExportRequest,
   buildMetaOrganicCreativeApprovalAttestationPayload,
@@ -510,6 +512,12 @@ function rpcFor(db) {
       enqueue_meta_organic_publish_job: [params.p_proposal],
       claim_meta_organic_publish_job: [params.p_worker_id, params.p_now, params.p_lease_ms],
       get_meta_organic_publish_context: [params.p_job_id, params.p_worker_id, params.p_operation_token],
+      get_meta_organic_publisher_readiness: [],
+      persist_meta_organic_publish_approval: [params.p_approval],
+      get_meta_organic_publish_credential_lease: [params.p_job_id, params.p_worker_id, params.p_operation_token],
+      get_meta_organic_reconciliation_credential_lease: [params.p_job_id, params.p_worker_id, params.p_operation_token],
+      assert_meta_organic_publish_mutation_lease: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_stage],
+      record_meta_organic_provider_stage: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_stage, params.p_receipt],
       mark_meta_organic_publish_blocked: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_details],
       mark_meta_organic_publish_retry: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_details, params.p_retry_at],
       mark_meta_organic_publish_failed: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_details],
@@ -794,16 +802,165 @@ async function checkLeaseAndPrivilegeFences() {
       has_function_privilege('authenticated', 'public.claim_meta_organic_publish_job(text,timestamp with time zone,integer)', 'EXECUTE') AS can_claim,
       has_function_privilege('authenticated', 'public.get_meta_organic_artwork_export_context(jsonb)', 'EXECUTE') AS can_export_context,
       has_function_privilege('authenticated', 'public.persist_meta_organic_artwork_export_manifest(jsonb)', 'EXECUTE') AS can_export_manifest,
+      has_function_privilege('authenticated', 'public.get_meta_organic_publish_credential_lease(uuid,text,text)', 'EXECUTE') AS can_read_credential,
+      has_function_privilege('authenticated', 'public.record_meta_organic_provider_stage(uuid,text,text,text,jsonb)', 'EXECUTE') AS can_record_stage,
       has_function_privilege('authenticated', 'private.meta_organic_require_lease(uuid,text,text,boolean)', 'EXECUTE') AS can_require_lease,
       has_schema_privilege('authenticated', 'private', 'USAGE') AS can_use_private_schema,
-      has_table_privilege('authenticated', 'private.meta_organic_publish_jobs', 'SELECT') AS can_read_jobs
+      has_table_privilege('authenticated', 'private.meta_organic_publish_jobs', 'SELECT') AS can_read_jobs,
+      has_table_privilege('authenticated', 'private.meta_organic_provider_stages', 'SELECT') AS can_read_stages
   `);
   assert.equal(privileges.rows[0].can_claim, false);
   assert.equal(privileges.rows[0].can_export_context, false);
   assert.equal(privileges.rows[0].can_export_manifest, false);
+  assert.equal(privileges.rows[0].can_read_credential, false);
+  assert.equal(privileges.rows[0].can_record_stage, false);
   assert.equal(privileges.rows[0].can_require_lease, false);
   assert.equal(privileges.rows[0].can_use_private_schema, true);
   assert.equal(privileges.rows[0].can_read_jobs, false);
+  assert.equal(privileges.rows[0].can_read_stages, false);
+}
+
+async function checkProviderStageFencesAndReconciliationCredential() {
+  const db = await setupDb();
+  const p = proposal();
+  await enqueue(db, p);
+  await seedApprovalAndExport(db, p);
+  const claimed = await claim(db, 'stage-worker');
+  const credential = await db.query(`SELECT public.get_meta_organic_publish_credential_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}') AS credential`);
+  assert.equal(credential.rows[0].credential.providerAccountId, '101');
+  assert.equal(credential.rows[0].credential.encryptedAccessToken, 'syntheticEncryptedAccessTokenValue_000000000000');
+  await db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_before_write')`);
+  await assert.rejects(
+    () => db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_before_write')`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+  await db.query(`SELECT public.record_meta_organic_provider_stage(
+    '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_published',
+    ${literalJson({ provider: 'facebook', providerAccountId: '101', providerPostId: '101_555', photoId: '555', access_token: 'must-not-persist', raw: { secret: true } })}
+  )`);
+  await assert.rejects(
+    () => db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_before_write')`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+  await assert.rejects(
+    () => db.query(`SELECT public.record_meta_organic_provider_stage(
+      '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_published',
+      ${literalJson({ provider: 'facebook', providerAccountId: '101', providerPostId: '101_666', photoId: '456' })}
+    )`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+  await assert.rejects(
+    () => db.query(`SELECT public.record_meta_organic_provider_stage(
+      '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'instagram_container_created',
+      ${literalJson({ provider: 'instagram', providerAccountId: '101', containerId: 'container-wrong' })}
+    )`),
+    /PUBLISH_STAGE_RECEIPT_REQUIRED/,
+  );
+  await db.query(`SELECT public.mark_meta_organic_publish_unknown(
+    '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'OUTCOME_UNKNOWN',
+    ${literalJson({ provider: 'facebook', providerAccountId: '101', providerPostId: '101_555' })}
+  )`);
+  const recon = await db.query(`SELECT public.claim_meta_organic_reconciliation_job('recon-worker', '2098-10-12T03:02:00Z'::timestamptz, 300000) AS job`);
+  assert.equal(recon.rows[0].job.providerStages.facebook_photo_published.providerPostId, '101_555');
+  assert.equal(recon.rows[0].job.providerStages.facebook_photo_published.photoId, '555');
+  assert.equal('access_token' in recon.rows[0].job.providerStages.facebook_photo_published, false);
+  assert.equal('raw' in recon.rows[0].job.providerStages.facebook_photo_published, false);
+  const reconCredential = await db.query(`SELECT public.get_meta_organic_reconciliation_credential_lease('${claimed.id}', 'recon-worker', '${recon.rows[0].job.operationToken}') AS credential`);
+  assert.equal(reconCredential.rows[0].credential.providerAccountId, '101');
+}
+
+async function checkInstagramSqlBackedRepeatedPollAndDispatchFence() {
+  const db = await setupDb();
+  await db.exec(`
+    UPDATE private.meta_organic_connections
+    SET provider = 'instagram',
+        granted_scopes = ARRAY['instagram_basic','instagram_content_publish','pages_read_engagement']
+    WHERE id = '${ids.account2}';
+    UPDATE public.social_posts SET platform = 'instagram' WHERE id = '${ids.draft}';
+  `);
+  const p = proposal({ provider: 'instagram', accountConnectionId: ids.account2 });
+  await enqueue(db, p);
+  await seedApprovalAndExport(db, p);
+
+  const preclaimed = await claim(db, 'ig-prewrite-worker');
+  await db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${preclaimed.id}', 'ig-prewrite-worker', '${preclaimed.operationToken}', 'instagram_container_before_create')`);
+  await assert.rejects(
+    () => db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${preclaimed.id}', 'ig-prewrite-worker', '${preclaimed.operationToken}', 'instagram_container_before_create')`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+
+  await db.exec(`DELETE FROM private.meta_organic_provider_stages WHERE job_id = '${preclaimed.id}'`);
+  await db.exec(`
+    UPDATE private.meta_organic_publish_jobs
+    SET state = 'queued', leased_by = NULL, lease_expires_at = NULL, operation_token = NULL
+    WHERE id = '${preclaimed.id}'
+  `);
+
+  const requests = [];
+  const fetch = async (url, options) => {
+    requests.push({ path: url.pathname, method: options.method });
+    if (url.pathname === '/v26.0/201/media') return new Response(JSON.stringify({ id: '3001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.pathname === '/v26.0/3001') {
+      const polls = requests.filter((request) => request.path === '/v26.0/3001').length;
+      return new Response(JSON.stringify({ status_code: polls < 3 ? 'IN_PROGRESS' : 'FINISHED' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.pathname === '/v26.0/201/media_publish') return new Response(JSON.stringify({ id: '4001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    throw new Error(`unexpected graph path ${url.pathname}`);
+  };
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
+  const result = await processNextMetaOrganicPublishJob({
+    config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
+    store,
+    provider: createMetaGraphOrganicProvider({ config: { graphVersion: 'v26.0' }, fetch, pollDelayMs: 0 }),
+    workerId: 'ig-worker',
+    now: new Date('2098-10-12T03:00:00Z'),
+    deadlineAt: new Date('2098-10-12T03:04:00Z').toISOString(),
+  });
+  assert.equal(result.status, 'published');
+  assert.deepEqual(requests.map((request) => request.path), [
+    '/v26.0/201/media',
+    '/v26.0/3001',
+    '/v26.0/3001',
+    '/v26.0/3001',
+    '/v26.0/201/media_publish',
+  ]);
+  const stages = await db.query(`SELECT stage, receipt FROM private.meta_organic_provider_stages WHERE job_id = '${preclaimed.id}' ORDER BY created_at, stage`);
+  assert.equal(stages.rows.filter((row) => row.stage === 'instagram_container_poll').length, 0);
+  assert.equal(stages.rows.find((row) => row.stage === 'instagram_container_created').receipt.containerId, '3001');
+  assert.equal(stages.rows.find((row) => row.stage === 'instagram_media_published').receipt.providerPostId, '4001');
+}
+
+async function checkExplicitPublishingApprovalPersistence() {
+  const db = await setupDb();
+  const p = proposal({ approvalId: ids.approval2 });
+  await seedApprovalAndExport(db, p);
+  await db.exec(`DELETE FROM private.meta_organic_publish_approvals WHERE id = '${p.approvalId}'`);
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
+  const approval = {
+      id: p.approvalId,
+      provider: p.provider,
+      userId: p.userId,
+      podId: p.podId,
+      draftId: p.draftId,
+      accountConnectionId: p.accountConnectionId,
+      contentVersion: p.contentVersion,
+      assetManifestHash: p.assetManifestHash,
+      campaignDate: p.campaignDate,
+      status: 'approved',
+      approvedAt: '2026-10-11T00:00:00Z',
+      approvedBy: p.userId,
+      scheduledAt: `${p.campaignDate}T12:00:00.000Z`,
+  };
+  const persisted = await store.persistPublishingApproval(approval);
+  assert.equal(persisted.id, p.approvalId);
+  assert.equal(persisted.scheduledAt, undefined, 'current proposed approval RPC has no durable exact-time field');
+  const queued = await enqueueExplicitMetaOrganicPublishingApprovals({ store, approvals: [approval] });
+  assert.equal(queued.status, 'queue_blocked');
+  assert.equal(queued.failures[0].reason, 'PUBLISH_SCHEDULE_APPROVAL_REQUIRED');
+  const approvalRows = await db.query(`SELECT count(*)::int AS total FROM private.meta_organic_publish_approvals WHERE id = '${p.approvalId}'`);
+  assert.equal(approvalRows.rows[0].total, 1);
+  const jobRows = await db.query(`SELECT count(*)::int AS total FROM private.meta_organic_publish_jobs WHERE approval_id = '${p.approvalId}'`);
+  assert.equal(jobRows.rows[0].total, 0, 'unbound future approval must not become an immediately claimable job');
 }
 
 async function checkUnknownTransition() {
@@ -830,14 +987,14 @@ async function checkRpcWorkerSuccessAndChangedDraftBlock() {
   await enqueue(db, p);
   await seedApprovalAndExport(db, p);
   const calls = [];
-  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db) });
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
   const result = await processNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
     store,
     provider: {
       async publishFacebookPagePhoto(payload) {
         calls.push(payload);
-        return { provider: 'facebook', providerAccountId: '101', providerPostId: 'post-101' };
+        return { provider: 'facebook', providerAccountId: '101', providerPostId: '101_9001' };
       },
     },
     workerId: 'rpc-worker',
@@ -854,11 +1011,11 @@ async function checkRpcWorkerSuccessAndChangedDraftBlock() {
   const changedCalls = [];
   const changedResult = await processNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
-    store: createRpcMetaOrganicPublishStore({ rpc: rpcFor(changedDb) }),
+    store: createRpcMetaOrganicPublishStore({ rpc: rpcFor(changedDb), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` }),
     provider: {
       async publishFacebookPagePhoto(payload) {
         changedCalls.push(payload);
-        return { provider: 'facebook', providerAccountId: '101', providerPostId: 'post-should-not-happen' };
+        return { provider: 'facebook', providerAccountId: '101', providerPostId: '101_9002' };
       },
     },
     workerId: 'rpc-worker',
@@ -874,14 +1031,20 @@ async function checkRpcReconciliationSuccess() {
   const p = proposal();
   await enqueue(db, p);
   await seedApprovalAndExport(db, p);
-  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db) });
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
   const publishCalls = [];
   const unknown = await processNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
     store,
     provider: {
-      async publishFacebookPagePhoto() {
+      async publishFacebookPagePhoto(_payload, privateContext) {
         publishCalls.push('publish');
+        await privateContext.recordStage('facebook_photo_published', {
+          provider: 'facebook',
+          providerAccountId: '101',
+          providerPostId: '101_9003',
+          photoId: '9003',
+        });
         const error = new Error('timeout after write');
         error.code = 'REQUEST_TIMEOUT';
         throw error;
@@ -900,7 +1063,7 @@ async function checkRpcReconciliationSuccess() {
         return {
           provider: 'facebook',
           providerAccountId: '101',
-          providerPostId: 'post-reconciled-101',
+          providerPostId: '101_9003',
           dedupeKey: p.dedupeKey,
         };
       },
@@ -913,6 +1076,44 @@ async function checkRpcReconciliationSuccess() {
   const rows = await db.query(`SELECT status, provider_account_id, provider_post_id FROM private.meta_organic_publish_receipts WHERE job_id = '${unknown.jobId}' ORDER BY created_at DESC`);
   assert.equal(rows.rows[0].status, 'reconciled');
   assert.equal(rows.rows[0].provider_account_id, '101');
+
+  const noKnownDb = await setupDb();
+  const noKnownProposal = proposal();
+  await enqueue(noKnownDb, noKnownProposal);
+  await seedApprovalAndExport(noKnownDb, noKnownProposal);
+  const noKnownStore = createRpcMetaOrganicPublishStore({ rpc: rpcFor(noKnownDb), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
+  const noKnownUnknown = await processNextMetaOrganicPublishJob({
+    config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
+    store: noKnownStore,
+    provider: {
+      async publishFacebookPagePhoto() {
+        const error = new Error('timeout after write without ack');
+        error.code = 'REQUEST_TIMEOUT';
+        throw error;
+      },
+    },
+    workerId: 'rpc-worker-no-known',
+    now: new Date('2098-10-12T03:00:00Z'),
+  });
+  assert.equal(noKnownUnknown.status, 'unknown');
+  const noKnownReconciled = await reconcileNextMetaOrganicPublishJob({
+    config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
+    store: noKnownStore,
+    provider: {
+      async lookupPublishedMetaOrganicReceipt() {
+        return {
+          provider: 'facebook',
+          providerAccountId: '101',
+          providerPostId: '101_9013',
+          dedupeKey: noKnownProposal.dedupeKey,
+        };
+      },
+    },
+    workerId: 'rpc-reconciler-no-known',
+    now: new Date('2098-10-12T03:02:00Z'),
+  });
+  assert.equal(noKnownReconciled.status, 'unknown');
+  assert.equal(noKnownReconciled.reason, 'RECONCILE_PROOF_MISMATCH');
 }
 
 async function checkReapprovalDedupe() {
@@ -927,6 +1128,10 @@ async function checkReapprovalDedupe() {
 }
 
 async function checkAllowanceWindowRolloverAndReservations() {
+  const guardDb = await setupDb();
+  const functionDef = await guardDb.query("SELECT pg_get_functiondef('public.enqueue_meta_organic_publish_job(jsonb)'::regprocedure) AS def");
+  assert.match(functionDef.rows[0].def, /FROM public\.subscriptions item[\s\S]*FOR UPDATE/);
+
   const db = await setupDb();
   await db.exec(`
     UPDATE public.subscriptions
@@ -983,6 +1188,9 @@ await checkExecutableQueueAndContext();
 await checkDurableArtworkExportStoreContract();
 await checkCreativeApprovalSourceKindSqlSuccess();
 await checkLeaseAndPrivilegeFences();
+await checkProviderStageFencesAndReconciliationCredential();
+await checkInstagramSqlBackedRepeatedPollAndDispatchFence();
+await checkExplicitPublishingApprovalPersistence();
 await checkUnknownTransition();
 await checkReapprovalDedupe();
 await checkAllowanceWindowRolloverAndReservations();

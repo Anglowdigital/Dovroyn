@@ -260,17 +260,33 @@ CREATE TABLE IF NOT EXISTS private.meta_organic_publish_receipts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS private.meta_organic_provider_stages (
+  id UUID PRIMARY KEY DEFAULT private.meta_organic_publisher_uuid(),
+  job_id UUID NOT NULL REFERENCES private.meta_organic_publish_jobs(id) ON DELETE CASCADE,
+  account_connection_id UUID NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('facebook','instagram')),
+  stage TEXT NOT NULL CHECK (stage ~ '^[a-z0-9_]{1,80}$'),
+  receipt JSONB NOT NULL DEFAULT '{}'::jsonb,
+  operation_token_hash TEXT NOT NULL CHECK (operation_token_hash ~ '^[a-f0-9]{64}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS meta_organic_provider_stages_once_idx
+  ON private.meta_organic_provider_stages (job_id, stage);
+
 ALTER TABLE private.meta_organic_publish_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.meta_organic_publish_approvals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.meta_organic_publish_exports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.meta_organic_creative_approval_attestations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.meta_organic_publish_receipts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE private.meta_organic_provider_stages ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON private.meta_organic_publish_jobs FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON private.meta_organic_publish_approvals FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON private.meta_organic_publish_exports FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON private.meta_organic_creative_approval_attestations FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON private.meta_organic_publish_receipts FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON private.meta_organic_provider_stages FROM PUBLIC, anon, authenticated;
 
 CREATE OR REPLACE FUNCTION private.meta_organic_job_json(job private.meta_organic_publish_jobs)
 RETURNS JSONB
@@ -366,6 +382,157 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.persist_meta_organic_publish_approval(p_approval JSONB)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  inserted private.meta_organic_publish_approvals%ROWTYPE;
+  existing private.meta_organic_publish_approvals%ROWTYPE;
+  pod public.pods%ROWTYPE;
+  draft public.social_posts%ROWTYPE;
+  connection private.meta_organic_connections%ROWTYPE;
+  export_row private.meta_organic_publish_exports%ROWTYPE;
+  latest_creative_review public.pod_preferences%ROWTYPE;
+  approval_id UUID := coalesce(NULLIF(p_approval->>'id', ''), private.meta_organic_publisher_uuid()::text)::uuid;
+  approval_user_id UUID := (p_approval->>'userId')::uuid;
+  approval_pod_id UUID := (p_approval->>'podId')::uuid;
+  approval_draft_id UUID := (p_approval->>'draftId')::uuid;
+  approval_connection_id UUID := (p_approval->>'accountConnectionId')::uuid;
+  approval_campaign_date DATE := (p_approval->>'campaignDate')::date;
+BEGIN
+  IF p_approval->>'status' IS DISTINCT FROM 'approved'
+    OR p_approval->>'provider' NOT IN ('facebook','instagram')
+    OR btrim(coalesce(p_approval->>'contentVersion', '')) = ''
+    OR coalesce(p_approval->>'assetManifestHash', '') !~ '^[a-f0-9]{64}$'
+    OR NULLIF(p_approval->>'approvedAt', '') IS NULL
+    OR NULLIF(p_approval->>'approvedBy', '') IS NULL THEN
+    RAISE EXCEPTION 'PUBLISH_APPROVAL_REQUIRED';
+  END IF;
+
+  SELECT * INTO pod FROM public.pods
+  WHERE id = approval_pod_id
+    AND user_id = approval_user_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_TENANT_MISMATCH'; END IF;
+
+  SELECT * INTO draft FROM public.social_posts
+  WHERE id = approval_draft_id
+    AND pod_id = approval_pod_id
+    AND platform = p_approval->>'provider'
+    AND status IN ('approved','scheduled');
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_DRAFT_CONTEXT_REQUIRED'; END IF;
+  IF md5(draft.body) IS DISTINCT FROM p_approval->>'contentVersion' THEN
+    RAISE EXCEPTION 'PUBLISH_CONTENT_CHANGED';
+  END IF;
+
+  SELECT * INTO connection FROM private.meta_organic_connections
+  WHERE id = approval_connection_id
+    AND user_id = approval_user_id
+    AND pod_id = approval_pod_id
+    AND provider = p_approval->>'provider'
+    AND status = 'connected'
+    AND expires_at > now() + interval '1 minute';
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED'; END IF;
+
+  SELECT * INTO export_row FROM private.meta_organic_publish_exports
+  WHERE manifest_hash = p_approval->>'assetManifestHash'
+    AND user_id = approval_user_id
+    AND pod_id = approval_pod_id
+    AND draft_id = approval_draft_id
+    AND account_connection_id = approval_connection_id
+    AND media_type = 'image/jpeg'
+    AND provider_readable_url_expires_at > now() + interval '10 minutes'
+    AND manifest->'authority'->>'userId' = approval_user_id::text
+    AND manifest->'authority'->>'podId' = approval_pod_id::text
+    AND manifest->'authority'->>'postId' = approval_draft_id::text
+    AND manifest->'authority'->>'provider' = p_approval->>'provider'
+    AND manifest->'authority'->>'accountConnectionId' = approval_connection_id::text
+    AND manifest->'authority'->>'providerAccountId' = connection.provider_account_id
+    AND manifest->'authority'->>'contentVersion' = p_approval->>'contentVersion'
+    AND manifest->>'manifestHash' = manifest_hash
+    AND manifest->'output'->>'providerReadableUrl' = provider_readable_url
+    AND manifest->'output'->>'objectPath' = object_version
+    AND immutable
+    AND status = 'exported';
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_EXPORT_CONTEXT_REQUIRED'; END IF;
+
+  SELECT * INTO latest_creative_review
+  FROM public.pod_preferences
+  WHERE pod_id = approval_pod_id
+    AND preference_type = 'creative_review'
+    AND active IS TRUE
+    AND preference_value->>'post_id' = approval_draft_id::text
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1;
+  IF NOT FOUND OR latest_creative_review.id::text IS DISTINCT FROM export_row.manifest->'authority'->>'creativeApprovalId'
+    OR latest_creative_review.preference_value->>'status' IS DISTINCT FROM 'approved'
+    OR latest_creative_review.preference_value->>'content_snapshot' IS DISTINCT FROM draft.body THEN
+    RAISE EXCEPTION 'PUBLISH_EXPORT_SUPERSEDED';
+  END IF;
+
+  INSERT INTO private.meta_organic_publish_approvals (
+    id, user_id, pod_id, draft_id, provider, account_connection_id,
+    content_version, asset_manifest_hash, campaign_date, status, approved_at, approved_by
+  )
+  VALUES (
+    approval_id, approval_user_id, approval_pod_id, approval_draft_id, p_approval->>'provider',
+    approval_connection_id, p_approval->>'contentVersion', p_approval->>'assetManifestHash',
+    approval_campaign_date, 'approved', (p_approval->>'approvedAt')::timestamptz,
+    (p_approval->>'approvedBy')::uuid
+  )
+  ON CONFLICT DO NOTHING
+  RETURNING * INTO inserted;
+
+  IF FOUND THEN
+    RETURN jsonb_build_object(
+      'id', inserted.id,
+      'userId', inserted.user_id,
+      'podId', inserted.pod_id,
+      'draftId', inserted.draft_id,
+      'provider', inserted.provider,
+      'accountConnectionId', inserted.account_connection_id,
+      'contentVersion', inserted.content_version,
+      'assetManifestHash', inserted.asset_manifest_hash,
+      'campaignDate', inserted.campaign_date,
+      'status', inserted.status,
+      'approvedAt', inserted.approved_at,
+      'approvedBy', inserted.approved_by
+    );
+  END IF;
+
+  SELECT * INTO existing
+  FROM private.meta_organic_publish_approvals
+  WHERE id = approval_id
+    AND user_id = approval_user_id
+    AND pod_id = approval_pod_id
+    AND draft_id = approval_draft_id
+    AND provider = p_approval->>'provider'
+    AND account_connection_id = approval_connection_id
+    AND content_version = p_approval->>'contentVersion'
+    AND asset_manifest_hash = p_approval->>'assetManifestHash'
+    AND campaign_date = approval_campaign_date
+    AND status = 'approved';
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_APPROVAL_IMMUTABLE'; END IF;
+
+  RETURN jsonb_build_object(
+    'id', existing.id,
+    'userId', existing.user_id,
+    'podId', existing.pod_id,
+    'draftId', existing.draft_id,
+    'provider', existing.provider,
+    'accountConnectionId', existing.account_connection_id,
+    'contentVersion', existing.content_version,
+    'assetManifestHash', existing.asset_manifest_hash,
+    'campaignDate', existing.campaign_date,
+    'status', existing.status,
+    'approvedAt', existing.approved_at,
+    'approvedBy', existing.approved_by
+  );
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.enqueue_meta_organic_publish_job(p_proposal JSONB)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -410,7 +577,7 @@ BEGIN
   WHERE item.user_id = p_user_id
     AND item.status IN ('active','trialing')
     AND item.current_period_end > now()
-  FOR SHARE;
+  FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_PAID_PLAN_REQUIRED'; END IF;
   day_limit := CASE subscription.tier WHEN 'starter' THEN 10 WHEN 'growth' THEN 20 WHEN 'pro' THEN 30 WHEN 'scale' THEN 30 ELSE 0 END;
   week_limit := CASE subscription.tier WHEN 'starter' THEN 2 WHEN 'growth' THEN 3 WHEN 'pro' THEN 6 WHEN 'scale' THEN 7 ELSE 0 END;
@@ -825,6 +992,298 @@ BEGIN
     ),
     'existingCampaignDates', existing_dates
   );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_meta_organic_publisher_readiness()
+RETURNS JSONB
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  WITH checks AS (
+    SELECT
+      to_regclass('private.meta_organic_publish_jobs') IS NOT NULL
+        AND to_regclass('private.meta_organic_publish_approvals') IS NOT NULL
+        AND to_regclass('private.meta_organic_publish_exports') IS NOT NULL
+        AND to_regclass('private.meta_organic_publish_receipts') IS NOT NULL
+        AND to_regclass('private.meta_organic_provider_stages') IS NOT NULL AS private_tables_ready,
+      COALESCE(has_function_privilege('service_role', to_regprocedure('public.claim_meta_organic_publish_job(text,timestamp with time zone,integer)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.persist_meta_organic_publish_approval(jsonb)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.get_meta_organic_publish_context(uuid,text,text)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.get_meta_organic_publish_credential_lease(uuid,text,text)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.get_meta_organic_reconciliation_credential_lease(uuid,text,text)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.assert_meta_organic_publish_mutation_lease(uuid,text,text,text)'), 'EXECUTE'), false)
+        AND COALESCE(has_function_privilege('service_role', to_regprocedure('public.record_meta_organic_provider_stage(uuid,text,text,text,jsonb)'), 'EXECUTE'), false) AS service_execute_ready,
+      NOT COALESCE(has_function_privilege('authenticated', to_regprocedure('public.get_meta_organic_publish_credential_lease(uuid,text,text)'), 'EXECUTE'), false)
+        AND NOT COALESCE(has_table_privilege('authenticated', 'private.meta_organic_provider_stages', 'SELECT'), false)
+        AND NOT COALESCE(has_table_privilege('anon', 'private.meta_organic_provider_stages', 'INSERT'), false) AS browser_private_access_denied
+  )
+  SELECT jsonb_build_object(
+    'ready', private_tables_ready AND service_execute_ready AND browser_private_access_denied,
+    'contract_version', 'meta_organic_publisher_pilot_v1',
+    'provider_verified_source', 'meta_organic_publisher_foundation_2026_10_12',
+    'checks', jsonb_build_object(
+      'private_tables_ready', private_tables_ready,
+      'service_execute_ready', service_execute_ready,
+      'browser_private_access_denied', browser_private_access_denied
+    )
+  )
+  FROM checks;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_meta_organic_publish_credential_lease(
+  p_job_id UUID,
+  p_worker_id TEXT,
+  p_operation_token TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  job private.meta_organic_publish_jobs%ROWTYPE;
+  connection private.meta_organic_connections%ROWTYPE;
+  credential private.meta_organic_credentials%ROWTYPE;
+BEGIN
+  job := private.meta_organic_require_lease(p_job_id, p_worker_id, p_operation_token, false);
+
+  SELECT * INTO connection
+  FROM private.meta_organic_connections
+  WHERE id = job.account_connection_id
+    AND user_id = job.user_id
+    AND pod_id = job.pod_id
+    AND provider = job.provider
+    AND status = 'connected'
+    AND expires_at > now() + interval '1 minute';
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED'; END IF;
+
+  SELECT * INTO credential
+  FROM private.meta_organic_credentials
+  WHERE connection_id = connection.id
+    AND token_kind = 'page'
+    AND encrypted_access_token IS NOT NULL
+    AND encryption_key_version IS NOT NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_CREDENTIAL_CONTEXT_REQUIRED'; END IF;
+
+  RETURN jsonb_build_object(
+    'provider', connection.provider,
+    'accountConnectionId', connection.id,
+    'providerAccountId', connection.provider_account_id,
+    'tokenKind', credential.token_kind,
+    'encryptedAccessToken', credential.encrypted_access_token,
+    'encryptionKeyVersion', credential.encryption_key_version
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_meta_organic_reconciliation_credential_lease(
+  p_job_id UUID,
+  p_worker_id TEXT,
+  p_operation_token TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  job private.meta_organic_publish_jobs%ROWTYPE;
+  connection private.meta_organic_connections%ROWTYPE;
+  credential private.meta_organic_credentials%ROWTYPE;
+BEGIN
+  job := private.meta_organic_require_reconciliation_claim(p_job_id, p_worker_id, p_operation_token);
+
+  SELECT * INTO connection
+  FROM private.meta_organic_connections
+  WHERE id = job.account_connection_id
+    AND user_id = job.user_id
+    AND pod_id = job.pod_id
+    AND provider = job.provider
+    AND status = 'connected'
+    AND expires_at > now() + interval '1 minute';
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED'; END IF;
+
+  SELECT * INTO credential
+  FROM private.meta_organic_credentials
+  WHERE connection_id = connection.id
+    AND token_kind = 'page'
+    AND encrypted_access_token IS NOT NULL
+    AND encryption_key_version IS NOT NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_CREDENTIAL_CONTEXT_REQUIRED'; END IF;
+
+  RETURN jsonb_build_object(
+    'provider', connection.provider,
+    'accountConnectionId', connection.id,
+    'providerAccountId', connection.provider_account_id,
+    'tokenKind', credential.token_kind,
+    'encryptedAccessToken', credential.encrypted_access_token,
+    'encryptionKeyVersion', credential.encryption_key_version
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.assert_meta_organic_publish_mutation_lease(
+  p_job_id UUID,
+  p_worker_id TEXT,
+  p_operation_token TEXT,
+  p_stage TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE job private.meta_organic_publish_jobs%ROWTYPE;
+BEGIN
+  IF p_stage NOT IN (
+    'facebook_photo_before_write',
+    'instagram_container_before_create',
+    'instagram_container_poll',
+    'instagram_media_before_publish'
+  ) THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_REQUIRED';
+  END IF;
+  job := private.meta_organic_require_lease(p_job_id, p_worker_id, p_operation_token, false);
+  IF (job.provider = 'facebook' AND p_stage <> 'facebook_photo_before_write')
+    OR (job.provider = 'instagram' AND p_stage NOT IN ('instagram_container_before_create','instagram_container_poll','instagram_media_before_publish')) THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_REQUIRED';
+  END IF;
+  IF p_stage <> 'instagram_container_poll' THEN
+    IF EXISTS (
+      SELECT 1 FROM private.meta_organic_provider_stages stage
+      WHERE stage.job_id = job.id AND stage.stage = p_stage
+    ) THEN
+      RAISE EXCEPTION 'PUBLISH_STAGE_ALREADY_DISPATCHED';
+    END IF;
+  END IF;
+  IF p_stage = 'facebook_photo_before_write' AND EXISTS (
+    SELECT 1 FROM private.meta_organic_provider_stages stage
+    WHERE stage.job_id = job.id AND stage.stage = 'facebook_photo_published'
+  ) THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_ALREADY_DISPATCHED';
+  END IF;
+  IF p_stage IN ('instagram_container_poll','instagram_media_before_publish') AND NOT EXISTS (
+    SELECT 1 FROM private.meta_organic_provider_stages stage
+    WHERE stage.job_id = job.id AND stage.stage = 'instagram_container_created'
+  ) THEN
+    RAISE EXCEPTION 'PUBLISH_CONTAINER_CHECKPOINT_REQUIRED';
+  END IF;
+  IF p_stage = 'instagram_media_before_publish' AND EXISTS (
+    SELECT 1 FROM private.meta_organic_provider_stages stage
+    WHERE stage.job_id = job.id AND stage.stage = 'instagram_media_published'
+  ) THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_ALREADY_DISPATCHED';
+  END IF;
+  IF p_stage <> 'instagram_container_poll' THEN
+    INSERT INTO private.meta_organic_provider_stages (
+      job_id, account_connection_id, provider, stage, receipt, operation_token_hash
+    )
+    VALUES (
+      job.id, job.account_connection_id, job.provider, p_stage, '{}'::jsonb,
+      encode(sha256(convert_to(p_operation_token, 'UTF8')), 'hex')
+    );
+  END IF;
+  RETURN jsonb_build_object('ok', true, 'jobId', job.id, 'stage', p_stage);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.record_meta_organic_provider_stage(
+  p_job_id UUID,
+  p_worker_id TEXT,
+  p_operation_token TEXT,
+  p_stage TEXT,
+  p_receipt JSONB DEFAULT '{}'::jsonb
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  job private.meta_organic_publish_jobs%ROWTYPE;
+  existing private.meta_organic_provider_stages%ROWTYPE;
+  expected_account_id TEXT;
+  safe_receipt JSONB;
+BEGIN
+  IF p_stage NOT IN ('facebook_photo_published','instagram_container_created','instagram_media_published') THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_REQUIRED';
+  END IF;
+  job := private.meta_organic_require_lease(p_job_id, p_worker_id, p_operation_token, false);
+  SELECT provider_account_id INTO expected_account_id
+  FROM private.meta_organic_connections
+  WHERE id = job.account_connection_id
+    AND user_id = job.user_id
+    AND pod_id = job.pod_id
+    AND provider = job.provider;
+  IF p_receipt->>'provider' IS DISTINCT FROM job.provider
+    OR p_receipt->>'providerAccountId' IS DISTINCT FROM expected_account_id THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_RECEIPT_REQUIRED';
+  END IF;
+  IF p_stage = 'facebook_photo_published'
+    AND (job.provider <> 'facebook'
+      OR coalesce(p_receipt->>'providerPostId', '') !~ '^[1-9][0-9]{0,31}_[1-9][0-9]{0,31}$'
+      OR coalesce(p_receipt->>'photoId', '') !~ '^[1-9][0-9]{0,31}$') THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_RECEIPT_REQUIRED';
+  END IF;
+  IF p_stage = 'instagram_container_created'
+    AND (job.provider <> 'instagram' OR coalesce(p_receipt->>'containerId', '') !~ '^[1-9][0-9]{0,31}$') THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_RECEIPT_REQUIRED';
+  END IF;
+  IF p_stage = 'instagram_media_published'
+    AND (job.provider <> 'instagram'
+      OR coalesce(p_receipt->>'providerPostId', '') !~ '^[1-9][0-9]{0,31}$'
+      OR coalesce(p_receipt->>'containerId', '') !~ '^[1-9][0-9]{0,31}$'
+      OR NOT EXISTS (
+        SELECT 1 FROM private.meta_organic_provider_stages stage
+        WHERE stage.job_id = job.id
+          AND stage.stage = 'instagram_container_created'
+          AND stage.receipt->>'containerId' = p_receipt->>'containerId'
+      )) THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_RECEIPT_REQUIRED';
+  END IF;
+  SELECT * INTO existing FROM private.meta_organic_provider_stages stage
+  WHERE stage.job_id = job.id AND stage.stage = p_stage;
+  IF FOUND AND existing.receipt <> '{}'::jsonb THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_ALREADY_DISPATCHED';
+  END IF;
+  safe_receipt := jsonb_build_object(
+    'provider', job.provider,
+    'providerAccountId', expected_account_id
+  );
+  IF p_stage = 'facebook_photo_published' THEN
+    safe_receipt := safe_receipt || jsonb_build_object(
+      'providerPostId', p_receipt->>'providerPostId',
+      'photoId', p_receipt->>'photoId'
+    );
+  ELSIF p_stage = 'instagram_container_created' THEN
+    safe_receipt := safe_receipt || jsonb_build_object(
+      'containerId', p_receipt->>'containerId'
+    );
+  ELSE
+    safe_receipt := safe_receipt || jsonb_build_object(
+      'containerId', p_receipt->>'containerId',
+      'providerPostId', p_receipt->>'providerPostId'
+    );
+  END IF;
+  IF NOT FOUND THEN
+    INSERT INTO private.meta_organic_provider_stages (
+      job_id, account_connection_id, provider, stage, receipt, operation_token_hash
+    )
+    VALUES (
+      job.id, job.account_connection_id, job.provider, p_stage, safe_receipt,
+      encode(sha256(convert_to(p_operation_token, 'UTF8')), 'hex')
+    );
+    RETURN jsonb_build_object('ok', true, 'stage', p_stage);
+  END IF;
+  IF existing.operation_token_hash IS DISTINCT FROM encode(sha256(convert_to(p_operation_token, 'UTF8')), 'hex') THEN
+    RAISE EXCEPTION 'PUBLISH_STAGE_ALREADY_DISPATCHED';
+  END IF;
+  UPDATE private.meta_organic_provider_stages
+  SET receipt = safe_receipt
+  WHERE id = existing.id;
+  RETURN jsonb_build_object('ok', true, 'stage', p_stage);
 END;
 $$;
 
@@ -1289,6 +1748,7 @@ DECLARE
   job_id UUID;
   job private.meta_organic_publish_jobs%ROWTYPE;
   receipt JSONB;
+  stages JSONB;
   account_id TEXT;
 BEGIN
   IF btrim(coalesce(p_worker_id, '')) = '' OR p_lease_ms < 30000 OR p_lease_ms > 900000 THEN
@@ -1327,6 +1787,11 @@ BEGIN
   FROM private.meta_organic_connections
   WHERE id = job.account_connection_id;
 
+  SELECT coalesce(jsonb_object_agg(stage.stage, stage.receipt ORDER BY stage.created_at), '{}'::jsonb)
+  INTO stages
+  FROM private.meta_organic_provider_stages stage
+  WHERE stage.job_id = job.id;
+
   receipt := coalesce(receipt, '{}'::jsonb) || jsonb_build_object(
     'provider', job.provider,
     'providerAccountId', account_id
@@ -1335,7 +1800,8 @@ BEGIN
   RETURN private.meta_organic_job_json(job)
     || jsonb_build_object(
       'providerAccountId', account_id,
-      'receipts', jsonb_build_object(job.account_connection_id, receipt)
+      'receipts', jsonb_build_object(job.account_connection_id, receipt),
+      'providerStages', stages
     );
 END;
 $$;
@@ -1547,8 +2013,14 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.enqueue_meta_organic_publish_job(JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.persist_meta_organic_publish_approval(JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.claim_meta_organic_publish_job(TEXT, TIMESTAMPTZ, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.get_meta_organic_publish_context(UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.get_meta_organic_publisher_readiness() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.get_meta_organic_publish_credential_lease(UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.get_meta_organic_reconciliation_credential_lease(UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.assert_meta_organic_publish_mutation_lease(UUID, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.record_meta_organic_provider_stage(UUID, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.mark_meta_organic_publish_blocked(UUID, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.mark_meta_organic_publish_retry(UUID, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.mark_meta_organic_publish_failed(UUID, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
@@ -1566,8 +2038,14 @@ REVOKE ALL ON FUNCTION private.meta_organic_require_lease(UUID, TEXT, TEXT, BOOL
 REVOKE ALL ON FUNCTION private.meta_organic_require_reconciliation_claim(UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated, service_role;
 
 GRANT EXECUTE ON FUNCTION public.enqueue_meta_organic_publish_job(JSONB) TO service_role;
+GRANT EXECUTE ON FUNCTION public.persist_meta_organic_publish_approval(JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.claim_meta_organic_publish_job(TEXT, TIMESTAMPTZ, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION public.get_meta_organic_publish_context(UUID, TEXT, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_meta_organic_publisher_readiness() TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_meta_organic_publish_credential_lease(UUID, TEXT, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_meta_organic_reconciliation_credential_lease(UUID, TEXT, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.assert_meta_organic_publish_mutation_lease(UUID, TEXT, TEXT, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.record_meta_organic_provider_stage(UUID, TEXT, TEXT, TEXT, JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.mark_meta_organic_publish_blocked(UUID, TEXT, TEXT, TEXT, JSONB) TO service_role;
 GRANT EXECUTE ON FUNCTION public.mark_meta_organic_publish_retry(UUID, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ) TO service_role;
 GRANT EXECUTE ON FUNCTION public.mark_meta_organic_publish_failed(UUID, TEXT, TEXT, TEXT, JSONB) TO service_role;

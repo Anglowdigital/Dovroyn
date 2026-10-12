@@ -2,12 +2,16 @@ import crypto from 'node:crypto';
 import { getPlan, hasActivePaidAccess } from '../../src/lib/plans.js';
 import { rpcWithServiceRole } from './supabaseAuth.js';
 import { computeMetaOrganicArtworkManifestHash, META_ORGANIC_ARTWORK_RENDERER_VERSION } from './metaOrganicArtworkExport.js';
+import { decryptProviderPayload, getMetaOrganicConfig } from './metaOrganic.js';
 
 export const META_ORGANIC_PUBLISHER_CONTRACT_VERSION = 'meta_organic_publisher_pilot_v1';
 export const META_ORGANIC_PUBLISHER_PROVENANCE = 'meta_organic_publisher_foundation_2026_10_12';
 export const META_ORGANIC_PUBLISHER_DISABLED_REASON = 'publisher_disabled';
 export const META_ORGANIC_MAX_ATTEMPTS = 3;
 export const META_ORGANIC_LEASE_MS = 5 * 60 * 1000;
+export const META_ORGANIC_SCHEDULER_DISABLED_REASON = 'scheduler_disabled';
+export const META_ORGANIC_SCHEDULER_UNAUTHORIZED_REASON = 'scheduler_authorization_required';
+export const META_ORGANIC_SCHEDULER_NOT_READY_REASON = 'scheduler_readiness_required';
 
 export const META_ORGANIC_PUBLISH_PERMISSIONS = Object.freeze({
   facebook: Object.freeze(['pages_manage_posts', 'pages_read_engagement']),
@@ -68,6 +72,10 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+function claimValue(job, camel, snake = camel.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)) {
+  return job?.[camel] ?? job?.[snake];
+}
+
 function requireUuidLike(value, field) {
   const id = cleanString(value, 120);
   if (!id) throw new Error(`${field} is required.`);
@@ -95,6 +103,38 @@ function isHttpsUrl(value) {
 function providerAccountId(value) {
   const id = cleanString(value, 80);
   return /^[1-9][0-9]{0,31}$/.test(id) ? id : '';
+}
+
+function providerNumericId(value) {
+  const id = cleanString(value, 80);
+  return /^[1-9][0-9]{0,31}$/.test(id) ? id : '';
+}
+
+function facebookPagePostId(value, pageId) {
+  const id = cleanString(value, 120);
+  if (!providerNumericId(pageId)) return '';
+  return new RegExp(`^${pageId}_[1-9][0-9]{0,31}$`).test(id) ? id : '';
+}
+
+function providerPostIdFor(provider, value, accountId) {
+  if (provider === 'facebook') return facebookPagePostId(value, accountId);
+  if (provider === 'instagram') return providerNumericId(value);
+  return '';
+}
+
+function decryptCredentialRecord(credential, config, decrypt) {
+  const keyVersion = cleanString(credential?.encryptionKeyVersion || credential?.encryption_key_version, 120);
+  if (!keyVersion || keyVersion !== config.encryptionKeyVersion) {
+    throw Object.assign(new Error('PUBLISH_CREDENTIAL_KEY_VERSION_REQUIRED'), { code: 'PUBLISH_CREDENTIAL_KEY_VERSION_REQUIRED' });
+  }
+  return {
+    provider: credential.provider,
+    accountConnectionId: credential.accountConnectionId || credential.account_connection_id,
+    providerAccountId: credential.providerAccountId || credential.provider_account_id,
+    tokenKind: credential.tokenKind || credential.token_kind,
+    keyVersion,
+    accessToken: decrypt(credential.encryptedAccessToken || credential.encrypted_access_token, config),
+  };
 }
 
 function futureIso(value, now, minMs = 0) {
@@ -153,6 +193,64 @@ export function buildMetaOrganicPublishProposal(input = {}) {
     scheduledAt,
     dedupeKey: makeMetaOrganicDedupeKey({ draftId, accountConnectionId, contentVersion, assetManifestHash, campaignDate }),
     contractVersion: META_ORGANIC_PUBLISHER_CONTRACT_VERSION,
+  };
+}
+
+export async function enqueueExplicitMetaOrganicPublishingApprovals({
+  approvals = [],
+  store = createRpcMetaOrganicPublishStore(),
+} = {}) {
+  if (!Array.isArray(approvals) || approvals.length === 0) {
+    throw Object.assign(new Error('Explicit per-account publishing approval is required.'), { code: 'PUBLISH_APPROVAL_REQUIRED' });
+  }
+  const campaignDates = new Set(approvals.map((approval) => dateOnly(approval.campaignDate || approval.campaign_date)).filter(Boolean));
+  if (campaignDates.size !== 1 || campaignDates.size !== approvals.length && approvals.some((approval) => !dateOnly(approval.campaignDate || approval.campaign_date))) {
+    throw Object.assign(new Error('Selected accounts must share one explicit campaign date.'), { code: 'PUBLISH_APPROVAL_DATE_MISMATCH' });
+  }
+  const queued = [];
+  const failures = [];
+  for (const approval of approvals) {
+    try {
+      if (approval.status !== 'approved' || !iso(approval.approvedAt || approval.approved_at)) {
+        throw Object.assign(new Error('Publishing approval is not approved.'), { code: 'PUBLISH_APPROVAL_REQUIRED' });
+      }
+      if (typeof store.persistPublishingApproval !== 'function') {
+        throw Object.assign(new Error('Publishing approval persistence is required.'), { code: 'PUBLISH_APPROVAL_PERSISTENCE_REQUIRED' });
+      }
+      const requestedSchedule = iso(approval.scheduledAt || approval.scheduled_at);
+      if (!requestedSchedule) {
+        throw Object.assign(new Error('An exact approved publishing time is required.'), { code: 'PUBLISH_SCHEDULE_APPROVAL_REQUIRED' });
+      }
+      const trustedApproval = await store.persistPublishingApproval(approval);
+      const approvedSchedule = iso(trustedApproval?.scheduledAt || trustedApproval?.scheduled_at);
+      if (!approvedSchedule || approvedSchedule !== requestedSchedule) {
+        throw Object.assign(new Error('The exact publishing time was not confirmed by durable approval.'), { code: 'PUBLISH_SCHEDULE_APPROVAL_REQUIRED' });
+      }
+      const proposal = buildMetaOrganicPublishProposal({
+        provider: trustedApproval.provider,
+        userId: trustedApproval.userId || trustedApproval.user_id,
+        podId: trustedApproval.podId || trustedApproval.pod_id,
+        draftId: trustedApproval.draftId || trustedApproval.draft_id,
+        accountConnectionId: trustedApproval.accountConnectionId || trustedApproval.account_connection_id,
+        contentVersion: trustedApproval.contentVersion || trustedApproval.content_version,
+        assetManifestHash: trustedApproval.assetManifestHash || trustedApproval.asset_manifest_hash,
+        approvalId: trustedApproval.id,
+        campaignDate: trustedApproval.campaignDate || trustedApproval.campaign_date,
+        scheduledAt: approvedSchedule,
+      });
+      queued.push(await store.enqueue(proposal));
+    } catch (error) {
+      failures.push({
+        approvalId: cleanString(approval?.id, 120),
+        accountConnectionId: cleanString(approval?.accountConnectionId || approval?.account_connection_id, 120),
+        reason: cleanString(error?.code || error?.message || 'PUBLISH_QUEUE_FAILED', 120),
+      });
+    }
+  }
+  return {
+    status: failures.length ? (queued.length ? 'partially_queued' : 'queue_blocked') : 'queued',
+    queued,
+    failures,
   };
 }
 
@@ -303,7 +401,7 @@ function sanitizeProviderReceipt(receipt, validation) {
   }
   const provider = cleanString(receipt.provider || validation.proposal.provider, 40).toLowerCase();
   const accountId = providerAccountId(receipt.providerAccountId || validation.providerPayload.accountId);
-  const providerPostId = cleanString(receipt.providerPostId || receipt.mediaId || receipt.postId, 120);
+  const providerPostId = providerPostIdFor(provider, receipt.providerPostId || receipt.mediaId || receipt.postId, accountId);
   if (provider !== validation.proposal.provider || accountId !== validation.providerPayload.accountId || !providerPostId) {
     throw new UnknownOutcomePublishError('Provider acknowledgement was ambiguous.', {
       provider: validation.proposal.provider,
@@ -319,7 +417,10 @@ function sanitizeProviderReceipt(receipt, validation) {
     providerPostId,
   };
   if (permalink) safe.permalink = permalink;
-  if (cleanString(receipt.containerId, 120)) safe.containerId = cleanString(receipt.containerId, 120);
+  const containerId = providerNumericId(receipt.containerId);
+  const photoId = providerNumericId(receipt.photoId);
+  if (containerId) safe.containerId = containerId;
+  if (photoId) safe.photoId = photoId;
   return safe;
 }
 
@@ -334,8 +435,12 @@ function sanitizeUnknownReceipt(receipt, fallback = {}) {
   if (reason) safe.reason = reason;
   const operation = cleanString(input.operation || fallback.operation, 120);
   if (operation) safe.operation = operation;
-  const providerPostId = cleanString(input.providerPostId || input.mediaId || input.postId, 120);
+  const providerPostId = providerPostIdFor(provider, input.providerPostId || input.mediaId || input.postId, accountId);
   if (providerPostId) safe.providerPostId = providerPostId;
+  const containerId = providerNumericId(input.containerId);
+  if (containerId) safe.containerId = containerId;
+  const photoId = providerNumericId(input.photoId);
+  if (photoId) safe.photoId = photoId;
   const dedupeKey = /^[a-f0-9]{64}$/.test(String(input.dedupeKey || '')) ? input.dedupeKey : '';
   if (dedupeKey) safe.dedupeKey = dedupeKey;
   if (isHttpsUrl(input.permalink)) safe.permalink = input.permalink;
@@ -347,12 +452,16 @@ function sanitizeReconciliationReceipt(receipt, job) {
   if (receipt.status && !['found', 'published', 'reconciled'].includes(receipt.status)) return { ok: false, reason: 'RECONCILE_INCONCLUSIVE' };
   const provider = cleanString(receipt.provider || job.provider, 40).toLowerCase();
   const accountId = providerAccountId(receipt.providerAccountId);
-  const providerPostId = cleanString(receipt.providerPostId || receipt.mediaId || receipt.postId, 120);
+  const providerPostId = providerPostIdFor(provider, receipt.providerPostId || receipt.mediaId || receipt.postId, accountId);
   const priorReceipt = job.receipts?.[job.accountConnectionId] || job.receipts?.[job.account_connection_id] || {};
+  const stages = job.providerStages || job.provider_stages || {};
+  const stageReceipt = stages.instagram_media_published || stages.facebook_photo_published || priorReceipt;
   const expectedAccountId = providerAccountId(job.providerAccountId || job.provider_account_id || priorReceipt.providerAccountId);
+  const knownProviderPostId = providerPostIdFor(provider, stageReceipt.providerPostId || stageReceipt.mediaId || stageReceipt.postId, expectedAccountId);
   if (provider !== job.provider || !expectedAccountId || accountId !== expectedAccountId || !providerPostId) {
     return { ok: false, reason: 'RECONCILE_PROOF_MISMATCH' };
   }
+  if (!knownProviderPostId || providerPostId !== knownProviderPostId) return { ok: false, reason: 'RECONCILE_PROOF_MISMATCH' };
   const deliveryMatches = receipt.dedupeKey === job.dedupeKey
     || (
       receipt.draftId === job.draftId
@@ -373,10 +482,16 @@ function sanitizeReconciliationReceipt(receipt, job) {
   return { ok: true, receipt: safe };
 }
 
-export function createRpcMetaOrganicPublishStore({ rpc = rpcWithServiceRole } = {}) {
+export function createRpcMetaOrganicPublishStore({ rpc = rpcWithServiceRole, config = getMetaOrganicConfig(), decrypt = decryptProviderPayload } = {}) {
   return {
     async enqueue(proposal) {
       return rpc('enqueue_meta_organic_publish_job', { p_proposal: proposal });
+    },
+    async persistPublishingApproval(approval) {
+      return rpc('persist_meta_organic_publish_approval', { p_approval: approval });
+    },
+    async readiness() {
+      return rpc('get_meta_organic_publisher_readiness', {});
     },
     async claimNext({ workerId, now, leaseMs }) {
       return rpc('claim_meta_organic_publish_job', {
@@ -390,6 +505,41 @@ export function createRpcMetaOrganicPublishStore({ rpc = rpcWithServiceRole } = 
         p_job_id: job.id,
         p_worker_id: job.leasedBy || job.leased_by,
         p_operation_token: job.operationToken || job.operation_token,
+      });
+    },
+    async loadCredentialLease(job) {
+      const credential = await rpc('get_meta_organic_publish_credential_lease', {
+        p_job_id: job.id,
+        p_worker_id: job.leasedBy || job.leased_by,
+        p_operation_token: job.operationToken || job.operation_token,
+      });
+      if (!credential?.encryptedAccessToken && !credential?.encrypted_access_token) return credential;
+      return decryptCredentialRecord(credential, config, decrypt);
+    },
+    async loadReconciliationCredentialLease(job) {
+      const credential = await rpc('get_meta_organic_reconciliation_credential_lease', {
+        p_job_id: job.id,
+        p_worker_id: job.leasedBy || job.leased_by,
+        p_operation_token: job.operationToken || job.operation_token,
+      });
+      if (!credential?.encryptedAccessToken && !credential?.encrypted_access_token) return credential;
+      return decryptCredentialRecord(credential, config, decrypt);
+    },
+    async assertMutationLease(job, stage = '') {
+      return rpc('assert_meta_organic_publish_mutation_lease', {
+        p_job_id: job.id,
+        p_worker_id: job.leasedBy || job.leased_by,
+        p_operation_token: job.operationToken || job.operation_token,
+        p_stage: stage,
+      });
+    },
+    async recordProviderStage(job, stage, receipt = {}) {
+      return rpc('record_meta_organic_provider_stage', {
+        p_job_id: job.id,
+        p_worker_id: job.leasedBy || job.leased_by,
+        p_operation_token: job.operationToken || job.operation_token,
+        p_stage: stage,
+        p_receipt: receipt || {},
       });
     },
     async markBlocked(job, reason, details) {
@@ -493,13 +643,53 @@ export function createInMemoryMetaOrganicPublishStoreWithClock(contexts = [], cl
       job.operationToken = operationToken();
       job.claimedAt = now.toISOString();
       job.updatedAt = now.toISOString();
-      return { ...job };
+      return {
+        ...job,
+        providerStages: Object.fromEntries((job.providerStages || []).map((stage) => [stage.stage, stage.receipt])),
+      };
     },
     async loadContext(job) {
       const current = jobs.find((candidate) => candidate.id === job.id);
       if (!current || FINAL_STATES.has(current.state)) return null;
       const context = contextByDedupe.get(current.dedupeKey);
       return context ? structuredClone(context) : null;
+    },
+    async loadCredentialLease(job) {
+      const current = requireCurrentClaim(job);
+      const context = contextByDedupe.get(current.dedupeKey);
+      const accessToken = context?.account?.accessToken || context?.credential?.accessToken || 'test-page-token';
+      return {
+        provider: current.provider,
+        accountConnectionId: current.accountConnectionId,
+        providerAccountId: context?.account?.providerAccountId,
+        tokenKind: context?.account?.tokenKind || META_ORGANIC_TOKEN_KINDS[current.provider],
+        accessToken,
+        keyVersion: context?.credential?.keyVersion || 'test-v1',
+      };
+    },
+    async loadReconciliationCredentialLease(job) {
+      const current = requireCurrentClaim(job, 'reconciling');
+      const context = contextByDedupe.get(current.dedupeKey);
+      return {
+        provider: current.provider,
+        accountConnectionId: current.accountConnectionId,
+        providerAccountId: context?.account?.providerAccountId,
+        tokenKind: context?.account?.tokenKind || META_ORGANIC_TOKEN_KINDS[current.provider],
+        accessToken: context?.account?.accessToken || context?.credential?.accessToken || 'test-page-token',
+        keyVersion: context?.credential?.keyVersion || 'test-v1',
+      };
+    },
+    async assertMutationLease(job) {
+      requireCurrentClaim(job);
+      return { ok: true };
+    },
+    async recordProviderStage(job, stage, receipt = {}) {
+      const current = requireCurrentClaim(job);
+      if ((current.providerStages || []).some((item) => item.stage === stage)) {
+        throw Object.assign(new Error('PUBLISH_STAGE_ALREADY_DISPATCHED'), { code: 'PUBLISH_STAGE_ALREADY_DISPATCHED' });
+      }
+      current.providerStages = [...(current.providerStages || []), { stage, receipt: sanitizeUnknownReceipt(receipt, { provider: current.provider }) }];
+      return { ok: true };
     },
     async markBlocked(job, reason, details = {}) {
       return update(job, { state: 'blocked', errorCode: reason, details }, { requireUnexpired: true });
@@ -530,7 +720,10 @@ export function createInMemoryMetaOrganicPublishStoreWithClock(contexts = [], cl
       job.operationToken = operationToken();
       job.claimedAt = now.toISOString();
       job.updatedAt = now.toISOString();
-      return { ...job };
+      return {
+        ...job,
+        providerStages: Object.fromEntries((job.providerStages || []).map((stage) => [stage.stage, stage.receipt])),
+      };
     },
     async markReconciled(job, receipt = {}) {
       return update(job, { state: 'published', errorCode: null, receipts: { [job.accountConnectionId]: receipt } }, { requireUnexpired: true, allowedState: 'reconciling' });
@@ -539,6 +732,20 @@ export function createInMemoryMetaOrganicPublishStoreWithClock(contexts = [], cl
       return update(job, { state: 'unknown', errorCode: reason, receipts: { [job.accountConnectionId]: sanitizeUnknownReceipt(receipt, { provider: job.provider, reason }) } }, { allowExpired: true, allowedState: 'reconciling' });
     },
   };
+
+  function requireCurrentClaim(claim, allowedState = 'leased') {
+    const job = jobs.find((candidate) => candidate.id === claim.id);
+    const sameClaim = job
+      && job.state === allowedState
+      && job.leasedBy === claim.leasedBy
+      && job.operationToken
+      && job.operationToken === claim.operationToken;
+    const currentTime = typeof clock === 'function' ? Number(clock()) : Number.NaN;
+    const expiredAgainstClock = job?.leaseExpiresAt && Number.isFinite(currentTime) && Date.parse(job.leaseExpiresAt) <= currentTime;
+    if (!sameClaim) throw Object.assign(new Error('PUBLISH_CLAIM_REQUIRED'), { code: 'PUBLISH_CLAIM_REQUIRED' });
+    if (expiredAgainstClock) throw Object.assign(new Error('PUBLISH_LEASE_EXPIRED'), { code: 'PUBLISH_LEASE_EXPIRED' });
+    return job;
+  }
 
   function update(claim, patch, options = {}) {
     const job = jobs.find((candidate) => candidate.id === claim.id);
@@ -567,9 +774,13 @@ export async function reconcileNextMetaOrganicPublishJob({
   provider,
   workerId = `reconciler-${process.pid}`,
   now = new Date(),
+  deadlineAt = config.deadlineAt || null,
 } = {}) {
   if (!config.enabled) {
     return { status: 'disabled', reason: META_ORGANIC_PUBLISHER_DISABLED_REASON };
+  }
+  if (deadlineAt != null && (!iso(deadlineAt) || Date.parse(deadlineAt) <= Date.now())) {
+    return { status: 'idle', reason: 'RECONCILE_DEADLINE_EXCEEDED' };
   }
   if (!provider || typeof provider.lookupPublishedMetaOrganicReceipt !== 'function') {
     throw new Error('A read-only Meta organic reconciliation adapter is required.');
@@ -578,6 +789,12 @@ export async function reconcileNextMetaOrganicPublishJob({
   if (!job) return { status: 'idle' };
   let proof;
   try {
+    const credential = typeof store.loadReconciliationCredentialLease === 'function'
+      ? await store.loadReconciliationCredentialLease(job)
+      : null;
+    const priorReceipt = job.receipts?.[job.accountConnectionId] || job.receipts?.[job.account_connection_id] || {};
+    const stages = job.providerStages || job.provider_stages || {};
+    const stageReceipt = stages.instagram_media_published || stages.facebook_photo_published || priorReceipt;
     proof = await provider.lookupPublishedMetaOrganicReceipt({
       provider: job.provider,
       accountConnectionId: job.accountConnectionId,
@@ -587,7 +804,17 @@ export async function reconcileNextMetaOrganicPublishJob({
       contentVersion: job.contentVersion,
       assetManifestHash: job.assetManifestHash,
       campaignDate: job.campaignDate,
-    });
+      providerAccountId: job.providerAccountId || job.provider_account_id || credential?.providerAccountId || priorReceipt.providerAccountId,
+      providerPostId: stageReceipt.providerPostId,
+      containerId: stageReceipt.containerId,
+      photoId: stageReceipt.photoId,
+    }, credential ? {
+      provider: credential.provider,
+      providerAccountId: credential.providerAccountId,
+      tokenKind: credential.tokenKind,
+      accessToken: credential.accessToken,
+      deadlineAt,
+    } : {});
   } catch (error) {
     await store.keepUnknown(job, 'RECONCILE_LOOKUP_ERROR', sanitizeUnknownReceipt({}, {
       provider: job.provider,
@@ -613,13 +840,39 @@ function retryDelayMs(attempts) {
   return Math.min(15 * 60 * 1000, (2 ** Math.max(0, attempts - 1)) * 60 * 1000);
 }
 
-async function publishWithProvider(provider, validation) {
+async function publishWithProvider(provider, validation, privateContext) {
   if (validation.proposal.provider === 'facebook') {
     if (typeof provider.publishFacebookPagePhoto !== 'function') throw new Error('Facebook Page provider adapter is not configured.');
-    return provider.publishFacebookPagePhoto(validation.providerPayload);
+    return provider.publishFacebookPagePhoto(validation.providerPayload, privateContext);
   }
   if (typeof provider.publishInstagramImage !== 'function') throw new Error('Instagram provider adapter is not configured.');
-  return provider.publishInstagramImage(validation.providerPayload);
+  return provider.publishInstagramImage(validation.providerPayload, privateContext);
+}
+
+function buildProviderPrivateContext({ job, context, validation, credential, store }) {
+  const accountConnectionId = validation.proposal.accountConnectionId;
+  const safeCredential = credential || {};
+  return {
+    jobId: job.id,
+    dedupeKey: validation.proposal.dedupeKey,
+    provider: validation.proposal.provider,
+    userId: validation.proposal.userId,
+    podId: validation.proposal.podId,
+    accountConnectionId,
+    providerAccountId: validation.providerPayload.accountId,
+    tokenKind: safeCredential.tokenKind || context.account?.tokenKind,
+    accessToken: safeCredential.accessToken,
+    keyVersion: safeCredential.keyVersion || safeCredential.encryptionKeyVersion,
+    deadlineAt: context.deadlineAt || job.deadlineAt || job.deadline_at || null,
+    async assertLease(stage) {
+      if (typeof store.assertMutationLease !== 'function') throw Object.assign(new Error('PUBLISH_LEASE_CHECK_REQUIRED'), { code: 'PUBLISH_LEASE_CHECK_REQUIRED' });
+      return store.assertMutationLease(job, cleanString(stage, 120));
+    },
+    async recordStage(stage, receipt = {}) {
+      if (typeof store.recordProviderStage !== 'function') throw Object.assign(new Error('PUBLISH_STAGE_STORE_REQUIRED'), { code: 'PUBLISH_STAGE_STORE_REQUIRED' });
+      return store.recordProviderStage(job, cleanString(stage, 120), receipt);
+    },
+  };
 }
 
 export async function processNextMetaOrganicPublishJob({
@@ -628,6 +881,7 @@ export async function processNextMetaOrganicPublishJob({
   provider,
   workerId = `worker-${process.pid}`,
   now = new Date(),
+  deadlineAt = null,
 } = {}) {
   if (!config.enabled) {
     return { status: 'disabled', reason: META_ORGANIC_PUBLISHER_DISABLED_REASON };
@@ -661,9 +915,26 @@ export async function processNextMetaOrganicPublishJob({
     await store.markBlocked(job, validation.reason, validation);
     return { status: 'blocked', jobId: job.id, reason: validation.reason };
   }
+  let credential;
+  try {
+    credential = typeof store.loadCredentialLease === 'function' ? await store.loadCredentialLease(job) : null;
+  } catch (error) {
+    const reason = cleanString(error?.code || error?.message || 'PUBLISH_CREDENTIAL_CONTEXT_REQUIRED', 120);
+    await store.markBlocked(job, reason, { reason });
+    return { status: 'blocked', jobId: job.id, reason };
+  }
+  if (!credential?.accessToken || credential.provider !== validation.proposal.provider
+    || String(credential.accountConnectionId || '') !== validation.proposal.accountConnectionId
+    || String(credential.providerAccountId || '') !== validation.providerPayload.accountId
+    || credential.tokenKind !== META_ORGANIC_TOKEN_KINDS[validation.proposal.provider]) {
+    await store.markBlocked(job, 'PUBLISH_CREDENTIAL_CONTEXT_REQUIRED');
+    return { status: 'blocked', jobId: job.id, reason: 'PUBLISH_CREDENTIAL_CONTEXT_REQUIRED' };
+  }
+  const privateContext = buildProviderPrivateContext({ job, context, validation, credential, store });
+  privateContext.deadlineAt = deadlineAt || privateContext.deadlineAt;
   let providerReceipt;
   try {
-    providerReceipt = sanitizeProviderReceipt(await publishWithProvider(provider, validation), validation);
+    providerReceipt = sanitizeProviderReceipt(await publishWithProvider(provider, validation, privateContext), validation);
   } catch (error) {
     // Any unproven adapter failure may follow a completed provider write.
     const provenBeforeWrite = error instanceof SafeRetryablePublishError && SAFE_RETRY_CODES.has(error.code);
