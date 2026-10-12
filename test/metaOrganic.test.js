@@ -162,7 +162,8 @@ test('tenant isolation comes from trusted pod ownership plus consumed browser-bo
       { payload: { access_token: 'short-token', expires_in: 60 } },
       { payload: { access_token: 'long-token', expires_in: 3600 } },
       { payload: { data: META_ORGANIC_SCOPES.map((permission) => ({ permission, status: 'granted' })) } },
-      { payload: { data: [{ id: '1224063290785757', name: 'Meet Millie Ai', access_token: 'page-token', instagram_business_account: { id: '994698870063199' } }] } },
+      { payload: { data: [{ id: '1224063290785757', name: 'Meet Millie Ai', access_token: 'page-token' }] } },
+      { payload: { id: '1224063290785757', instagram_business_account: { id: '994698870063199' } } },
     ]).fetch,
     encryptProviderToken: () => 'encrypted-token',
   });
@@ -320,10 +321,11 @@ test('selection route fails closed when activation/readiness is disabled before 
 test('provider token exchange follows documented GET and Graph reads use bearer headers', async () => {
   const record = stateRecord();
   const transport = mockFetch([
-    { payload: { access_token: 'short-token', expires_in: 60 } },
-    { payload: { access_token: 'long-token', expires_in: 3600 } },
-    { payload: { data: META_ORGANIC_SCOPES.map((permission) => ({ permission, status: 'granted' })) } },
-    { payload: { data: [{ id: '1224063290785757', name: 'Meet Millie Ai', access_token: 'page-token', instagram_business_account: { id: '994698870063199' } }] } },
+      { payload: { access_token: 'short-token', expires_in: 60 } },
+      { payload: { access_token: 'long-token', expires_in: 3600 } },
+      { payload: { data: META_ORGANIC_SCOPES.map((permission) => ({ permission, status: 'granted' })) } },
+      { payload: { data: [{ id: '1224063290785757', name: 'Meet Millie Ai', access_token: 'page-token' }] } },
+      { payload: { id: '1224063290785757', instagram_business_account: { id: '994698870063199' } } },
   ]);
   await completeMetaCallback({
     code: 'mock-code',
@@ -345,9 +347,12 @@ test('provider token exchange follows documented GET and Graph reads use bearer 
   assert.match(transport.calls[0].url, /client_secret=mock-app-secret/);
   assert.equal(transport.calls[2].options.headers.Authorization, 'Bearer long-token');
   assert.equal(transport.calls[3].options.headers.Authorization, 'Bearer long-token');
+  assert.equal(transport.calls[4].options.headers.Authorization, 'Bearer long-token');
   assert.doesNotMatch(transport.calls[2].url, /access_token|long-token/);
-  assert.equal(new URL(transport.calls[3].url).searchParams.get('fields'), 'id,name,access_token,instagram_business_account');
-  assert.doesNotMatch(JSON.stringify(transport.calls[3].options), /page-token/);
+  assert.equal(new URL(transport.calls[3].url).searchParams.get('fields'), 'id,name,access_token');
+  assert.equal(new URL(transport.calls[4].url).pathname, '/v26.0/1224063290785757');
+  assert.equal(new URL(transport.calls[4].url).searchParams.get('fields'), 'instagram_business_account');
+  assert.doesNotMatch(JSON.stringify(transport.calls[3].options) + JSON.stringify(transport.calls[4].options), /page-token/);
 });
 
 test('Page-only callback accepts declined Instagram permission and avoids Instagram discovery fields', async () => {
@@ -408,7 +413,8 @@ test('denied or missing Meta scopes and provider failures sanitize outcomes', as
 test('account selection handles pagination and rejects ambiguous linked Instagram accounts', async () => {
   const paged = mockFetch([
     { payload: { data: [], paging: { next: 'https://graph.facebook.com/v26.0/me/accounts?after=cursor-secret&access_token=must-not-reuse' } } },
-    { payload: { data: [{ id: '1224063290785757', name: 'Meet Millie Ai', instagram_business_account: { id: '994698870063199' } }] } },
+    { payload: { data: [{ id: '1224063290785757', name: 'Meet Millie Ai' }] } },
+    { payload: { id: '1224063290785757', instagram_business_account: { id: '994698870063199' } } },
   ]);
   const account = await loadInstagramAccount('long-token', { config, fetch: paged.fetch });
   assert.deepEqual(account, {
@@ -421,26 +427,32 @@ test('account selection handles pagination and rejects ambiguous linked Instagra
 
   await assert.rejects(() => loadInstagramAccount('long-token', { config, fetch: mockFetch([
     { payload: { data: [
-      { id: '11', name: 'A', instagram_business_account: { id: '1' } },
-      { id: '22', name: 'B', instagram_business_account: { id: '2' } },
+      { id: '11', name: 'A' },
+      { id: '22', name: 'B' },
     ] } },
+    { payload: { id: '11', instagram_business_account: { id: '1' } } },
+    { payload: { id: '22', instagram_business_account: { id: '2' } } },
   ]).fetch }), /Multiple Instagram/);
 
   const tooManyPages = Array.from({ length: 10 }, (_, index) => ({
     payload: {
-      data: index === 0 ? [{ id: '11', name: 'A', instagram_business_account: { id: '1' } }] : [],
+      data: index === 0 ? [{ id: '11', name: 'A' }] : [],
       paging: { next: `https://graph.facebook.com/v26.0/me/accounts?after=cursor-${index}` },
     },
-  }));
+  })).flatMap((response, index) => (index === 0
+    ? [response, { payload: { id: '11', instagram_business_account: { id: '1' } } }]
+    : [response]));
   await assert.rejects(() => loadInstagramAccount('long-token', { config, fetch: mockFetch(tooManyPages).fetch }), /enumerate all/);
 });
 
 test('Meta discovery returns explicit Page and Instagram candidates without exposing credentials to the browser', async () => {
   const transport = mockFetch([
     { payload: { data: [
-      { id: '1224063290785757', name: 'Meet Millie Ai', access_token: 'page-token-1', instagram_business_account: { id: '994698870063199' } },
+      { id: '1224063290785757', name: 'Meet Millie Ai', access_token: 'page-token-1' },
       { id: '2222222222222222', name: 'Second Brand', access_token: 'page-token-2' },
     ] } },
+    { payload: { id: '1224063290785757', instagram_business_account: { id: '994698870063199' } } },
+    { payload: { id: '2222222222222222' } },
   ]);
   const candidates = await discoverMetaAccountCandidates('user-token', { config, fetch: transport.fetch });
   assert.equal(candidates.pages.length, 2);

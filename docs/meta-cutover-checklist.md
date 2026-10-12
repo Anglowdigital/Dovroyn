@@ -14,11 +14,12 @@ Retrieved HTTP 200 on 2026-10-12 from local captures supplied by the coordinator
 
 - `https://developers.facebook.com/docs/facebook-login/guides/advanced/manual-flow/` documents server-side `GET /v26.0/oauth/access_token` for authorization-code exchange. Code and long-lived token exchange use documented GET, trusted `graph.facebook.com`, redirects disabled, and sanitized errors.
 - `https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/business-login-for-instagram` documents `GET /me/accounts` with `id,name,access_token,instagram_business_account` and says users may need to choose by Page name when multiple Pages exist.
+- `https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/get-started` documents the base Instagram discovery path as `GET /me/accounts` to list Pages, then `GET /{page-id}?fields=instagram_business_account` with the user token to identify the linked IG User ID.
 - `https://developers.facebook.com/docs/graph-api/reference/user/accounts/` confirms Page nodes/tasks on the accounts edge. No publishing, messaging, ads, or `pages_manage_posts` permission is included.
 - `https://developers.facebook.com/docs/instagram-api/reference/ig-user/` was also reported HTTP 200 and lists `pages_read_engagement` for IG profile-read fields such as username/name. This implementation does not request that scope and therefore does not request IG profile fields during discovery.
 
 Scope behavior is split by requested provider: Facebook Page-only requests and validates `pages_show_list`; Instagram requests and validates `instagram_basic,pages_show_list`. Previously granted unrelated permissions are tolerated but filtered out before pending selection storage and final connection storage.
-Instagram identity choices are labelled from the linked Facebook Page name plus the IG ID returned on `instagram_business_account`; they are not profile usernames.
+Instagram identity choices are labelled from the linked Facebook Page name plus the IG ID returned by the documented `/{page-id}?fields=instagram_business_account` lookup; they are not profile usernames.
 
 ## Proposed Database Approval
 

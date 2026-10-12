@@ -493,12 +493,9 @@ export async function discoverMetaAccountCandidates(accessToken, deps = {}) {
   const pages = [];
   let after = '';
   const includeInstagram = deps.includeInstagram !== false;
-  const fields = includeInstagram
-    ? 'id,name,access_token,instagram_business_account'
-    : 'id,name,access_token';
   for (let page = 0; page < 10; page += 1) {
     const payload = await graphGet('/me/accounts', {
-      fields,
+      fields: 'id,name,access_token',
       limit: 25,
       ...(after ? { after } : {}),
     }, accessToken, deps);
@@ -506,7 +503,13 @@ export async function discoverMetaAccountCandidates(accessToken, deps = {}) {
       const pageId = sanitizeProviderAccountId(item?.id);
       if (!pageId) continue;
       const pageLabel = sanitizeAccountLabel(item?.name || pageId);
-      const instagramId = includeInstagram ? sanitizeProviderAccountId(item?.instagram_business_account?.id) : '';
+      let instagramId = '';
+      if (includeInstagram) {
+        const pagePayload = await graphGet(`/${pageId}`, {
+          fields: 'instagram_business_account',
+        }, accessToken, deps);
+        instagramId = sanitizeProviderAccountId(pagePayload?.instagram_business_account?.id);
+      }
       pages.push({
         id: pageId,
         label: pageLabel,
