@@ -138,6 +138,7 @@ function baseContext(overrides = {}) {
       contentVersion,
       assetManifestHash,
       campaignDate,
+      scheduledAt: proposal.scheduledAt,
       approvedAt: '2026-10-11T10:00:00.000Z',
       status: 'approved',
       ...overrides.approval,

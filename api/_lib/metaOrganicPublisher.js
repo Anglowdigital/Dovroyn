@@ -247,8 +247,12 @@ export async function enqueueExplicitMetaOrganicPublishingApprovals({
       });
     }
   }
+  const durableQueued = queued.filter((job) => ['queued', 'leased', 'retry'].includes(cleanString(job?.state, 40) || 'queued'));
+  const settled = queued.filter((job) => job?.duplicate && !['queued', 'leased', 'retry'].includes(cleanString(job?.state, 40) || 'queued'));
   return {
-    status: failures.length ? (queued.length ? 'partially_queued' : 'queue_blocked') : 'queued',
+    status: failures.length
+      ? (durableQueued.length ? 'partially_queued' : 'queue_blocked')
+      : (settled.length ? (durableQueued.length ? 'partially_queued' : 'queue_blocked') : 'queued'),
     queued,
     failures,
   };
@@ -296,7 +300,8 @@ export function validateMetaOrganicPublishContext(context = {}, now = new Date()
   if (approval.id !== proposal.approvalId || approval.userId !== proposal.userId || approval.podId !== proposal.podId
     || approval.draftId !== proposal.draftId || approval.accountConnectionId !== proposal.accountConnectionId
     || approval.contentVersion !== proposal.contentVersion || approval.assetManifestHash !== proposal.assetManifestHash
-    || approval.campaignDate !== proposal.campaignDate || approval.status !== 'approved' || !iso(approval.approvedAt)) {
+    || approval.campaignDate !== proposal.campaignDate || iso(approval.scheduledAt || approval.scheduled_at) !== proposal.scheduledAt
+    || approval.status !== 'approved' || !iso(approval.approvedAt)) {
     return { ok: false, reason: 'PUBLISH_APPROVAL_CHANGED' };
   }
 
@@ -380,6 +385,9 @@ function assertContextMatchesClaimedJob(job, context) {
   const mismatched = fields.find((field) => String(jobField(job, field) || '') !== String(proposal[field] || ''));
   if (mismatched) {
     return { ok: false, reason: 'PUBLISH_CONTEXT_MISMATCH', field: mismatched };
+  }
+  if (iso(jobField(job, 'scheduledAt')) !== proposal.scheduledAt) {
+    return { ok: false, reason: 'PUBLISH_CONTEXT_MISMATCH', field: 'scheduledAt' };
   }
   return { ok: true };
 }

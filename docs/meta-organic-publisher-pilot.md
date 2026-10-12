@@ -29,7 +29,7 @@ The current discovery/selection foundation deliberately requests only read/selec
 - Exact dedupe key across draft, account connection, content version, asset manifest hash, and campaign date.
 - Immutable delivery identity across draft, account connection, content version, asset manifest hash, and campaign date. `approvalId` remains bound evidence on the job, but re-approval of the same delivery tuple cannot create a second deliverable.
 - Atomic claim/lease storage interface.
-- Human approval binding to pod owner, draft, content version, approved immutable export, account, and date.
+- Human approval binding to pod owner, draft, content version, approved immutable export, account, campaign date, exact UTC scheduled timestamp, and calendar-day snapshot.
 - Active paid tier and distinct campaign-date gate, with same-campaign-date multi-account posting allowed.
 - Bounded retry/backoff for known safe failures.
 - Final `unknown` state for ambiguous provider outcomes, which never re-enters automatic publish retries.
@@ -69,6 +69,8 @@ PGLITE_MODULE=/tmp/dovroyn-pr48-sqlcheck/node_modules/@electric-sql/pglite/dist/
 
 The script fails clearly if `PGLITE_MODULE` is absent. It is intentionally outside `test/` so normal `npm test` stays portable on clean checkouts.
 
+The calendar publishing-review SQL fixture exercises the proposed atomic confirm RPC in a single PGlite connection. That proves the locked read/recheck/rollback contract and ACL shape, but it is not a substitute for a multi-session PostgreSQL concurrency test. The proposed confirm RPC takes a short transaction-scoped table lock on `public.calendar_items` after locking the pod and before reading the reviewed day, then locks the reviewed day rows in deterministic order before approval plus enqueue.
+
 ## Remaining Gates
 
 - Applying proposed private schema/RPCs, granting service execution, configuring an existing scheduler bearer secret, and adding any production cron schedule remain approval-gated activation steps.
@@ -81,4 +83,4 @@ Signed export URLs and their exact expiry are covered by the immutable manifest 
 
 ### Exact publishing-time gate
 
-The explicit queue helper requires a durable approval response containing the exact requested scheduled timestamp. The current proposed approval RPC records campaign dates only, so that helper deliberately returns `PUBLISH_SCHEDULE_APPROVAL_REQUIRED` and does not enqueue. The next calendar publishing-review milestone must add durable exact-time binding and authenticated user confirmation before this path can be enabled. Creative approval alone never supplies publishing consent. Scheduler reconciliation receives the same absolute deadline as publishing and stops claiming at the shorter lease-safe budget.
+The explicit queue helper requires a durable approval response containing the exact requested scheduled timestamp. The proposed calendar publishing-review RPC records `scheduled_at`, timezone, calendar item hash, whole-day hash, and context fingerprint before enqueueing; changed times, changed calendar rows, changed targets, or stale immutable exports fail closed. Creative approval alone never supplies publishing consent. Scheduler reconciliation receives the same absolute deadline as publishing and stops claiming at the shorter lease-safe budget.
