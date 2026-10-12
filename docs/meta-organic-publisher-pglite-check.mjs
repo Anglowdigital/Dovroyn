@@ -5,9 +5,11 @@ import { readFileSync } from 'node:fs';
 import {
   buildMetaOrganicPublishProposal,
   createRpcMetaOrganicPublishStore,
+  enqueueExplicitMetaOrganicPublishingApprovals,
   processNextMetaOrganicPublishJob,
   reconcileNextMetaOrganicPublishJob,
 } from '../api/_lib/metaOrganicPublisher.js';
+import { createMetaGraphOrganicProvider } from '../api/_lib/metaOrganicProvider.js';
 import {
   buildMetaOrganicArtworkExportRequest,
   buildMetaOrganicCreativeApprovalAttestationPayload,
@@ -45,6 +47,7 @@ const ids = Object.freeze({
   account: '00000000-0000-4000-8000-000000000006',
   creativeApproval: '00000000-0000-4000-8000-000000000007',
   account2: '00000000-0000-4000-8000-000000000008',
+  calendarItem: '00000000-0000-4000-8000-000000000009',
 });
 const syntheticSourceBytes = Buffer.from('synthetic-source-bytes');
 const syntheticSourceHash = crypto.createHash('sha256').update(syntheticSourceBytes).digest('hex');
@@ -53,8 +56,95 @@ function uuid(n) {
   return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 }
 
+function uuidFromText(value) {
+  const hash = crypto.createHash('sha256').update(String(value)).digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
 function literalJson(value) {
   return `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
+}
+
+function literalText(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+async function seedCalendarProofForProposal(db, p = proposal()) {
+  const calendarItemId = p.draftId === ids.draft && p.campaignDate === '2098-10-12'
+    ? ids.calendarItem
+    : uuidFromText(`calendar:${p.draftId}:${p.provider}:${p.campaignDate}`);
+  const body = p.draftId === ids.draft ? 'Approved synthetic caption' : `Synthetic queued caption ${p.contentVersion}`;
+  const providerAccountId = p.accountConnectionId === ids.account2 ? '201' : '101';
+  const label = providerAccountId === '201' ? 'Second Page' : 'Main Page';
+  const note = JSON.stringify({
+    kind: 'dovroyn_calendar_metadata',
+    version: 1,
+    creative: {
+      kind: 'dovroyn_calendar_creative',
+      version: 1,
+      pod_id: p.podId,
+      post_id: p.draftId,
+      platform: p.provider,
+      headline: 'Synthetic approved headline',
+      call_to_action: 'Learn more',
+      content_snapshot: body,
+      approved_at: '2026-10-11T00:00:00Z',
+      image: { kind: 'upload', storage_path: `${p.userId}/${p.podId}/synthetic-source.jpg` },
+    },
+    targets: [{ provider: p.provider, providerAccountId, accountConnectionId: p.accountConnectionId, accountLabel: label }],
+  });
+  const reuseExistingCalendar = p.draftId === ids.draft && p.campaignDate === '2098-10-12' && p.provider === 'facebook';
+  if (!reuseExistingCalendar) {
+    await db.exec(`
+      INSERT INTO public.social_posts (
+        id, pod_id, platform, body, status, scheduled_at, generation_date
+      ) VALUES (
+        '${p.draftId}', '${p.podId}', '${p.provider}', ${literalText(body)},
+        'scheduled', '${p.scheduledAt}', '2026-10-12'
+      )
+      ON CONFLICT (id) DO UPDATE SET platform = EXCLUDED.platform, body = EXCLUDED.body, status = EXCLUDED.status;
+      INSERT INTO public.calendar_items (
+        id, pod_id, scheduled_date, platform, caption, creative_note, created_at
+      ) VALUES (
+        '${calendarItemId}', '${p.podId}', '${p.campaignDate}', '${p.provider}',
+        ${literalText(body)}, ${literalText(note)}, '2026-10-11T00:00:00Z'
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        scheduled_date = EXCLUDED.scheduled_date,
+        platform = EXCLUDED.platform,
+        caption = EXCLUDED.caption,
+        creative_note = EXCLUDED.creative_note;
+    `);
+  }
+  const result = await db.query(`
+    SELECT
+      encode(sha256(convert_to(private.meta_organic_canonical_json(jsonb_build_object(
+      'id', item.id,
+      'podId', item.pod_id,
+      'scheduledDate', item.scheduled_date,
+      'platform', item.platform,
+      'caption', item.caption,
+      'creativeNote', item.creative_note,
+      'createdAt', item.created_at
+      )), 'UTF8')), 'hex') AS hash,
+      (
+        SELECT encode(sha256(convert_to(private.meta_organic_canonical_json(coalesce(jsonb_agg(jsonb_build_object(
+          'id', day_item.id,
+          'podId', day_item.pod_id,
+          'scheduledDate', day_item.scheduled_date,
+          'platform', day_item.platform,
+          'caption', day_item.caption,
+          'creativeNote', day_item.creative_note,
+          'createdAt', day_item.created_at
+        ) ORDER BY day_item.created_at, day_item.id), '[]'::jsonb)), 'UTF8')), 'hex')
+        FROM public.calendar_items day_item
+        WHERE day_item.pod_id = item.pod_id
+          AND day_item.scheduled_date = item.scheduled_date
+      ) AS day_hash
+    FROM public.calendar_items item
+    WHERE item.id = '${calendarItemId}'
+  `);
+  return { calendarItemId, calendarSnapshotHash: result.rows[0].hash, calendarDaySnapshotHash: result.rows[0].day_hash };
 }
 
 function proposal(overrides = {}) {
@@ -67,7 +157,8 @@ function proposal(overrides = {}) {
     accountConnectionId: ids.account,
     contentVersion: crypto.createHash('md5').update(body).digest('hex'),
     approvalId: ids.approval,
-    campaignDate: '2026-10-12',
+    campaignDate: '2098-10-12',
+    scheduledAt: overrides.scheduledAt || `${overrides.campaignDate || '2098-10-12'}T12:00:00.000Z`,
     ...overrides,
   };
   return buildMetaOrganicPublishProposal({
@@ -186,13 +277,23 @@ async function setupDb() {
       asset_role TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    CREATE TABLE public.calendar_items (
+      id UUID PRIMARY KEY,
+      pod_id UUID NOT NULL REFERENCES public.pods(id),
+      scheduled_date DATE NOT NULL,
+      platform TEXT NOT NULL,
+      caption TEXT NOT NULL,
+      creative_note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
   await db.exec(connectionSql);
   await db.exec(publisherSql);
   await db.exec(`
     INSERT INTO auth.users (id) VALUES ('${ids.user}');
     INSERT INTO public.pods (id, user_id, accepted_strategy, status)
-      VALUES ('${ids.pod}', '${ids.user}', 'Approved synthetic pod strategy', 'active');
+      VALUES ('${ids.pod}', '${ids.user}', 'Approved synthetic pod strategy', 'direction_locked');
     INSERT INTO public.subscriptions (user_id, tier, status, current_period_end)
       VALUES ('${ids.user}', 'starter', 'active', '2099-01-01T00:00:00Z');
     INSERT INTO private.meta_organic_connections (
@@ -225,7 +326,7 @@ async function setupDb() {
       id, pod_id, platform, body, status, scheduled_at, generation_date
     ) VALUES (
       '${ids.draft}', '${ids.pod}', 'facebook', 'Approved synthetic caption',
-      'scheduled', '2098-10-12T03:00:00Z', '2026-10-12'
+      'scheduled', '2098-10-12T12:01:00Z', '2026-10-12'
     );
     INSERT INTO public.pod_preferences (
       id, pod_id, preference_type, preference_value, source, active, created_at
@@ -275,6 +376,33 @@ async function setupDb() {
       '${uuid(20)}', '${ids.pod}',
       '${ids.user}/${ids.pod}/synthetic-source.jpg',
       'synthetic-source.jpg', 'image/jpeg', ${syntheticSourceBytes.byteLength}, 'campaign_asset'
+    );
+    INSERT INTO public.calendar_items (
+      id, pod_id, scheduled_date, platform, caption, creative_note, created_at
+    ) VALUES (
+      '${ids.calendarItem}', '${ids.pod}', '2098-10-12', 'facebook',
+      'Approved synthetic caption',
+      ${literalText(JSON.stringify({
+        kind: 'dovroyn_calendar_metadata',
+        version: 1,
+        creative: {
+          kind: 'dovroyn_calendar_creative',
+          version: 1,
+          pod_id: ids.pod,
+          post_id: ids.draft,
+          platform: 'facebook',
+          headline: 'Synthetic approved headline',
+          call_to_action: 'Learn more',
+          content_snapshot: 'Approved synthetic caption',
+          approved_at: '2026-10-11T00:00:00Z',
+          image: { kind: 'upload', storage_path: `${ids.user}/${ids.pod}/synthetic-source.jpg` },
+        },
+        targets: [
+          { provider: 'facebook', providerAccountId: '101', accountConnectionId: ids.account, accountLabel: 'Main Page' },
+          { provider: 'facebook', providerAccountId: '201', accountConnectionId: ids.account2, accountLabel: 'Second Page' },
+        ],
+      }))},
+      '2026-10-11T00:00:00Z'
     );
   `);
   const approvalRow = (await db.query(
@@ -412,6 +540,7 @@ async function attestCurrentCreativeApproval(db) {
 
 async function seedApprovalAndExport(db, p = proposal()) {
   const outputHash = crypto.createHash('sha256').update('rendered-output-v1').digest('hex');
+  const calendarProof = await seedCalendarProofForProposal(db, p);
   const manifest = {
     contractVersion: 'meta_organic_artwork_export_v1',
     status: 'exported',
@@ -466,12 +595,14 @@ async function seedApprovalAndExport(db, p = proposal()) {
   await db.exec(`
     INSERT INTO private.meta_organic_publish_approvals (
       id, user_id, pod_id, draft_id, provider, account_connection_id,
-      content_version, asset_manifest_hash, campaign_date, status, approved_at, approved_by
+      content_version, asset_manifest_hash, campaign_date, scheduled_at, timezone,
+      calendar_item_id, calendar_snapshot_hash, calendar_day_snapshot_hash, status, approved_at, approved_by
     ) VALUES (
       '${p.approvalId}', '${p.userId}', '${p.podId}', '${p.draftId}', '${p.provider}',
       '${p.accountConnectionId}', '${p.contentVersion}', '${p.assetManifestHash}',
-      '${p.campaignDate}', 'approved', '2026-10-11T00:00:00Z', '${p.userId}'
-    );
+      '${p.campaignDate}', '${p.scheduledAt}', 'UTC', '${calendarProof.calendarItemId}', '${calendarProof.calendarSnapshotHash}', '${calendarProof.calendarDaySnapshotHash}', 'approved', '2026-10-11T00:00:00Z', '${p.userId}'
+    )
+    ON CONFLICT DO NOTHING;
     INSERT INTO private.meta_organic_publish_exports (
       manifest_hash, user_id, pod_id, draft_id, account_connection_id,
       media_type, byte_length, output_hash, provider_readable_url,
@@ -487,12 +618,29 @@ async function seedApprovalAndExport(db, p = proposal()) {
   `);
 }
 
-async function enqueue(db, p = proposal()) {
+async function seedPublishApprovalOnly(db, p = proposal()) {
+  const calendarProof = await seedCalendarProofForProposal(db, p);
+  await db.exec(`
+    INSERT INTO private.meta_organic_publish_approvals (
+      id, user_id, pod_id, draft_id, provider, account_connection_id,
+      content_version, asset_manifest_hash, campaign_date, scheduled_at, timezone,
+      calendar_item_id, calendar_snapshot_hash, calendar_day_snapshot_hash, status, approved_at, approved_by
+    ) VALUES (
+      '${p.approvalId}', '${p.userId}', '${p.podId}', '${p.draftId}', '${p.provider}',
+      '${p.accountConnectionId}', '${p.contentVersion}', '${p.assetManifestHash}',
+      '${p.campaignDate}', '${p.scheduledAt}', 'UTC', '${calendarProof.calendarItemId}', '${calendarProof.calendarSnapshotHash}', '${calendarProof.calendarDaySnapshotHash}', 'approved', '2026-10-11T00:00:00Z', '${p.userId}'
+    )
+    ON CONFLICT DO NOTHING;
+  `);
+}
+
+async function enqueue(db, p = proposal(), { seedApproval = true } = {}) {
+  if (seedApproval) await seedPublishApprovalOnly(db, p);
   const result = await db.query(`SELECT public.enqueue_meta_organic_publish_job(${literalJson(p)}) AS job`);
   return result.rows[0].job;
 }
 
-async function claim(db, worker = 'worker-a', at = '2098-10-12T03:00:00Z') {
+async function claim(db, worker = 'worker-a', at = '2098-10-12T12:01:00Z') {
   const result = await db.query(`SELECT public.claim_meta_organic_publish_job('${worker}', '${at}'::timestamptz, 300000) AS job`);
   return result.rows[0].job;
 }
@@ -510,6 +658,14 @@ function rpcFor(db) {
       enqueue_meta_organic_publish_job: [params.p_proposal],
       claim_meta_organic_publish_job: [params.p_worker_id, params.p_now, params.p_lease_ms],
       get_meta_organic_publish_context: [params.p_job_id, params.p_worker_id, params.p_operation_token],
+      get_meta_organic_publisher_readiness: [],
+      persist_meta_organic_publish_approval: [params.p_approval],
+      get_meta_organic_publish_credential_lease: [params.p_job_id, params.p_worker_id, params.p_operation_token],
+      get_meta_organic_reconciliation_credential_lease: [params.p_job_id, params.p_worker_id, params.p_operation_token],
+      prepare_meta_organic_calendar_publish_review: [params.p_user_id, params.p_pod_id, params.p_scheduled_date],
+      confirm_meta_organic_calendar_publish_review: [params.p_request],
+      assert_meta_organic_publish_mutation_lease: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_stage],
+      record_meta_organic_provider_stage: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_stage, params.p_receipt],
       mark_meta_organic_publish_blocked: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_details],
       mark_meta_organic_publish_retry: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_details, params.p_retry_at],
       mark_meta_organic_publish_failed: [params.p_job_id, params.p_worker_id, params.p_operation_token, params.p_reason, params.p_details],
@@ -544,13 +700,136 @@ async function checkExecutableQueueAndContext() {
   assert.equal(claimed.id, queued.id);
   assert.equal(claimed.state, 'leased');
   assert.match(claimed.operationToken, /^[a-f0-9]{48,128}$/);
-  await assert.rejects(() => db.query(`SELECT public.get_meta_organic_publish_context('${claimed.id}', '${claimed.leasedBy}', '${claimed.operationToken}')`), /PUBLISH_APPROVAL_CONTEXT_REQUIRED/);
+  await assert.rejects(() => db.query(`SELECT public.get_meta_organic_publish_context('${claimed.id}', '${claimed.leasedBy}', '${claimed.operationToken}')`), /PUBLISH_EXPORT_CONTEXT_REQUIRED/);
   await seedApprovalAndExport(db, p);
   const context = await db.query(`SELECT public.get_meta_organic_publish_context('${claimed.id}', '${claimed.leasedBy}', '${claimed.operationToken}') AS context`);
   assert.equal(context.rows[0].context.proposal.id, claimed.id);
   assert.equal(context.rows[0].context.draft.caption, 'Approved synthetic caption');
+  assert.equal(new Date(context.rows[0].context.approval.scheduledAt).toISOString(), p.scheduledAt);
+  assert.equal(context.rows[0].context.approval.timezone, 'UTC');
   assert.equal(context.rows[0].context.account.encryptedAccessToken, undefined);
   assert.equal(context.rows[0].context.account.providerAccountId, '101');
+}
+
+async function checkCalendarPublishingPrepareRpc() {
+  const db = await setupDb();
+  const first = proposal();
+  const second = proposal({
+    approvalId: ids.approval2,
+    accountConnectionId: ids.account2,
+    assetManifestHash: syntheticManifestHash({ ...proposal(), accountConnectionId: ids.account2 }),
+  });
+  await seedApprovalAndExport(db, first);
+  await seedApprovalAndExport(db, second);
+  const rpc = rpcFor(db);
+  const prepared = await rpc('prepare_meta_organic_calendar_publish_review', {
+    p_user_id: ids.user,
+    p_pod_id: ids.pod,
+    p_scheduled_date: '2098-10-12',
+  });
+  assert.equal(prepared.userId, ids.user);
+  assert.equal(prepared.podId, ids.pod);
+  assert.equal(prepared.scheduledDate, '2098-10-12');
+  assert.equal(new Date(prepared.scheduledAt).toISOString(), '2098-10-12T12:00:00.000Z');
+  assert.equal(prepared.timezone, 'UTC');
+  assert.equal(prepared.entries.length, 2);
+  assert.deepEqual(prepared.entries.map((entry) => entry.providerAccountId).sort(), ['101', '201']);
+  assert.deepEqual(prepared.entries.map((entry) => entry.accountLabel).sort(), ['Main Page', 'Second Page']);
+  assert.ok(prepared.entries.every((entry) => entry.calendarItemId === ids.calendarItem));
+  assert.ok(prepared.entries.every((entry) => entry.caption === 'Approved synthetic caption'));
+
+  await db.query('UPDATE public.calendar_items SET caption = $1 WHERE id = $2', ['Edited after approval', ids.calendarItem]);
+  await assert.rejects(
+    () => rpc('prepare_meta_organic_calendar_publish_review', {
+      p_user_id: ids.user,
+      p_pod_id: ids.pod,
+      p_scheduled_date: '2098-10-12',
+    }),
+    /PUBLISH_DRAFT_CONTEXT_REQUIRED/,
+  );
+}
+
+function approvalsFromPreparedCalendarReview(prepared, overrides = {}) {
+  return prepared.entries.map((entry, index) => ({
+    id: overrides.ids?.[index] || uuidFromText(`calendar-approval:${entry.calendarItemId}:${entry.accountConnectionId}:${entry.assetManifestHash}`),
+    provider: entry.provider,
+    userId: prepared.userId,
+    podId: prepared.podId,
+    draftId: entry.draftId,
+    accountConnectionId: entry.accountConnectionId,
+    contentVersion: entry.contentVersion,
+    assetManifestHash: entry.assetManifestHash,
+    campaignDate: prepared.scheduledDate,
+    scheduledAt: prepared.scheduledAt,
+    timezone: prepared.timezone,
+    calendarItemId: entry.calendarItemId,
+    calendarSnapshotHash: entry.calendarSnapshotHash,
+    calendarDaySnapshotHash: prepared.calendarDaySnapshotHash,
+    contextFingerprint: overrides.contextFingerprint || crypto.createHash('sha256').update('pglite-calendar-context').digest('hex'),
+    status: 'approved',
+    approvedAt: overrides.approvedAt?.[index] ?? '2098-10-10T00:00:00.000Z',
+    approvedBy: prepared.userId,
+  }));
+}
+
+async function checkAtomicCalendarPublishingConfirmRpc() {
+  const db = await setupDb();
+  const first = proposal();
+  const second = proposal({
+    approvalId: ids.approval2,
+    accountConnectionId: ids.account2,
+    assetManifestHash: syntheticManifestHash({ ...proposal(), accountConnectionId: ids.account2 }),
+  });
+  await seedApprovalAndExport(db, first);
+  await seedApprovalAndExport(db, second);
+  await db.exec('DELETE FROM private.meta_organic_publish_jobs; DELETE FROM private.meta_organic_publish_approvals;');
+  const rpc = rpcFor(db);
+  const prepared = await rpc('prepare_meta_organic_calendar_publish_review', {
+    p_user_id: ids.user,
+    p_pod_id: ids.pod,
+    p_scheduled_date: '2098-10-12',
+  });
+  const request = {
+    userId: prepared.userId,
+    podId: prepared.podId,
+    campaignDate: prepared.scheduledDate,
+    scheduledAt: prepared.scheduledAt,
+    timezone: prepared.timezone,
+    calendarDaySnapshotHash: prepared.calendarDaySnapshotHash,
+    contextFingerprint: crypto.createHash('sha256').update('pglite-calendar-context').digest('hex'),
+    approvals: approvalsFromPreparedCalendarReview(prepared),
+  };
+  const confirmed = await rpc('confirm_meta_organic_calendar_publish_review', { p_request: request });
+  assert.equal(confirmed.status, 'queued');
+  assert.equal(confirmed.queued.length, 2);
+  assert.deepEqual(confirmed.queued.map((job) => job.state), ['queued', 'queued']);
+  assert.deepEqual(confirmed.queued.map((job) => job.scheduledAt).map((value) => new Date(value).toISOString()), ['2098-10-12T12:00:00.000Z', '2098-10-12T12:00:00.000Z']);
+  const rowCounts = await db.query('SELECT (SELECT count(*)::int FROM private.meta_organic_publish_approvals) AS approvals, (SELECT count(*)::int FROM private.meta_organic_publish_jobs) AS jobs');
+  assert.deepEqual(rowCounts.rows[0], { approvals: 2, jobs: 2 });
+
+  const rollbackDb = await setupDb();
+  await seedApprovalAndExport(rollbackDb, first);
+  await seedApprovalAndExport(rollbackDb, second);
+  await rollbackDb.exec('DELETE FROM private.meta_organic_publish_jobs; DELETE FROM private.meta_organic_publish_approvals;');
+  const rollbackRpc = rpcFor(rollbackDb);
+  const rollbackPrepared = await rollbackRpc('prepare_meta_organic_calendar_publish_review', {
+    p_user_id: ids.user,
+    p_pod_id: ids.pod,
+    p_scheduled_date: '2098-10-12',
+  });
+  const rollbackRequest = {
+    userId: rollbackPrepared.userId,
+    podId: rollbackPrepared.podId,
+    campaignDate: rollbackPrepared.scheduledDate,
+    scheduledAt: rollbackPrepared.scheduledAt,
+    timezone: rollbackPrepared.timezone,
+    calendarDaySnapshotHash: rollbackPrepared.calendarDaySnapshotHash,
+    contextFingerprint: crypto.createHash('sha256').update('pglite-calendar-context').digest('hex'),
+    approvals: approvalsFromPreparedCalendarReview(rollbackPrepared, { approvedAt: ['2098-10-10T00:00:00.000Z', ''] }),
+  };
+  await assert.rejects(() => rollbackRpc('confirm_meta_organic_calendar_publish_review', { p_request: rollbackRequest }), /PUBLISH_APPROVAL_REQUIRED/);
+  const rollbackCounts = await rollbackDb.query('SELECT (SELECT count(*)::int FROM private.meta_organic_publish_approvals) AS approvals, (SELECT count(*)::int FROM private.meta_organic_publish_jobs) AS jobs');
+  assert.deepEqual(rollbackCounts.rows[0], { approvals: 0, jobs: 0 }, 'atomic confirm rolls back approval and enqueue on later failure');
 }
 
 async function checkDurableArtworkExportStoreContract() {
@@ -787,23 +1066,176 @@ async function checkLeaseAndPrivilegeFences() {
   const unknown = await db.query(`SELECT public.mark_meta_organic_publish_unknown('${claimed.id}', 'worker-a', '${claimed.operationToken}', 'OUTCOME_UNKNOWN', ${literalJson({ providerAccountId: '101' })}) AS job`);
   assert.equal(unknown.rows[0].job.state, 'unknown');
   await db.exec(`UPDATE private.meta_organic_publish_jobs SET state = 'retry', retry_at = '2098-10-13T00:00:00Z', leased_by = NULL, lease_expires_at = NULL WHERE id = '${claimed.id}'`);
-  assert.equal(await claim(db, 'worker-c', '2098-10-12T04:00:00Z'), null);
+  assert.equal(await claim(db, 'worker-c', '2098-10-12T12:10:00Z'), null);
   await db.exec('GRANT USAGE ON SCHEMA private TO authenticated');
   const privileges = await db.query(`
     SELECT
       has_function_privilege('authenticated', 'public.claim_meta_organic_publish_job(text,timestamp with time zone,integer)', 'EXECUTE') AS can_claim,
       has_function_privilege('authenticated', 'public.get_meta_organic_artwork_export_context(jsonb)', 'EXECUTE') AS can_export_context,
       has_function_privilege('authenticated', 'public.persist_meta_organic_artwork_export_manifest(jsonb)', 'EXECUTE') AS can_export_manifest,
+      has_function_privilege('authenticated', 'public.get_meta_organic_publish_credential_lease(uuid,text,text)', 'EXECUTE') AS can_read_credential,
+      has_function_privilege('authenticated', 'public.record_meta_organic_provider_stage(uuid,text,text,text,jsonb)', 'EXECUTE') AS can_record_stage,
       has_function_privilege('authenticated', 'private.meta_organic_require_lease(uuid,text,text,boolean)', 'EXECUTE') AS can_require_lease,
       has_schema_privilege('authenticated', 'private', 'USAGE') AS can_use_private_schema,
-      has_table_privilege('authenticated', 'private.meta_organic_publish_jobs', 'SELECT') AS can_read_jobs
+      has_table_privilege('authenticated', 'private.meta_organic_publish_jobs', 'SELECT') AS can_read_jobs,
+      has_table_privilege('authenticated', 'private.meta_organic_provider_stages', 'SELECT') AS can_read_stages
   `);
   assert.equal(privileges.rows[0].can_claim, false);
   assert.equal(privileges.rows[0].can_export_context, false);
   assert.equal(privileges.rows[0].can_export_manifest, false);
+  assert.equal(privileges.rows[0].can_read_credential, false);
+  assert.equal(privileges.rows[0].can_record_stage, false);
   assert.equal(privileges.rows[0].can_require_lease, false);
   assert.equal(privileges.rows[0].can_use_private_schema, true);
   assert.equal(privileges.rows[0].can_read_jobs, false);
+  assert.equal(privileges.rows[0].can_read_stages, false);
+}
+
+async function checkProviderStageFencesAndReconciliationCredential() {
+  const db = await setupDb();
+  const p = proposal();
+  await enqueue(db, p);
+  await seedApprovalAndExport(db, p);
+  const claimed = await claim(db, 'stage-worker');
+  const credential = await db.query(`SELECT public.get_meta_organic_publish_credential_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}') AS credential`);
+  assert.equal(credential.rows[0].credential.providerAccountId, '101');
+  assert.equal(credential.rows[0].credential.encryptedAccessToken, 'syntheticEncryptedAccessTokenValue_000000000000');
+  await db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_before_write')`);
+  await assert.rejects(
+    () => db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_before_write')`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+  await db.query(`SELECT public.record_meta_organic_provider_stage(
+    '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_published',
+    ${literalJson({ provider: 'facebook', providerAccountId: '101', providerPostId: '101_555', photoId: '555', access_token: 'must-not-persist', raw: { secret: true } })}
+  )`);
+  await assert.rejects(
+    () => db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_before_write')`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+  await assert.rejects(
+    () => db.query(`SELECT public.record_meta_organic_provider_stage(
+      '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'facebook_photo_published',
+      ${literalJson({ provider: 'facebook', providerAccountId: '101', providerPostId: '101_666', photoId: '456' })}
+    )`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+  await assert.rejects(
+    () => db.query(`SELECT public.record_meta_organic_provider_stage(
+      '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'instagram_container_created',
+      ${literalJson({ provider: 'instagram', providerAccountId: '101', containerId: 'container-wrong' })}
+    )`),
+    /PUBLISH_STAGE_RECEIPT_REQUIRED/,
+  );
+  await db.query(`SELECT public.mark_meta_organic_publish_unknown(
+    '${claimed.id}', 'stage-worker', '${claimed.operationToken}', 'OUTCOME_UNKNOWN',
+    ${literalJson({ provider: 'facebook', providerAccountId: '101', providerPostId: '101_555' })}
+  )`);
+  const recon = await db.query(`SELECT public.claim_meta_organic_reconciliation_job('recon-worker', '2098-10-12T12:03:00Z'::timestamptz, 300000) AS job`);
+  assert.equal(recon.rows[0].job.providerStages.facebook_photo_published.providerPostId, '101_555');
+  assert.equal(recon.rows[0].job.providerStages.facebook_photo_published.photoId, '555');
+  assert.equal('access_token' in recon.rows[0].job.providerStages.facebook_photo_published, false);
+  assert.equal('raw' in recon.rows[0].job.providerStages.facebook_photo_published, false);
+  const reconCredential = await db.query(`SELECT public.get_meta_organic_reconciliation_credential_lease('${claimed.id}', 'recon-worker', '${recon.rows[0].job.operationToken}') AS credential`);
+  assert.equal(reconCredential.rows[0].credential.providerAccountId, '101');
+}
+
+async function checkInstagramSqlBackedRepeatedPollAndDispatchFence() {
+  const db = await setupDb();
+  await db.exec(`
+    UPDATE private.meta_organic_connections
+    SET provider = 'instagram',
+        granted_scopes = ARRAY['instagram_basic','instagram_content_publish','pages_read_engagement']
+    WHERE id = '${ids.account2}';
+    UPDATE public.social_posts SET platform = 'instagram' WHERE id = '${ids.draft}';
+  `);
+  const p = proposal({ provider: 'instagram', accountConnectionId: ids.account2 });
+  await enqueue(db, p);
+  await seedApprovalAndExport(db, p);
+
+  const preclaimed = await claim(db, 'ig-prewrite-worker');
+  await db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${preclaimed.id}', 'ig-prewrite-worker', '${preclaimed.operationToken}', 'instagram_container_before_create')`);
+  await assert.rejects(
+    () => db.query(`SELECT public.assert_meta_organic_publish_mutation_lease('${preclaimed.id}', 'ig-prewrite-worker', '${preclaimed.operationToken}', 'instagram_container_before_create')`),
+    /PUBLISH_STAGE_ALREADY_DISPATCHED/,
+  );
+
+  await db.exec(`DELETE FROM private.meta_organic_provider_stages WHERE job_id = '${preclaimed.id}'`);
+  await db.exec(`
+    UPDATE private.meta_organic_publish_jobs
+    SET state = 'queued', leased_by = NULL, lease_expires_at = NULL, operation_token = NULL
+    WHERE id = '${preclaimed.id}'
+  `);
+
+  const requests = [];
+  const fetch = async (url, options) => {
+    requests.push({ path: url.pathname, method: options.method });
+    if (url.pathname === '/v26.0/201/media') return new Response(JSON.stringify({ id: '3001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.pathname === '/v26.0/3001') {
+      const polls = requests.filter((request) => request.path === '/v26.0/3001').length;
+      return new Response(JSON.stringify({ status_code: polls < 3 ? 'IN_PROGRESS' : 'FINISHED' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.pathname === '/v26.0/201/media_publish') return new Response(JSON.stringify({ id: '4001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    throw new Error(`unexpected graph path ${url.pathname}`);
+  };
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
+  const result = await processNextMetaOrganicPublishJob({
+    config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
+    store,
+    provider: createMetaGraphOrganicProvider({ config: { graphVersion: 'v26.0' }, fetch, pollDelayMs: 0 }),
+    workerId: 'ig-worker',
+    now: new Date('2098-10-12T12:01:00Z'),
+    deadlineAt: new Date('2098-10-12T12:05:00Z').toISOString(),
+  });
+  assert.equal(result.status, 'published');
+  assert.deepEqual(requests.map((request) => request.path), [
+    '/v26.0/201/media',
+    '/v26.0/3001',
+    '/v26.0/3001',
+    '/v26.0/3001',
+    '/v26.0/201/media_publish',
+  ]);
+  const stages = await db.query(`SELECT stage, receipt FROM private.meta_organic_provider_stages WHERE job_id = '${preclaimed.id}' ORDER BY created_at, stage`);
+  assert.equal(stages.rows.filter((row) => row.stage === 'instagram_container_poll').length, 0);
+  assert.equal(stages.rows.find((row) => row.stage === 'instagram_container_created').receipt.containerId, '3001');
+  assert.equal(stages.rows.find((row) => row.stage === 'instagram_media_published').receipt.providerPostId, '4001');
+}
+
+async function checkExplicitPublishingApprovalPersistence() {
+  const db = await setupDb();
+  const p = proposal({ approvalId: ids.approval2 });
+  await seedApprovalAndExport(db, p);
+  await db.exec(`DELETE FROM private.meta_organic_publish_approvals WHERE id = '${p.approvalId}'`);
+  const calendarProof = await seedCalendarProofForProposal(db, p);
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
+  const approval = {
+      id: p.approvalId,
+      provider: p.provider,
+      userId: p.userId,
+      podId: p.podId,
+      draftId: p.draftId,
+      accountConnectionId: p.accountConnectionId,
+      contentVersion: p.contentVersion,
+      assetManifestHash: p.assetManifestHash,
+      campaignDate: p.campaignDate,
+      status: 'approved',
+      approvedAt: '2026-10-11T00:00:00Z',
+      approvedBy: p.userId,
+      scheduledAt: `${p.campaignDate}T12:00:00.000Z`,
+      timezone: 'UTC',
+      calendarItemId: calendarProof.calendarItemId,
+      calendarSnapshotHash: calendarProof.calendarSnapshotHash,
+      calendarDaySnapshotHash: calendarProof.calendarDaySnapshotHash,
+  };
+  const persisted = await store.persistPublishingApproval(approval);
+  assert.equal(persisted.id, p.approvalId);
+  assert.equal(new Date(persisted.scheduledAt).toISOString(), approval.scheduledAt);
+  const queued = await enqueueExplicitMetaOrganicPublishingApprovals({ store, approvals: [approval] });
+  assert.equal(queued.status, 'queued', JSON.stringify(queued.failures));
+  const approvalRows = await db.query(`SELECT count(*)::int AS total FROM private.meta_organic_publish_approvals WHERE id = '${p.approvalId}'`);
+  assert.equal(approvalRows.rows[0].total, 1);
+  const jobRows = await db.query(`SELECT count(*)::int AS total FROM private.meta_organic_publish_jobs WHERE approval_id = '${p.approvalId}'`);
+  assert.equal(jobRows.rows[0].total, 1, 'exact-time approval should enqueue once');
 }
 
 async function checkUnknownTransition() {
@@ -818,7 +1250,7 @@ async function checkUnknownTransition() {
     ${literalJson({ providerAccountId: '101', operation: 'page_photo_publish' })}
   ) AS job`);
   assert.equal(marked.rows[0].job.state, 'unknown');
-  assert.equal(await claim(db, 'worker-again', '2098-10-12T04:00:00Z'), null);
+  assert.equal(await claim(db, 'worker-again', '2098-10-12T12:10:00Z'), null);
   const receipts = await db.query(`SELECT status, provider_account_id, raw_receipt FROM private.meta_organic_publish_receipts WHERE job_id = '${claimed.id}'`);
   assert.equal(receipts.rows.length, 1);
   assert.equal(receipts.rows[0].status, 'unknown');
@@ -830,18 +1262,18 @@ async function checkRpcWorkerSuccessAndChangedDraftBlock() {
   await enqueue(db, p);
   await seedApprovalAndExport(db, p);
   const calls = [];
-  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db) });
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
   const result = await processNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
     store,
     provider: {
       async publishFacebookPagePhoto(payload) {
         calls.push(payload);
-        return { provider: 'facebook', providerAccountId: '101', providerPostId: 'post-101' };
+        return { provider: 'facebook', providerAccountId: '101', providerPostId: '101_9001' };
       },
     },
     workerId: 'rpc-worker',
-    now: new Date('2098-10-12T03:00:00Z'),
+    now: new Date('2098-10-12T12:01:00Z'),
   });
   assert.equal(result.status, 'published');
   assert.equal(calls.length, 1);
@@ -850,19 +1282,19 @@ async function checkRpcWorkerSuccessAndChangedDraftBlock() {
   const changedProposal = proposal();
   await enqueue(changedDb, changedProposal);
   await seedApprovalAndExport(changedDb, changedProposal);
-  await changedDb.exec(`UPDATE public.social_posts SET body = 'Changed caption after approval', updated_at = '2098-10-12T03:01:00Z' WHERE id = '${ids.draft}'`);
+  await changedDb.exec(`UPDATE public.social_posts SET body = 'Changed caption after approval', updated_at = '2098-10-12T12:02:00Z' WHERE id = '${ids.draft}'`);
   const changedCalls = [];
   const changedResult = await processNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
-    store: createRpcMetaOrganicPublishStore({ rpc: rpcFor(changedDb) }),
+    store: createRpcMetaOrganicPublishStore({ rpc: rpcFor(changedDb), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` }),
     provider: {
       async publishFacebookPagePhoto(payload) {
         changedCalls.push(payload);
-        return { provider: 'facebook', providerAccountId: '101', providerPostId: 'post-should-not-happen' };
+        return { provider: 'facebook', providerAccountId: '101', providerPostId: '101_9002' };
       },
     },
     workerId: 'rpc-worker',
-    now: new Date('2098-10-12T03:00:00Z'),
+    now: new Date('2098-10-12T12:01:00Z'),
   });
   assert.equal(changedResult.status, 'blocked');
   assert.equal(changedResult.reason, 'PUBLISH_CONTENT_CHANGED');
@@ -874,21 +1306,27 @@ async function checkRpcReconciliationSuccess() {
   const p = proposal();
   await enqueue(db, p);
   await seedApprovalAndExport(db, p);
-  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db) });
+  const store = createRpcMetaOrganicPublishStore({ rpc: rpcFor(db), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
   const publishCalls = [];
   const unknown = await processNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
     store,
     provider: {
-      async publishFacebookPagePhoto() {
+      async publishFacebookPagePhoto(_payload, privateContext) {
         publishCalls.push('publish');
+        await privateContext.recordStage('facebook_photo_published', {
+          provider: 'facebook',
+          providerAccountId: '101',
+          providerPostId: '101_9003',
+          photoId: '9003',
+        });
         const error = new Error('timeout after write');
         error.code = 'REQUEST_TIMEOUT';
         throw error;
       },
     },
     workerId: 'rpc-worker',
-    now: new Date('2098-10-12T03:00:00Z'),
+    now: new Date('2098-10-12T12:01:00Z'),
   });
   assert.equal(unknown.status, 'unknown');
 
@@ -900,19 +1338,57 @@ async function checkRpcReconciliationSuccess() {
         return {
           provider: 'facebook',
           providerAccountId: '101',
-          providerPostId: 'post-reconciled-101',
+          providerPostId: '101_9003',
           dedupeKey: p.dedupeKey,
         };
       },
     },
     workerId: 'rpc-reconciler',
-    now: new Date('2098-10-12T03:02:00Z'),
+    now: new Date('2098-10-12T12:03:00Z'),
   });
   assert.equal(reconciled.status, 'reconciled');
   assert.equal(publishCalls.length, 1);
   const rows = await db.query(`SELECT status, provider_account_id, provider_post_id FROM private.meta_organic_publish_receipts WHERE job_id = '${unknown.jobId}' ORDER BY created_at DESC`);
   assert.equal(rows.rows[0].status, 'reconciled');
   assert.equal(rows.rows[0].provider_account_id, '101');
+
+  const noKnownDb = await setupDb();
+  const noKnownProposal = proposal();
+  await enqueue(noKnownDb, noKnownProposal);
+  await seedApprovalAndExport(noKnownDb, noKnownProposal);
+  const noKnownStore = createRpcMetaOrganicPublishStore({ rpc: rpcFor(noKnownDb), config: { encryptionKeyVersion: 'test-v1' }, decrypt: (value) => `decrypted:${value}` });
+  const noKnownUnknown = await processNextMetaOrganicPublishJob({
+    config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
+    store: noKnownStore,
+    provider: {
+      async publishFacebookPagePhoto() {
+        const error = new Error('timeout after write without ack');
+        error.code = 'REQUEST_TIMEOUT';
+        throw error;
+      },
+    },
+    workerId: 'rpc-worker-no-known',
+    now: new Date('2098-10-12T12:01:00Z'),
+  });
+  assert.equal(noKnownUnknown.status, 'unknown');
+  const noKnownReconciled = await reconcileNextMetaOrganicPublishJob({
+    config: { enabled: true, maxAttempts: 3, leaseMs: 300000 },
+    store: noKnownStore,
+    provider: {
+      async lookupPublishedMetaOrganicReceipt() {
+        return {
+          provider: 'facebook',
+          providerAccountId: '101',
+          providerPostId: '101_9013',
+          dedupeKey: noKnownProposal.dedupeKey,
+        };
+      },
+    },
+    workerId: 'rpc-reconciler-no-known',
+    now: new Date('2098-10-12T12:03:00Z'),
+  });
+  assert.equal(noKnownReconciled.status, 'unknown');
+  assert.equal(noKnownReconciled.reason, 'RECONCILE_PROOF_MISMATCH');
 }
 
 async function checkReapprovalDedupe() {
@@ -924,9 +1400,22 @@ async function checkReapprovalDedupe() {
   assert.equal(second.id, first.id);
   const count = await db.query('SELECT count(*)::int AS total FROM private.meta_organic_publish_jobs');
   assert.equal(count.rows[0].total, 1);
+
+  const changedScheduleDb = await setupDb();
+  await enqueue(changedScheduleDb, proposal());
+  await assert.rejects(
+    () => enqueue(changedScheduleDb, proposal({ approvalId: ids.approval2, scheduledAt: '2098-10-12T13:00:00.000Z' })),
+    /PUBLISH_DEDUPE_CONTEXT_CONFLICT/,
+  );
+  const changedRows = await changedScheduleDb.query('SELECT count(*)::int AS total FROM private.meta_organic_publish_jobs');
+  assert.equal(changedRows.rows[0].total, 1, 'stale dedupe conflict must not create or reset a job');
 }
 
 async function checkAllowanceWindowRolloverAndReservations() {
+  const guardDb = await setupDb();
+  const functionDef = await guardDb.query("SELECT pg_get_functiondef('public.enqueue_meta_organic_publish_job(jsonb)'::regprocedure) AS def");
+  assert.match(functionDef.rows[0].def, /FROM public\.subscriptions item[\s\S]*FOR UPDATE/);
+
   const db = await setupDb();
   await db.exec(`
     UPDATE public.subscriptions
@@ -934,19 +1423,21 @@ async function checkAllowanceWindowRolloverAndReservations() {
     WHERE user_id = '${ids.user}'
   `);
   for (let day = 15; day <= 30; day += 1) {
-    await enqueue(db, proposal({ draftId: uuid(1000 + day), contentVersion: `old-sep-${day}`, campaignDate: `2098-09-${String(day).padStart(2, '0')}` }));
+    await enqueue(db, proposal({ approvalId: uuid(7000 + day), draftId: uuid(1000 + day), contentVersion: `old-sep-${day}`, campaignDate: `2098-09-${String(day).padStart(2, '0')}` }));
   }
   for (let day = 1; day <= 14; day += 1) {
-    await enqueue(db, proposal({ draftId: uuid(2000 + day), contentVersion: `old-oct-${day}`, campaignDate: `2098-10-${String(day).padStart(2, '0')}` }));
+    await enqueue(db, proposal({ approvalId: uuid(7100 + day), draftId: uuid(2000 + day), contentVersion: `old-oct-${day}`, campaignDate: `2098-10-${String(day).padStart(2, '0')}` }));
   }
-  const rollover = await enqueue(db, proposal({ draftId: uuid(3015), contentVersion: 'new-window-first-day', campaignDate: '2098-10-15' }));
+  const rollover = await enqueue(db, proposal({ approvalId: uuid(7215), draftId: uuid(3015), contentVersion: 'new-window-first-day', campaignDate: '2098-10-15' }));
   assert.equal(rollover.duplicate, false);
 
   const sameDateSecondAccount = await enqueue(db, proposal({
+    approvalId: uuid(7216),
     draftId: uuid(3016),
-    accountConnectionId: uuid(4016),
+    accountConnectionId: ids.account2,
     contentVersion: 'new-window-first-day-second-account',
     campaignDate: '2098-10-15',
+    assetManifestHash: syntheticManifestHash({ ...proposal(), draftId: uuid(3016), accountConnectionId: ids.account2, contentVersion: 'new-window-first-day-second-account' }),
   }));
   assert.equal(sameDateSecondAccount.duplicate, false);
 
@@ -956,10 +1447,10 @@ async function checkAllowanceWindowRolloverAndReservations() {
     SET tier = 'starter', subscription_started_at = '2098-10-01T00:00:00Z', current_period_start = '2098-10-01T00:00:00Z'
     WHERE user_id = '${ids.user}'
   `);
-  await enqueue(limitedDb, proposal({ draftId: uuid(5001), contentVersion: 'week-one-a', campaignDate: '2098-10-06' }));
-  await enqueue(limitedDb, proposal({ draftId: uuid(5002), contentVersion: 'week-one-b', campaignDate: '2098-10-07' }));
+  await enqueue(limitedDb, proposal({ approvalId: uuid(7301), draftId: uuid(5001), contentVersion: 'week-one-a', campaignDate: '2098-10-06' }));
+  await enqueue(limitedDb, proposal({ approvalId: uuid(7302), draftId: uuid(5002), contentVersion: 'week-one-b', campaignDate: '2098-10-07' }));
   await assert.rejects(
-    () => enqueue(limitedDb, proposal({ draftId: uuid(5003), contentVersion: 'week-one-c', campaignDate: '2098-10-08' })),
+    () => enqueue(limitedDb, proposal({ approvalId: uuid(7303), draftId: uuid(5003), contentVersion: 'week-one-c', campaignDate: '2098-10-08' })),
     /PUBLISH_WEEKLY_DISTINCT_DAY_LIMIT/,
   );
 
@@ -971,18 +1462,23 @@ async function checkAllowanceWindowRolloverAndReservations() {
   `);
   const dates = ['2098-10-01','2098-10-02','2098-10-08','2098-10-09','2098-10-15','2098-10-16','2098-10-22','2098-10-23','2098-10-29','2098-10-30'];
   for (let index = 0; index < dates.length; index += 1) {
-    await enqueue(monthlyDb, proposal({ draftId: uuid(6000 + index), contentVersion: `month-${index}`, campaignDate: dates[index] }));
+    await enqueue(monthlyDb, proposal({ approvalId: uuid(7400 + index), draftId: uuid(6000 + index), contentVersion: `month-${index}`, campaignDate: dates[index] }));
   }
   await assert.rejects(
-    () => enqueue(monthlyDb, proposal({ draftId: uuid(7001), contentVersion: 'last-free-day-loser', campaignDate: '2098-10-31' })),
+    () => enqueue(monthlyDb, proposal({ approvalId: uuid(7501), draftId: uuid(7001), contentVersion: 'last-free-day-loser', campaignDate: '2098-10-31' })),
     /PUBLISH_DISTINCT_DAY_LIMIT/,
   );
 }
 
 await checkExecutableQueueAndContext();
+await checkCalendarPublishingPrepareRpc();
+await checkAtomicCalendarPublishingConfirmRpc();
 await checkDurableArtworkExportStoreContract();
 await checkCreativeApprovalSourceKindSqlSuccess();
 await checkLeaseAndPrivilegeFences();
+await checkProviderStageFencesAndReconciliationCredential();
+await checkInstagramSqlBackedRepeatedPollAndDispatchFence();
+await checkExplicitPublishingApprovalPersistence();
 await checkUnknownTransition();
 await checkReapprovalDedupe();
 await checkAllowanceWindowRolloverAndReservations();

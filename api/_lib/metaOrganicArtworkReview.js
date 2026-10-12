@@ -214,8 +214,16 @@ function normalizeSnapshotTargets(row, provider, connections = []) {
     providerAccountId: cleanString(target.providerAccountId || target.provider_account_id || target.accountId, 80),
     accountConnectionId: cleanString(target.accountConnectionId || target.account_connection_id || target.connectionId, 120),
     accountLabel: cleanString(target.accountLabel || target.account_label || target.label, 200),
-  })).filter((target) => target.provider === provider && /^[1-9][0-9]{0,31}$/.test(target.providerAccountId))
-    .map((target) => {
+  })).map((target) => {
+    if (target.provider !== provider || !/^[1-9][0-9]{0,31}$/.test(target.providerAccountId)) {
+      throw Object.assign(new Error('A saved account target is unavailable or has changed. Reconnect that account before preparing artwork.'), {
+        status: 409,
+        code: 'ARTWORK_TARGET_UNAVAILABLE',
+        provider: target.provider,
+        providerAccountId: target.providerAccountId,
+        accountLabel: target.accountLabel,
+      });
+    }
       const matches = connections.filter((connection) => connection.status === 'connected'
         && connection.provider === target.provider
         && connection.providerAccountId === target.providerAccountId
@@ -243,6 +251,25 @@ function accountSnapshotRevision(row, provider, connections = []) {
     targets,
     payloadHash: sha256Hex(Buffer.from(canonicalJson({ postId: row.preference_value?.postId, platform: row.preference_value?.platform, targets }))),
   } : null;
+}
+
+function assertMetaArtworkProvider(provider) {
+  if (!META_PROVIDER_KEYS.includes(provider)) {
+    throw Object.assign(new Error('Exact rendered Meta artwork review is available only for Meta-connected Facebook and Instagram posts.'), {
+      status: 422,
+      code: 'ARTWORK_PROVIDER_UNSUPPORTED',
+    });
+  }
+}
+
+function assertCompleteAccountSnapshot(accountSnapshot) {
+  if (!accountSnapshot?.targets?.length) {
+    throw Object.assign(new Error('Choose at least one current Meta account target before preparing artwork.'), {
+      status: 409,
+      code: 'ARTWORK_TARGETS_REQUIRED',
+    });
+  }
+  return accountSnapshot;
 }
 
 function assertSourceMembership(context, payload) {
@@ -275,10 +302,11 @@ export async function prepareArtworkReview({
   const postId = cleanString(input?.postId, 120);
   if (!podId || !postId) throw Object.assign(new Error('Choose a pod post before preparing artwork.'), { status: 400, code: 'ARTWORK_INPUT_REQUIRED' });
   const context = await loadArtworkReviewContext({ accessToken, userId: user.id, podId, postId });
+  assertMetaArtworkProvider(context.post.platform);
   const reviewPayload = buildReviewPayload({ post: context.post, pod: context.pod, input, approved: false });
-  assertSourceMembership(context, reviewPayload);
   const reviewRevision = latestReviewRevision(context.latestCreativeReview);
-  const accountSnapshot = accountSnapshotRevision(context.accountSnapshot, context.post.platform, context.metaConnections);
+  const accountSnapshot = assertCompleteAccountSnapshot(accountSnapshotRevision(context.accountSnapshot, context.post.platform, context.metaConnections));
+  assertSourceMembership(context, reviewPayload);
   const prepared = await prepareMetaOrganicArtworkReviewEvidence({
     reviewPayload,
     context,
@@ -445,6 +473,7 @@ export async function approveArtworkReviewAndExport({
     throw Object.assign(new Error('Rendered artwork review does not belong to this pod post.'), { status: 403, code: 'ARTWORK_PREPARATION_TENANT_MISMATCH' });
   }
   const context = await loadArtworkReviewContext({ accessToken, userId: user.id, podId: token.podId, postId: token.postId });
+  assertMetaArtworkProvider(context.post.platform);
   if (context.post.body !== token.contentSnapshot || sha256Hex(Buffer.from(context.post.body)) !== token.contentHash) {
     throw Object.assign(new Error('The caption changed after render review. Prepare the artwork again.'), { status: 409, code: 'ARTWORK_PREPARATION_STALE' });
   }
@@ -452,6 +481,7 @@ export async function approveArtworkReviewAndExport({
     throw Object.assign(new Error('A newer creative review exists. Prepare the artwork again.'), { status: 409, code: 'ARTWORK_REVIEW_SUPERSEDED' });
   }
   const accountSnapshot = accountSnapshotRevision(context.accountSnapshot, token.provider, context.metaConnections);
+  assertCompleteAccountSnapshot(accountSnapshot);
   if (!sameRevision(accountSnapshot, token.accountSnapshot)) {
     throw Object.assign(new Error('Account targets changed after render review. Prepare the artwork again.'), { status: 409, code: 'ARTWORK_TARGETS_CHANGED' });
   }
@@ -477,8 +507,7 @@ export async function approveArtworkReviewAndExport({
   };
   await markPostApproved(accessToken, token.postId);
   const row = await saveCreativePreference(accessToken, token.podId, approvedPayload, context, env, rpc);
-  const targets = accountSnapshot?.targets || [];
-  if (!targets.length) throw Object.assign(new Error('Saved account targets are required before artwork export.'), { status: 409, code: 'ARTWORK_TARGETS_REQUIRED' });
+  const targets = accountSnapshot.targets;
   const exports = [];
   const failures = [];
   for (const target of targets) {

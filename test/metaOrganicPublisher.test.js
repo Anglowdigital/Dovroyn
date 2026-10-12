@@ -12,6 +12,7 @@ import {
   buildMetaOrganicPublishProposal,
   createInMemoryMetaOrganicPublishStore,
   createInMemoryMetaOrganicPublishStoreWithClock,
+  enqueueExplicitMetaOrganicPublishingApprovals,
   getMetaOrganicPublisherConfig,
   makeMetaOrganicDedupeKey,
   processNextMetaOrganicPublishJob,
@@ -23,6 +24,7 @@ import {
   META_ORGANIC_PUBLISHER_PROVENANCE,
   META_ORGANIC_TOKEN_KINDS,
 } from '../api/_lib/metaOrganicPublisher.js';
+import { createMetaGraphOrganicProvider } from '../api/_lib/metaOrganicProvider.js';
 
 const now = new Date('2026-10-12T03:00:00.000Z');
 const userId = 'user-dovroyn';
@@ -136,6 +138,7 @@ function baseContext(overrides = {}) {
       contentVersion,
       assetManifestHash,
       campaignDate,
+      scheduledAt: proposal.scheduledAt,
       approvedAt: '2026-10-11T10:00:00.000Z',
       status: 'approved',
       ...overrides.approval,
@@ -190,12 +193,12 @@ function providerAdapter(calls = [], behavior = {}) {
     async publishFacebookPagePhoto(payload) {
       calls.push({ provider: 'facebook', payload });
       if (behavior.facebook) return behavior.facebook(payload);
-      return { providerPostId: `fb-post-${calls.length}`, permalink: `https://www.facebook.com/fb-post-${calls.length}` };
+      return { providerPostId: `101_${1000 + calls.length}`, permalink: `https://www.facebook.com/101_${1000 + calls.length}` };
     },
     async publishInstagramImage(payload) {
       calls.push({ provider: 'instagram', payload });
       if (behavior.instagram) return behavior.instagram(payload);
-      return { providerPostId: `ig-media-${calls.length}`, permalink: `https://www.instagram.com/p/mock${calls.length}/` };
+      return { providerPostId: `${2000 + calls.length}`, permalink: `https://www.instagram.com/p/mock${calls.length}/` };
     },
   };
 }
@@ -475,6 +478,33 @@ test('timeout after provider success is marked unknown and is not blindly retrie
   assert.equal(calls.length, 1);
 });
 
+test('worker treats Instagram post-create poll failure as unknown and never recreates the container', async () => {
+  const context = baseContext({ provider: 'instagram' });
+  const store = createInMemoryMetaOrganicPublishStore([context]);
+  await store.enqueue(context.proposal);
+  const requests = [];
+  const provider = createMetaGraphOrganicProvider({
+    config: { graphVersion: 'v26.0' },
+    pollDelayMs: 0,
+    fetch: async (url) => {
+      requests.push(url.pathname);
+      if (url.pathname === '/v26.0/201/media') return new Response(JSON.stringify({ id: '3001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/v26.0/3001') return new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+      throw new Error(`unexpected ${url.pathname}`);
+    },
+  });
+  const options = { config: { enabled: true, maxAttempts: 3, leaseMs: 300_000 }, store, provider, now };
+
+  const first = await processNextMetaOrganicPublishJob(options);
+  const second = await processNextMetaOrganicPublishJob({ ...options, now: new Date(now.getTime() + 600_000) });
+
+  assert.equal(first.status, 'unknown');
+  assert.equal(second.status, 'idle');
+  assert.deepEqual(requests, ['/v26.0/201/media', '/v26.0/3001']);
+  assert.equal(store.jobs[0].state, 'unknown');
+  assert.equal(store.jobs[0].receipts[context.proposal.accountConnectionId].containerId, '3001');
+});
+
 test('generic reset timeout or 5xx after dispatch is unknown, not automatic retry', async () => {
   for (const code of ['ECONNRESET', 'REQUEST_TIMEOUT', 'PROVIDER_5XX']) {
     const context = baseContext({ draftId: `ambiguous-${code}` });
@@ -553,6 +583,7 @@ test('read-only reconciliation resolves timeout-after-success without another pu
       throw new UnknownOutcomePublishError('socket timed out after provider accepted mutation', {
         provider: 'facebook',
         providerAccountId: '101',
+        providerPostId: '101_9001',
         dedupeKey: context.proposal.dedupeKey,
       });
     },
@@ -569,9 +600,9 @@ test('read-only reconciliation resolves timeout-after-success without another pu
         return {
           provider: 'facebook',
           providerAccountId: '101',
-          providerPostId: 'fb-reconciled-1',
+          providerPostId: '101_9001',
           dedupeKey: context.proposal.dedupeKey,
-          permalink: 'https://www.facebook.com/fb-reconciled-1',
+          permalink: 'https://www.facebook.com/101_9001',
         };
       },
     },
@@ -587,6 +618,37 @@ test('read-only reconciliation resolves timeout-after-success without another pu
   assert.equal(lookupCalls, 1);
 });
 
+test('reconciliation cannot invent a provider id when no durable known id exists', async () => {
+  const context = baseContext({ draftId: 'unknown-no-known-id' });
+  const store = createInMemoryMetaOrganicPublishStore([context]);
+  await store.enqueue(context.proposal);
+  await store.markUnknown(await store.claimNext({ workerId: 'worker-a', now, leaseMs: 300_000 }), 'OUTCOME_UNKNOWN', {
+    provider: 'facebook',
+    providerAccountId: '101',
+    dedupeKey: context.proposal.dedupeKey,
+  });
+
+  const result = await reconcileNextMetaOrganicPublishJob({
+    config: { enabled: true, maxAttempts: 3, leaseMs: 300_000 },
+    store,
+    provider: {
+      async lookupPublishedMetaOrganicReceipt() {
+        return {
+          provider: 'facebook',
+          providerAccountId: '101',
+          providerPostId: '101_9911',
+          dedupeKey: context.proposal.dedupeKey,
+        };
+      },
+    },
+    now: new Date(now.getTime() + 60_000),
+  });
+
+  assert.equal(result.status, 'unknown');
+  assert.equal(result.reason, 'RECONCILE_PROOF_MISMATCH');
+  assert.equal(store.jobs[0].state, 'unknown');
+});
+
 test('reconciliation rejects mismatched account or delivery proof and keeps unknown', async () => {
   const context = baseContext();
   const store = createInMemoryMetaOrganicPublishStore([context]);
@@ -600,7 +662,7 @@ test('reconciliation rejects mismatched account or delivery proof and keeps unkn
   const badAccount = await reconcileNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300_000 },
     store,
-    provider: { lookupPublishedMetaOrganicReceipt: async () => ({ provider: 'facebook', providerAccountId: '201', providerPostId: 'post-201', dedupeKey: context.proposal.dedupeKey }) },
+    provider: { lookupPublishedMetaOrganicReceipt: async () => ({ provider: 'facebook', providerAccountId: '201', providerPostId: '201_9001', dedupeKey: context.proposal.dedupeKey }) },
     now: new Date(now.getTime() + 60_000),
   });
   assert.equal(badAccount.status, 'unknown');
@@ -610,7 +672,7 @@ test('reconciliation rejects mismatched account or delivery proof and keeps unkn
   const badDelivery = await reconcileNextMetaOrganicPublishJob({
     config: { enabled: true, maxAttempts: 3, leaseMs: 300_000 },
     store,
-    provider: { lookupPublishedMetaOrganicReceipt: async () => ({ provider: 'facebook', providerAccountId: '101', providerPostId: 'post-1', dedupeKey: 'not-this-delivery' }) },
+    provider: { lookupPublishedMetaOrganicReceipt: async () => ({ provider: 'facebook', providerAccountId: '101', providerPostId: '101_9002', dedupeKey: 'not-this-delivery' }) },
     now: new Date(now.getTime() + 120_000),
   });
   assert.equal(badDelivery.status, 'unknown');
@@ -669,7 +731,7 @@ test('malformed or identity-overriding provider acknowledgements become unknown,
       facebook: async () => ({
         provider: 'instagram',
         providerAccountId: '999999999',
-        providerPostId: 'fb-post-1',
+          providerPostId: '101_7001',
         access_token: 'must-not-persist',
       }),
     }),
@@ -693,8 +755,8 @@ test('safe provider receipts are allowlisted and cannot persist arbitrary token 
       facebook: async () => ({
         provider: 'facebook',
         providerAccountId: '101',
-        providerPostId: '1234567890_0987654321',
-        permalink: 'https://www.facebook.com/1234567890_0987654321',
+        providerPostId: '101_7654321',
+        permalink: 'https://www.facebook.com/101_7654321',
         access_token: 'secret',
         status: 'failed',
       }),
@@ -707,7 +769,7 @@ test('safe provider receipts are allowlisted and cannot persist arbitrary token 
   assert.equal(receipt.status, 'published');
   assert.equal(receipt.provider, 'facebook');
   assert.equal(receipt.providerAccountId, '101');
-  assert.equal(receipt.providerPostId, '1234567890_0987654321');
+  assert.equal(receipt.providerPostId, '101_7654321');
   assert.equal('access_token' in receipt, false);
 });
 
@@ -741,6 +803,35 @@ test('publisher foundation exposes explicit proposed contract metadata only', ()
   assert.equal(META_ORGANIC_TOKEN_KINDS.instagram, 'page');
 });
 
+test('explicit publishing approval queue seam is per account and does not use creative approval as publish authorization', async () => {
+  const store = createInMemoryMetaOrganicPublishStore([]);
+  store.persistPublishingApproval = async (approval) => structuredClone(approval);
+  const approvals = [
+    { ...baseContext({ accountConnectionId: 'facebook-page-1', draftId: 'publish-seam-1', approvalId: 'publish-approval-1' }).approval, provider: 'facebook', scheduledAt: '2026-10-12T04:00:00.000Z' },
+    { ...baseContext({ accountConnectionId: 'facebook-page-2', draftId: 'publish-seam-2', approvalId: 'publish-approval-2' }).approval, provider: 'facebook', scheduledAt: '2026-10-12T04:00:00.000Z' },
+  ];
+  const result = await enqueueExplicitMetaOrganicPublishingApprovals({ approvals, store });
+  assert.equal(result.status, 'queued', JSON.stringify(result.failures));
+  assert.equal(result.queued.length, 2);
+  assert.deepEqual(store.jobs.map((job) => job.approvalId), ['publish-approval-1', 'publish-approval-2']);
+
+  const creativeOnly = { ...approvals[0], id: 'creative-review-row', status: 'rendered_review' };
+  const blocked = await enqueueExplicitMetaOrganicPublishingApprovals({ approvals: [creativeOnly], store });
+  assert.equal(blocked.status, 'queue_blocked');
+  assert.equal(blocked.failures[0].reason, 'PUBLISH_APPROVAL_REQUIRED');
+});
+
+test('publishing approval queue seam rejects changed campaign dates across selected accounts', async () => {
+  const approvals = [
+    { ...baseContext({ accountConnectionId: 'facebook-page-a', draftId: 'same-date-a', approvalId: 'approval-a', campaignDate: '2026-10-12' }).approval, provider: 'facebook' },
+    { ...baseContext({ accountConnectionId: 'facebook-page-b', draftId: 'same-date-b', approvalId: 'approval-b', campaignDate: '2026-10-13' }).approval, provider: 'facebook' },
+  ];
+  await assert.rejects(
+    () => enqueueExplicitMetaOrganicPublishingApprovals({ approvals, store: createInMemoryMetaOrganicPublishStore([]) }),
+    /Selected accounts must share one explicit campaign date/,
+  );
+});
+
 
 test('unexpected errors after a mock provider write stay unknown and are never resent', async () => {
   for (const error of [new Error('unexpected response'), new SyntaxError('invalid provider response JSON'), Object.assign(new Error('socket closed'), { code: 'UND_ERR_SOCKET' })]) {
@@ -759,10 +850,11 @@ test('unexpected errors after a mock provider write stay unknown and are never r
       ...options,
       provider: { lookupPublishedMetaOrganicReceipt: async () => ({
         status: 'found', provider: 'facebook', providerAccountId: context.account.providerAccountId,
-        providerPostId: 'synthetic-published-post', dedupeKey: context.proposal.dedupeKey,
+        providerPostId: '101_9901', dedupeKey: context.proposal.dedupeKey,
       }) },
     });
-    assert.equal(reconciled.status, 'reconciled');
+    assert.equal(reconciled.status, 'unknown');
+    assert.equal(reconciled.reason, 'RECONCILE_PROOF_MISMATCH');
     assert.equal(writes, 1);
   }
 });
@@ -776,4 +868,58 @@ test('changing both stored URL copies cannot bypass the approved manifest digest
     context.asset.manifest.output[field] = replacement;
     assert.equal(validateMetaOrganicPublishContext(context, now).ok, false);
   }
+});
+
+test('explicit queue seam blocks date-only, unpersisted and altered scheduled approval times', async () => {
+  const approval = { ...baseContext().approval, provider: 'facebook', campaignDate: '2099-01-01', scheduledAt: '2099-01-01T09:00:00.000Z' };
+  for (const mode of ['missing-persistence', 'dropped-time', 'changed-time', 'date-only']) {
+    let enqueues = 0;
+    let persistenceCalls = 0;
+    const store = {
+      enqueue: async () => { enqueues += 1; assert.fail('Unapproved exact time must never enqueue'); },
+      ...(mode === 'missing-persistence' ? {} : {
+        persistPublishingApproval: async (input) => {
+          persistenceCalls += 1;
+          const { scheduledAt, ...realShapedRpcReturn } = input;
+          return mode === 'changed-time'
+            ? { ...realShapedRpcReturn, scheduledAt: '2099-01-01T08:00:00.000Z' }
+            : realShapedRpcReturn;
+        },
+      }),
+    };
+    const input = { ...approval };
+    if (mode === 'date-only') delete input.scheduledAt;
+    const result = await enqueueExplicitMetaOrganicPublishingApprovals({ approvals: [input], store });
+    assert.equal(result.status, 'queue_blocked', mode);
+    assert.equal(result.failures[0].reason, mode === 'missing-persistence' ? 'PUBLISH_APPROVAL_PERSISTENCE_REQUIRED' : 'PUBLISH_SCHEDULE_APPROVAL_REQUIRED', mode);
+    assert.equal(enqueues, 0);
+    if (mode === 'date-only') assert.equal(persistenceCalls, 0);
+  }
+});
+
+test('expired reconciliation deadline prevents claiming work', async () => {
+  const result = await reconcileNextMetaOrganicPublishJob({
+    config: { enabled: true }, deadlineAt: new Date(Date.now() - 1).toISOString(),
+    store: { claimUnknownForReconciliation: async () => assert.fail('expired deadline must not claim') },
+    provider: { lookupPublishedMetaOrganicReceipt: async () => assert.fail('expired deadline must not call provider') },
+  });
+  assert.deepEqual(result, { status: 'idle', reason: 'RECONCILE_DEADLINE_EXCEEDED' });
+});
+
+test('reconciliation forwards explicit scheduler deadline to private provider context', async () => {
+  const context = baseContext();
+  const deadlineAt = new Date(Date.now() + 30_000).toISOString();
+  let observedDeadline;
+  const store = {
+    claimUnknownForReconciliation: async () => ({ id: 'unknown-job', ...context.proposal, providerAccountId: context.account.providerAccountId }),
+    loadReconciliationCredentialLease: async () => ({ provider: 'facebook', providerAccountId: context.account.providerAccountId, accessToken: 'synthetic-token', tokenKind: 'page' }),
+    keepUnknown: async () => {},
+  };
+  const result = await reconcileNextMetaOrganicPublishJob({
+    config: { enabled: true, leaseMs: 300_000, deadlineAt: '2000-01-01T00:00:00.000Z' },
+    deadlineAt, store,
+    provider: { lookupPublishedMetaOrganicReceipt: async (_hints, privateContext) => { observedDeadline = privateContext.deadlineAt; return null; } },
+  });
+  assert.equal(observedDeadline, deadlineAt);
+  assert.equal(result.status, 'unknown');
 });
