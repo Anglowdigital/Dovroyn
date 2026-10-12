@@ -230,6 +230,16 @@ body { background: #F7F2E8; }
 .calendar-artwork-preview { max-width:380px; margin:16px 0; padding:24px; border-radius:16px; background:#f3e9d8; color:#07162d; }
 .calendar-artwork-preview img { width:100%; max-height:240px; object-fit:contain; }
 .calendar-artwork-preview h3 { font-family:'Playfair Display',serif; font-size:28px; }
+.calendar-publish-review { display:grid; gap:12px; padding:16px; background:#fffdf8; border-block:1px solid #d8cbb5; }
+.calendar-publish-review header { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+.calendar-publish-review h3 { font-size:18px; margin-top:4px; }
+.calendar-publish-dates { display:flex; flex-wrap:wrap; gap:8px; }
+.calendar-publish-candidate { display:grid; gap:12px; border:1px solid #d8cbb5; border-radius:7px; padding:14px; }
+.calendar-publish-entries { display:grid; gap:12px; }
+.calendar-publish-entry { display:grid; grid-template-columns:minmax(96px, 140px) 1fr; gap:12px; align-items:start; min-width:0; }
+.calendar-publish-entry img { width:100%; aspect-ratio:4/5; object-fit:contain; background:#f3e9d8; border:1px solid #d8cbb5; border-radius:5px; }
+.calendar-publish-entry p { margin-top:6px; font-size:12px; line-height:1.55; overflow-wrap:anywhere; }
+@media (max-width:640px) { .calendar-publish-entry { grid-template-columns:1fr; } .calendar-publish-entry img { max-width:220px; } }
 
 /* Auto rows prevent the taller cover from obscuring the actual pod title. */
 .pod-library-card { grid-template-rows:auto 1fr; }
