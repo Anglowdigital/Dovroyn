@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { creativeImageCandidates, imageReferenceKey, latestCreativeReview, creativeReviewPayload, initialCreativeHeadline, creativeReviewIsCurrent } from '../../lib/creativeReview.js';
+import { saveCreativeDraft } from '../../lib/podRepository.js';
 import { approveMetaArtworkReview, prepareMetaArtworkReview } from '../../lib/metaOrganic.js';
 
 export default function CreativeReview(props) {
@@ -8,7 +9,7 @@ export default function CreativeReview(props) {
 
 function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia = [], savedPreferences = [], accessToken, onNotice, onSaved, canReviewExactMetaArtwork = false }) {
   const candidates = creativeImageCandidates(assets, sourceMedia);
-  const saved = latestCreativeReview(savedPreferences, podId, post?.id);
+  const saved = useMemo(() => latestCreativeReview(savedPreferences, podId, post?.id), [savedPreferences, podId, post?.id]);
   const [headline, setHeadline] = useState(() => saved?.headline ?? initialCreativeHeadline(post?.content));
   const [cta, setCta] = useState(() => saved?.call_to_action ?? post?.callToAction ?? '');
   const [imageKey, setImageKey] = useState(() => saved ? imageReferenceKey(saved.image) : candidates.find((image) => image.role !== 'logo')?.key || candidates[0]?.key || '');
@@ -18,6 +19,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
   currentContent.current = post?.content || '';
   const status = contentSnapshot === currentContent.current ? storedStatus : 'unsaved';
   const [busy, setBusy] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [prepared, setPrepared] = useState(null);
   const [renderLoaded, setRenderLoaded] = useState(false);
   const [error, setError] = useState('');
@@ -26,6 +28,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
   const inFlight = useRef(false);
   const previewRequest = useRef(0);
   const didInvalidate = useRef(false);
+  const localEdits = useRef(false);
   const fieldId = useId();
   const selected = candidates.find((image) => image.key === imageKey);
   const missingImage = Boolean(imageKey && (!selected || failedImage === imageKey));
@@ -49,10 +52,56 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
     previewRequest.current += 1;
     setPrepared(null);
     setRenderLoaded(false);
-    setStatus('unsaved');
+    if (localEdits.current || saved?.status !== 'draft' || !creativeReviewIsCurrent(saved, currentContent.current)
+      || saved.headline !== headline || saved.call_to_action !== cta || imageReferenceKey(saved.image) !== imageKey) setStatus('unsaved');
   }, [currentFingerprint]);
+  useEffect(() => {
+    // A prior editor can finish saving after tab navigation remounts this one.
+    // Restore that confirmed draft only while this editor has no newer edits.
+    if (saved?.status !== 'draft') return;
+    previewRequest.current += 1;
+    setPrepared(null);
+    setRenderLoaded(false);
+    if (localEdits.current) { setStatus('unsaved'); return; }
+    setHeadline(saved.headline ?? initialCreativeHeadline(post?.content));
+    setCta(saved.call_to_action ?? post?.callToAction ?? '');
+    setImageKey(imageReferenceKey(saved.image));
+    setContentSnapshot(saved.content_snapshot);
+    setStatus(creativeReviewIsCurrent(saved, currentContent.current) ? 'saved' : 'unsaved');
+  }, [saved]);
 
-  const edit = (setter) => (event) => { previewRequest.current += 1; setter(event.target.value); setStatus('unsaved'); setPrepared(null); setRenderLoaded(false); setError(''); };
+  const edit = (setter) => (event) => { localEdits.current = true; previewRequest.current += 1; setter(event.target.value); setStatus('unsaved'); setPrepared(null); setRenderLoaded(false); setError(''); };
+  async function saveDraft() {
+    if (inFlight.current || !podId || !post?.id || !headline.trim() || missingImage) return;
+    const savedFingerprint = currentFingerprint;
+    const savedCaption = currentContent.current;
+    previewRequest.current += 1;
+    inFlight.current = true;
+    setBusy(true);
+    setSavingDraft(true);
+    setStatus('unsaved');
+    setPrepared(null);
+    setRenderLoaded(false);
+    setError('');
+    try {
+      const row = await saveCreativeDraft(podId, { ...post, content: savedCaption }, headline, cta, selected, brandName);
+      // Even a stale editor response must reconcile the persisted draft revision:
+      // the prior approval has been superseded in storage and in calendar review.
+      onSaved?.(row);
+      if (!active.current) return;
+      if (currentFingerprintRef.current !== savedFingerprint) return;
+      localEdits.current = false;
+      setContentSnapshot(savedCaption);
+      setStatus('saved');
+      onNotice?.('Creative draft saved. Nothing has been approved, exported or published.');
+    } catch (failure) {
+      if (active.current) setError(failure?.message || 'Creative draft could not be saved. Please retry.');
+    } finally {
+      inFlight.current = false;
+      if (active.current) { setBusy(false); setSavingDraft(false); }
+    }
+  }
+
   async function prepare() {
     if (!canReviewExactMetaArtwork || inFlight.current || !podId || !post?.id || missingImage) return;
     if (!accessToken) { setError('Sign in again before preparing artwork.'); return; }
@@ -135,9 +184,9 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
         <label htmlFor={`${fieldId}-image`}>Creative image</label><select id={`${fieldId}-image`} value={imageKey} onChange={edit(setImageKey)} disabled={busy}><option value="">Typography only</option>{missingImage && <option value={imageKey}>Previous image is unavailable</option>}{candidates.map((image) => <option key={image.key} value={image.key}>{image.role === 'logo' ? 'Logo · ' : ''}{image.label}</option>)}</select>
         {preparedCurrent?.image?.dataUrl && <figure className="creative-render-review"><img src={preparedCurrent.image.dataUrl} alt="Exact rendered artwork for approval" onLoad={() => setRenderLoaded(true)} onError={() => { setRenderLoaded(false); setError('Rendered JPEG preview could not be displayed. Prepare it again.'); }} /><figcaption>Exact server-rendered JPEG · {preparedCurrent.image.dimensions.width}×{preparedCurrent.image.dimensions.height}</figcaption></figure>}
         {!candidates.length && <p className="creative-review-note">No usable images yet. Add an image in Assets, or edit a typography draft.</p>}
-        <p className="creative-review-note">Local draft edits are not saved until exact artwork approval. Approval uses the exact rendered JPEG above. Editing the caption, headline, CTA, image or account targets requires a fresh render review. Publishing remains a separate approval.</p>
+        <p className="creative-review-note">Save your creative draft to keep edits when you leave. Saving an edited draft replaces its prior creative approval; existing calendar snapshots stay unchanged. Approval uses the exact rendered JPEG above. Editing the caption, headline, CTA, image or account targets requires a fresh render review. Publishing remains a separate approval.</p>
         {error && <p role="alert" className="creative-review-error">{error}</p>}
-        <div className="creative-review-actions"><button type="button" className="button button-secondary" disabled={!canReviewExactMetaArtwork || busy || !headline.trim() || !post?.id || missingImage} onClick={prepare}>{busy ? 'Preparing…' : 'Prepare exact JPEG'}</button><button type="button" className="button button-primary" disabled={!canApprovePrepared} onClick={approve}>Approve rendered JPEG</button></div>
+        <div className="creative-review-actions"><button type="button" className="button button-secondary" disabled={busy || !headline.trim() || !post?.id || missingImage} onClick={saveDraft}>{savingDraft ? 'Saving draft…' : 'Save creative draft'}</button><button type="button" className="button button-secondary" disabled={!canReviewExactMetaArtwork || busy || !headline.trim() || !post?.id || missingImage} onClick={prepare}>{busy && !savingDraft ? 'Preparing…' : 'Prepare exact JPEG'}</button><button type="button" className="button button-primary" disabled={!canApprovePrepared} onClick={approve}>Approve rendered JPEG</button></div>
       </div>
     </div>
   </section>;
