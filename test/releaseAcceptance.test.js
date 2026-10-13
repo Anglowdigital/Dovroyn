@@ -255,7 +255,8 @@ test('content UI gates exact Meta artwork review to Meta posts with available sa
   assert.match(source, /const metaPost = isMetaOrganicProvider\(post\.platformKey\)/);
   assert.match(source, /const completeCurrentTargets = currentTargets\.length > 0 && currentTargets\.length === \(post\.targetAccounts \|\| \[\]\)\.length/);
   assert.match(source, /const canReviewExactMetaArtwork = metaPost && metaConnectionStatus\.available === true && completeCurrentTargets && !post\.targetSaveFailed/);
-  assert.match(source, /canReviewExactMetaArtwork \? <CreativeReview/);
+  assert.match(source, /<CreativeReview canReviewExactMetaArtwork=\{canReviewExactMetaArtwork\}/);
+  assert.doesNotMatch(source, /canReviewExactMetaArtwork \? <CreativeReview/);
   assert.match(source, /This platform is planning-only in this release/);
   assert.match(source, /aria-label=\{account\.accountLabel\}/);
 });

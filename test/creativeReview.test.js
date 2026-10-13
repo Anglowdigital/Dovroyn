@@ -98,6 +98,7 @@ async function creativeReviewHarness(services = {}) {
   const Component = new Function('modules', 'h', `${code}; return CreativeReview;`)(modules, h);
   const props = {
     podId: 'pod-1',
+    canReviewExactMetaArtwork: true,
     accessToken: 'token',
     brandName: 'Brand',
     post: { id: 'post-1', content: 'Fresh caption', platformName: 'Facebook', targetAccounts: [{ provider: 'facebook', providerAccountId: '101', accountLabel: 'Page' }] },
@@ -164,4 +165,67 @@ test('late preview response is discarded after caption changes', async () => {
   await harness.flush();
   assert.equal(harness.nodes().some((node) => node.type === 'img' && node.props.alt === 'Exact rendered artwork for approval'), false);
   assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
+});
+
+for (const platformName of ['Facebook', 'Instagram', 'LinkedIn']) {
+  test(`${platformName} local draft remains editable without Meta and cannot prepare or export`, async () => {
+    let calls = 0;
+    const harness = await creativeReviewHarness({ prepareMetaArtworkReview: async () => { calls++; }, approveMetaArtworkReview: async () => { calls++; } });
+    harness.props.canReviewExactMetaArtwork = false;
+    harness.props.accessToken = undefined;
+    harness.props.post = { ...harness.props.post, platformName, targetAccounts: [] };
+    harness.render();
+    assert.ok(harness.nodes().find(node => node.props['aria-label'] === 'Ad draft preview'));
+    for (const [type, value] of [['textarea', 'Local headline'], ['input', 'Local CTA'], ['select', '']]) {
+      const field = harness.nodes().find(node => node.type === type);
+      assert.equal(field.props.disabled, false);
+      field.props.onChange({ target: { value } });
+      harness.render();
+    }
+    assert.match(harness.text(), /Local headline/);
+    assert.match(harness.text(), /Local CTA/);
+    assert.equal(harness.nodes().some(node => node.type === 'img'), false, 'typography selection removes uploaded image');
+    assert.equal(harness.button('Prepare exact JPEG').props.disabled, true);
+    assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
+    await harness.button('Prepare exact JPEG').props.onClick();
+    await harness.button('Approve rendered JPEG').props.onClick();
+    assert.equal(calls, 0);
+    assert.equal(harness.saved.length, 0);
+  });
+}
+
+for (const change of ['headline', 'cta', 'image', 'readiness']) {
+  test(`${change} change invalidates prepared JPEG and requires fresh review`, async () => {
+    const harness = await creativeReviewHarness();
+    await harness.button('Prepare exact JPEG').props.onClick();
+    harness.render();
+    harness.nodes().find(node => node.props.alt === 'Exact rendered artwork for approval').props.onLoad();
+    harness.render();
+    assert.equal(harness.button('Approve rendered JPEG').props.disabled, false);
+    if (change === 'readiness') harness.props.canReviewExactMetaArtwork = false;
+    else harness.nodes().find(node => node.type === ({ headline: 'textarea', cta: 'input', image: 'select' }[change])).props.onChange({ target: { value: change === 'image' ? '' : 'Edited' } });
+    harness.render();
+    assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
+    assert.equal(harness.nodes().some(node => node.props.alt === 'Exact rendered artwork for approval'), false);
+    harness.props.canReviewExactMetaArtwork = true;
+    harness.render();
+    assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
+  });
+}
+
+test('readiness loss discards an in-flight exact render without losing local edits', async () => {
+  let resolvePreview;
+  const harness = await creativeReviewHarness({ prepareMetaArtworkReview: () => new Promise(resolve => { resolvePreview = resolve; }) });
+  harness.nodes().find(node => node.type === 'textarea').props.onChange({ target: { value: 'Keep my local headline' } });
+  harness.render();
+  harness.button('Prepare exact JPEG').props.onClick();
+  harness.props.canReviewExactMetaArtwork = false;
+  harness.render();
+  resolvePreview({ preparationToken: 'stale', image: { dataUrl: 'data:image/jpeg;base64,AAAA', dimensions: { width: 1080, height: 1350 } } });
+  await harness.flush();
+  assert.match(harness.text(), /Keep my local headline/);
+  assert.equal(harness.nodes().some(node => node.props.alt === 'Exact rendered artwork for approval'), false);
+  assert.equal(harness.button('Approve rendered JPEG').props.disabled, true);
+  assert.equal(harness.button('Prepare exact JPEG').props.disabled, true);
+  assert.equal(harness.notices.length, 0);
 });
