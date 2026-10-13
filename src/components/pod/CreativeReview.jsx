@@ -6,7 +6,7 @@ export default function CreativeReview(props) {
   return <CreativeReviewEditor key={`${props.podId}:${props.post?.id}`} {...props} />;
 }
 
-function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia = [], savedPreferences = [], accessToken, onNotice, onSaved }) {
+function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia = [], savedPreferences = [], accessToken, onNotice, onSaved, canReviewExactMetaArtwork = false }) {
   const candidates = creativeImageCandidates(assets, sourceMedia);
   const saved = latestCreativeReview(savedPreferences, podId, post?.id);
   const [headline, setHeadline] = useState(() => saved?.headline ?? initialCreativeHeadline(post?.content));
@@ -31,6 +31,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
   const missingImage = Boolean(imageKey && (!selected || failedImage === imageKey));
   const currentFingerprint = JSON.stringify({
     postId: post?.id || '',
+    canReviewExactMetaArtwork,
     caption: currentContent.current,
     headline: headline.trim(),
     cta: cta.trim(),
@@ -41,7 +42,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
   const currentFingerprintRef = useRef(currentFingerprint);
   currentFingerprintRef.current = currentFingerprint;
   const preparedCurrent = prepared?.fingerprint === currentFingerprint ? prepared : null;
-  const canApprovePrepared = Boolean(preparedCurrent?.preparationToken && renderLoaded && !busy);
+  const canApprovePrepared = Boolean(canReviewExactMetaArtwork && preparedCurrent?.preparationToken && renderLoaded && !busy);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   useEffect(() => {
     if (!didInvalidate.current) { didInvalidate.current = true; return; }
@@ -53,7 +54,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
 
   const edit = (setter) => (event) => { previewRequest.current += 1; setter(event.target.value); setStatus('unsaved'); setPrepared(null); setRenderLoaded(false); setError(''); };
   async function prepare() {
-    if (inFlight.current || !podId || !post?.id || missingImage) return;
+    if (!canReviewExactMetaArtwork || inFlight.current || !podId || !post?.id || missingImage) return;
     if (!accessToken) { setError('Sign in again before preparing artwork.'); return; }
     const requestId = previewRequest.current + 1;
     previewRequest.current = requestId;
@@ -86,7 +87,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
   }
 
   async function approve() {
-    if (inFlight.current || !preparedCurrent?.preparationToken || !podId || !post?.id || !renderLoaded) return;
+    if (!canReviewExactMetaArtwork || inFlight.current || !preparedCurrent?.preparationToken || !podId || !post?.id || !renderLoaded) return;
     if (!accessToken) { setError('Sign in again before approving artwork.'); return; }
     const approvalFingerprint = currentFingerprint;
     const approvalCaption = currentContent.current;
@@ -119,7 +120,7 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
   }
 
   return <section className="creative-review" aria-label={`Creative review for ${post?.platformName || 'social post'}`}>
-    <div className="creative-review-heading"><div><span className="eyebrow">Your creative studio</span><h3>Make it yours. Then approve.</h3></div><span className={`creative-status creative-status-${missingImage ? 'unsaved' : status}`} role="status">{missingImage ? 'Image unavailable · choose again' : status === 'approved' ? 'Approved creative' : status === 'saved' ? 'Draft saved' : 'Unsaved draft'}</span></div>
+    <div className="creative-review-heading"><div><span className="eyebrow">Your creative studio</span><h3>Make it yours.</h3></div><span className={`creative-status creative-status-${missingImage ? 'unsaved' : status}`} role="status">{missingImage ? 'Image unavailable · choose again' : status === 'approved' ? 'Approved creative' : status === 'saved' ? 'Draft saved' : 'Unsaved draft'}</span></div>
     <div className="creative-review-grid">
       <div className="creative-ad" aria-label="Ad draft preview">
         <div className="creative-ad-brand">{brandName || 'Your brand'}</div>
@@ -133,10 +134,10 @@ function CreativeReviewEditor({ podId, post, brandName, assets = [], sourceMedia
         <label htmlFor={`${fieldId}-cta`}>Call to action</label><input id={`${fieldId}-cta`} maxLength={80} value={cta} onChange={edit(setCta)} disabled={busy} />
         <label htmlFor={`${fieldId}-image`}>Creative image</label><select id={`${fieldId}-image`} value={imageKey} onChange={edit(setImageKey)} disabled={busy}><option value="">Typography only</option>{missingImage && <option value={imageKey}>Previous image is unavailable</option>}{candidates.map((image) => <option key={image.key} value={image.key}>{image.role === 'logo' ? 'Logo · ' : ''}{image.label}</option>)}</select>
         {preparedCurrent?.image?.dataUrl && <figure className="creative-render-review"><img src={preparedCurrent.image.dataUrl} alt="Exact rendered artwork for approval" onLoad={() => setRenderLoaded(true)} onError={() => { setRenderLoaded(false); setError('Rendered JPEG preview could not be displayed. Prepare it again.'); }} /><figcaption>Exact server-rendered JPEG · {preparedCurrent.image.dimensions.width}×{preparedCurrent.image.dimensions.height}</figcaption></figure>}
-        {!candidates.length && <p className="creative-review-note">No usable images yet. Add an image in Assets, or save a typography draft.</p>}
-        <p className="creative-review-note">Approval uses the exact rendered JPEG above. Editing the caption, headline, CTA, image or account targets requires a fresh render review. Publishing remains a separate approval.</p>
+        {!candidates.length && <p className="creative-review-note">No usable images yet. Add an image in Assets, or edit a typography draft.</p>}
+        <p className="creative-review-note">Local draft edits are not saved until exact artwork approval. Approval uses the exact rendered JPEG above. Editing the caption, headline, CTA, image or account targets requires a fresh render review. Publishing remains a separate approval.</p>
         {error && <p role="alert" className="creative-review-error">{error}</p>}
-        <div className="creative-review-actions"><button type="button" className="button button-secondary" disabled={busy || !headline.trim() || !post?.id || missingImage} onClick={prepare}>{busy ? 'Preparing…' : 'Prepare exact JPEG'}</button><button type="button" className="button button-primary" disabled={!canApprovePrepared} onClick={approve}>Approve rendered JPEG</button></div>
+        <div className="creative-review-actions"><button type="button" className="button button-secondary" disabled={!canReviewExactMetaArtwork || busy || !headline.trim() || !post?.id || missingImage} onClick={prepare}>{busy ? 'Preparing…' : 'Prepare exact JPEG'}</button><button type="button" className="button button-primary" disabled={!canApprovePrepared} onClick={approve}>Approve rendered JPEG</button></div>
       </div>
     </div>
   </section>;
