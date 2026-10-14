@@ -6,9 +6,9 @@ export default function MarketingHero() {
   return <>
     <section className="editorial-hero" aria-labelledby="marketing-promise">
       <div className="editorial-hero-copy">
-        <p className="eyebrow">Your brand. Its own AI marketing pod.</p>
-        <h1 id="marketing-promise">Less blank page.<br />More <em>brand magic.</em></h1>
-        <p className="editorial-intro">Turn your website and photos into a clear marketing direction — then build the campaign around it.</p>
+        <h1 id="marketing-promise">Your brand.<br />Its own AI <em>marketing pod.</em></h1>
+        <p className="editorial-hero-tagline">Less blank page.<br />More <em>brand magic.</em></p>
+        <p className="editorial-intro">Turn your website into a marketing powerhouse. Add it to a pod and let Dovroyn AI build your campaign.</p>
         <div className="editorial-actions">
           <Link className="button button-primary button-lg" to="/signup">Build my first pod <ArrowUpRight size={19} /></Link>
           <Link className="editorial-text-link" to="/demo-pod">Explore a demo pod <ArrowRight size={17} /></Link>
