@@ -39,7 +39,7 @@ All provider interactions in automated verification use synthetic IDs and mocked
 
 ## Proposed database contract
 
-Only the existing proposed connection migration is revised. It retains discovery RPC arities and the v2 discovery readiness contract, adds server intent/provider fields, credential-verification metadata and a connection identity index including intent.
+The existing proposed connection migration is revised, together with two dependent account-resolution guards in the existing proposed publisher migration. The publisher proposal retains all 22 public RPC signatures and service-role execute grants unchanged. It retains discovery RPC arities and the v2 discovery readiness contract, adds server intent/provider fields, credential-verification metadata and a connection identity index including intent.
 
 Two additional public SECURITY DEFINER RPCs have empty search paths and grant execute only to service_role:
 
@@ -60,9 +60,9 @@ Before any live activation:
 2. Review and specifically approve the proposed private schema, identity-index change and server RPC grants; inspect production state before application.
 3. Approve the selected app/assets, actual publish permissions and secure server configuration. The patch uses the existing Facebook Login pathway and existing META_APP_ID; it does not switch to the separately labelled Instagram Login setup.
 4. Obtain a fresh explicitly approved publishing connection. Old discovery tokens stay discovery.
-5. Review deployment and runtime activation separately, then approve exact content/account/date/time before any post or schedule.
+5. Code-only deployment does not approve runtime activation. Approve activation separately, then approve exact content/account/date/time before any post or schedule.
 
-When discovery and publishing records exist for the same provider account, consumers must bind the exact publishing accountConnectionId. The existing account picker distinguishes Account discovery and Publishing access when both exist, saves the exact chosen connection ID and preserves exact saved IDs regardless of response order. Legacy ambiguous snapshots and missing exact connections fail closed; prior artwork and approvals are not silently retargeted. Selecting publishing access replaces the draft default for that same platform account only through an explicit choice; it does not rewrite existing drafts.
+When discovery and publishing records exist for the same provider account, consumers must bind the exact publishing accountConnectionId. The existing account picker distinguishes Account discovery and Publishing access when both exist, saves the exact chosen connection ID and preserves exact saved IDs regardless of response order. Legacy ambiguous snapshots and missing exact connections fail closed; prior artwork and approvals are not silently retargeted. The calendar publishing-review and artwork-export SQL boundaries also enforce exact supplied connection IDs. An ID-less legacy target remains compatible only when one eligible connection exists and its intent is discovery; duplicate matches and publish-only fallback reject with the existing context error codes. Each resolver uses a single STRICT lookup, preserving owner/pod/provider/account filters without a count-then-select race. Selecting publishing access replaces the draft default for that same platform account only through an explicit choice; it does not rewrite existing drafts.
 
 ## Local verification
 
