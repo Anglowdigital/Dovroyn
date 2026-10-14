@@ -80,12 +80,14 @@ async function creativeReviewHarness(services = {}, initialProps = {}) {
       slots[index] = deps;
       if (changed) effects.push(() => { cleanups[index]?.(); cleanups[index] = fn(); });
     },
+    useSyncExternalStore(_subscribe, getSnapshot) { cursor++; return getSnapshot(); },
     useId() { cursor++; return 'field-id'; },
   };
   const notices = [];
   const saved = [];
   const modules = {
     react: hooks,
+    '../../lib/creativeOperations.js': await import('../src/lib/creativeOperations.js'),
     '../../lib/creativeReview.js': await import('../src/lib/creativeReview.js'),
     '../../lib/podRepository.js': { saveCreativeDraft: services.saveCreativeDraft || (async (podId, post, headline, cta, selected, brandName) => ({ id: 'draft-1', pod_id: podId, preference_type: 'creative_review', active: true, created_at: '2026-10-13T20:00:00Z', preference_value: creativeReviewPayload(post.id, headline, cta, selected, false, post.content, { brandName }) })) },
     '../../lib/metaOrganic.js': {
@@ -154,9 +156,11 @@ for (const change of ['caption', 'accounts']) {
     harness.button('Approve rendered JPEG').props.onClick();
     harness.props.post = { ...harness.props.post, ...(change === 'caption' ? { content: 'Changed caption' } : { targetAccounts: [{ provider: 'facebook', providerAccountId: '202' }] }) };
     harness.render();
-    resolveApproval({ approval: { id: 'old-approval' }, exports: [{ manifestHash: 'old' }] });
+    await new Promise(resolve => setImmediate(resolve));
+    resolveApproval({ approval: { id: 'old-approval', pod_id: 'pod-1', preference_type: 'creative_review', active: true, created_at: '2026-10-14T10:00:00Z', preference_value: creativeReviewPayload('post-1', 'Fresh caption', '', null, true, 'Fresh caption') }, exports: [{ manifestHash: 'old' }] });
     await harness.flush();
-    assert.equal(harness.saved.length, 0);
+    assert.equal(harness.saved.length, 1, 'reconcile durable approval without approving the changed editor');
+    harness.props.savedPreferences = harness.saved; harness.render(); harness.render();
     assert.match(harness.text(), /Unsaved draft/);
     assert.equal(harness.notices.some((notice) => notice.startsWith('Creative approved')), false);
   });
@@ -169,6 +173,7 @@ test('late preview response is discarded after caption changes', async () => {
   harness.button('Prepare exact JPEG').props.onClick();
   harness.props.post = { ...harness.props.post, content: 'Changed caption' };
   harness.render();
+  await new Promise(resolve => setImmediate(resolve));
   resolvePreview({ preparationToken: 'old-token', image: { dataUrl: 'data:image/jpeg;base64,AAAA', dimensions: { width: 1080, height: 1350 } } });
   await harness.flush();
   assert.equal(harness.nodes().some((node) => node.type === 'img' && node.props.alt === 'Exact rendered artwork for approval'), false);
@@ -229,6 +234,7 @@ test('readiness loss discards an in-flight exact render without losing local edi
   harness.button('Prepare exact JPEG').props.onClick();
   harness.props.canReviewExactMetaArtwork = false;
   harness.render();
+  await new Promise(resolve => setImmediate(resolve));
   resolvePreview({ preparationToken: 'stale', image: { dataUrl: 'data:image/jpeg;base64,AAAA', dimensions: { width: 1080, height: 1350 } } });
   await harness.flush();
   assert.match(harness.text(), /Keep my local headline/);
@@ -329,4 +335,70 @@ test('restored JSON-string draft can prepare exact artwork without hydration cle
   const image = ui.nodes().find(node => node.props.alt === 'Exact rendered artwork for approval');
   assert.ok(image); image.props.onLoad(); ui.render();
   assert.equal(ui.button('Approve rendered JPEG').props.disabled, false);
+});
+
+for (const format of ['object', 'json-string']) {
+  test(`unrelated preference saves preserve prepared JPEG for ${format} review rows`, async () => {
+    const payload = creativeReviewPayload('post-1', 'Restored headline', '', null, false, 'Fresh caption');
+    const row = { id: 'review-a', pod_id: 'pod-1', active: true, preference_type: 'creative_review', created_at: '2026-10-13T20:00:00Z', preference_value: format === 'object' ? payload : JSON.stringify(payload) };
+    const ui = await creativeReviewHarness({}, { savedPreferences: [row] });
+    ui.render();
+    await ui.button('Prepare exact JPEG').props.onClick(); ui.render();
+    ui.nodes().find(node => node.props.alt === 'Exact rendered artwork for approval').props.onLoad(); ui.render();
+    for (let index = 0; index < 3; index++) {
+      ui.props.savedPreferences = [...ui.props.savedPreferences, { ...row, id: `unrelated-${index}`, preference_value: JSON.stringify({ ...payload, post_id: 'post-other' }) }];
+      ui.render(); ui.render();
+      assert.ok(ui.nodes().find(node => node.props.alt === 'Exact rendered artwork for approval'));
+      assert.equal(ui.button('Approve rendered JPEG').props.disabled, false);
+    }
+  });
+}
+
+test('pending draft from an unmounted editor blocks newer exact review until it settles', async () => {
+  const { createClient } = await import('@supabase/supabase-js');
+  const { persistCreativeDraft } = await import('../src/lib/creativeDraft.js');
+  let release, prepareCalls = 0;
+  const client = createClient('https://controlled-review-race.example', 'fixture-public-key', { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: async (_url, options) => {
+    await new Promise(resolve => { release = resolve; });
+    return new Response(JSON.stringify({ id: 'slow-draft', created_at: '2026-10-14T10:00:00Z', ...JSON.parse(options.body) }), { status: 201 });
+  } } });
+  const old = await creativeReviewHarness({ saveCreativeDraft: (...args) => persistCreativeDraft(client, ...args) });
+  const pending = old.button('Save creative draft').props.onClick();
+  await new Promise(resolve => setImmediate(resolve)); old.unmount();
+  const fresh = await creativeReviewHarness({ prepareMetaArtworkReview: async () => { prepareCalls++; return {}; } });
+  try {
+    await fresh.button('Prepare exact JPEG').props.onClick();
+    assert.equal(prepareCalls, 0, 'remount must not bypass a pending draft write');
+  } finally { release(); await pending; }
+});
+
+test('pending approval survives remount and blocks draft handler until durable approval reconciles', async () => {
+  let finish, draftCalls=0;
+  const old = await creativeReviewHarness({approveMetaArtworkReview:()=>new Promise(resolve=>{finish=resolve;})});
+  await old.button('Prepare exact JPEG').props.onClick();old.render();
+  old.nodes().find(node=>node.props.alt==='Exact rendered artwork for approval').props.onLoad();old.render();
+  const pending=old.button('Approve rendered JPEG').props.onClick();
+  await new Promise(resolve=>setImmediate(resolve));old.unmount();
+  const fresh=await creativeReviewHarness({saveCreativeDraft:async()=>{draftCalls++;}});
+  assert.equal(fresh.button('Save creative draft').props.disabled,true);
+  await fresh.button('Save creative draft').props.onClick();assert.equal(draftCalls,0);
+  const row={id:'late-approval',pod_id:'pod-1',preference_type:'creative_review',active:true,created_at:'2026-10-14T11:00:00Z',preference_value:creativeReviewPayload('post-1','Approved headline','CTA',null,true,'Fresh caption')};
+  finish({approval:row,exports:[]});await pending;
+  assert.deepEqual(old.saved,[row]);assert.equal(old.notices.some(notice=>notice.startsWith('Creative approved')),false);
+  fresh.props.savedPreferences=old.saved;fresh.render();fresh.render();fresh.render();
+  assert.match(fresh.text(),/Approved creative/);
+  assert.equal(fresh.nodes().find(node=>node.type==='textarea').props.value,'Approved headline');
+  assert.equal(fresh.button('Save creative draft').props.disabled,false);
+});
+
+test('a new same-post revision invalidates exact render even when its draft payload is identical', async () => {
+  const payload=creativeReviewPayload('post-1','Same headline','',null,false,'Fresh caption');
+  const row={id:'revision-1',pod_id:'pod-1',preference_type:'creative_review',active:true,created_at:'2026-10-14T11:00:00Z',preference_value:JSON.stringify(payload)};
+  const ui=await creativeReviewHarness({}, {savedPreferences:[row]});ui.render();
+  await ui.button('Prepare exact JPEG').props.onClick();ui.render();
+  ui.nodes().find(node=>node.props.alt==='Exact rendered artwork for approval').props.onLoad();ui.render();
+  assert.equal(ui.button('Approve rendered JPEG').props.disabled,false);
+  ui.props.savedPreferences=[row,{...row,id:'revision-2',created_at:'2026-10-14T11:01:00Z'}];ui.render();ui.render();
+  assert.equal(ui.nodes().some(node=>node.props.alt==='Exact rendered artwork for approval'),false);
+  assert.equal(ui.button('Approve rendered JPEG').props.disabled,true);
 });

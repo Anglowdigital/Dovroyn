@@ -1,22 +1,15 @@
 import { creativeReviewPayload } from './creativeReview.js';
+import { runCreativeOperation } from './creativeOperations.js';
 import { persistPreferenceDecision } from './podState.js';
 
 const ordered = (value) => Array.isArray(value) ? value.map(ordered)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
 
-const pendingDrafts = new WeakMap();
-
 // Reuse the authenticated, owner-scoped preference store. A new draft revision
 // supersedes approval without rewriting approved artwork or calendar snapshots.
 export async function persistCreativeDraft(client, podId, post, headline, cta, selected, brandName) {
   const payload = creativeReviewPayload(post?.id, headline, cta, selected, false, post?.content || '', { brandName });
-  // A remounted editor must not let an older slow request overwrite its newer save.
-  const pending = pendingDrafts.get(client) || new Map();
-  pendingDrafts.set(client, pending);
-  const key = JSON.stringify([podId, post.id]);
-  const operation = (pending.get(key) || Promise.resolve()).catch(() => {}).then(() => writeDraft(client, podId, payload));
-  pending.set(key, operation);
-  try { return await operation; } finally { if (pending.get(key) === operation) pending.delete(key); }
+  return runCreativeOperation(podId, post.id, () => writeDraft(client, podId, payload));
 }
 
 async function writeDraft(client, podId, payload) {

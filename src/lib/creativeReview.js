@@ -45,7 +45,7 @@ function reviewTime(value) {
   return new Date(parsed).toISOString().slice(0, 19) + '.' + fraction.padEnd(9, '0');
 }
 
-export function latestCreativeReview(preferences, podId, postId) {
+export function latestCreativeReviewEntry(preferences, podId, postId) {
   return list(preferences).map((row, index) => ({ row, index })).filter(({ row }) => row.pod_id === podId && row.active !== false && row.preference_type === 'creative_review')
     .sort((a, b) => {
       const left = reviewTime(a.row.created_at);
@@ -54,8 +54,12 @@ export function latestCreativeReview(preferences, podId, postId) {
       if (a.row.id && b.row.id && a.row.id !== b.row.id) return a.row.id < b.row.id ? 1 : -1;
       return b.index - a.index;
     })
-    .map(({ row }) => { try { return typeof row.preference_value === 'string' ? JSON.parse(row.preference_value) : row.preference_value; } catch { return null; } })
-    .find((value) => value?.post_id === postId) || null;
+    .map(({ row }) => { try { return { row, value: typeof row.preference_value === 'string' ? JSON.parse(row.preference_value) : row.preference_value }; } catch { return null; } })
+    .find((entry) => entry?.value?.post_id === postId) || null;
+}
+
+export function latestCreativeReview(preferences, podId, postId) {
+  return latestCreativeReviewEntry(preferences, podId, postId)?.value || null;
 }
 
 export function initialCreativeHeadline(content = '') {
