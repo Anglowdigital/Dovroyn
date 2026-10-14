@@ -711,6 +711,131 @@ async function checkExecutableQueueAndContext() {
   assert.equal(context.rows[0].context.account.providerAccountId, '101');
 }
 
+
+async function checkPublishingAuthorityConnectionIdentity() {
+  for (const publishFirst of [false, true]) {
+    const db = await setupDb();
+    const duplicateId = uuid(30);
+    const originalIntent = publishFirst ? 'publish' : 'discovery';
+    const duplicateIntent = publishFirst ? 'discovery' : 'publish';
+    await db.query(`
+      UPDATE private.meta_organic_connections SET connection_intent = $1,
+        linked_facebook_page_id = CASE WHEN $1 = 'publish' THEN provider_account_id ELSE NULL END,
+        provider_contract_version = CASE WHEN $1 = 'publish'
+          THEN 'meta_organic_facebook_login_publish_selection_v1' ELSE 'meta_organic_facebook_login_selection_v2' END
+      WHERE id = $2
+    `, [originalIntent, ids.account]);
+    await db.query(`
+      INSERT INTO private.meta_organic_connections (
+        id, user_id, pod_id, provider, provider_account_id, account_label, status,
+        granted_scopes, expires_at, connection_intent, linked_facebook_page_id,
+        provider_contract_version
+      )
+      SELECT $1::uuid, user_id, pod_id, provider, provider_account_id, account_label, status,
+        granted_scopes, expires_at, $2, CASE WHEN $2 = 'publish' THEN provider_account_id ELSE NULL END,
+        CASE WHEN $2 = 'publish' THEN 'meta_organic_facebook_login_publish_selection_v1'
+          ELSE 'meta_organic_facebook_login_selection_v2' END
+      FROM private.meta_organic_connections WHERE id = $3
+    `, [duplicateId, duplicateIntent, ids.account]);
+    await seedApprovalAndExport(db, proposal());
+    await seedApprovalAndExport(db, proposal({ accountConnectionId: duplicateId, approvalId: uuid(31) }));
+    const rpc = rpcFor(db);
+    const prepareParams = { p_user_id: ids.user, p_pod_id: ids.pod, p_scheduled_date: '2098-10-12' };
+    const exportBase = {
+      contractVersion: 'meta_organic_artwork_export_v1',
+      userId: ids.user, podId: ids.pod, postId: ids.draft, provider: 'facebook',
+      providerAccountId: '101', creativeApprovalId: ids.creativeApproval,
+    };
+    const baseTarget = { provider: 'facebook', providerAccountId: '101', accountLabel: 'Main Page' };
+    const setTarget = async (target) => db.query(`
+      UPDATE public.calendar_items
+      SET creative_note = jsonb_set(creative_note::jsonb, '{targets}', $1::jsonb)::text
+      WHERE id = $2
+    `, [JSON.stringify([target]), ids.calendarItem]);
+    const prepare = () => rpc('prepare_meta_organic_calendar_publish_review', prepareParams);
+    const exportContext = (request) => rpc('get_meta_organic_artwork_export_context', { p_request: request });
+    const counts = async () => (await db.query(`
+      SELECT (SELECT count(*)::int FROM private.meta_organic_publish_approvals) AS approvals,
+        (SELECT count(*)::int FROM private.meta_organic_publish_exports) AS exports,
+        (SELECT count(*)::int FROM private.meta_organic_publish_jobs) AS jobs
+    `)).rows[0];
+    const expectRejected = async (operation, code) => {
+      const before = await counts();
+      await assert.rejects(async () => {
+        const result = await operation();
+        console.error('Unsafe implicit connection selection:', JSON.stringify(result.entries?.map(entry => entry.accountConnectionId) || result.account));
+      }, new RegExp(code));
+      assert.deepEqual(await counts(), before, 'rejected authority lookup must not persist or enqueue');
+    };
+
+    // Both physical row orders reject every legacy spelling when the same account has two intents.
+    for (const missingId of [undefined, null, '']) {
+      const target = { ...baseTarget };
+      const request = { ...exportBase };
+      if (missingId !== undefined) {
+        target.accountConnectionId = missingId;
+        request.accountConnectionId = missingId;
+      }
+      await setTarget(target);
+      await expectRejected(() => exportContext(request), 'EXPORT_ACCOUNT_CONTEXT_REQUIRED');
+      await expectRejected(prepare, 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED');
+    }
+
+    // Explicit IDs select the same row in either order, including the existing discovery default.
+    for (const connectionId of [ids.account, duplicateId]) {
+      await setTarget({ ...baseTarget, accountConnectionId: connectionId });
+      assert.equal((await prepare()).entries[0].accountConnectionId, connectionId);
+      assert.equal((await exportContext({ ...exportBase, accountConnectionId: connectionId })).account.accountConnectionId, connectionId);
+    }
+
+    // Unknown IDs and an ID for a different account never fall back to an otherwise eligible row.
+    for (const connectionId of [uuid(999), ids.account2]) {
+      await setTarget({ ...baseTarget, accountConnectionId: connectionId });
+      await expectRejected(prepare, 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED');
+      await expectRejected(() => exportContext({ ...exportBase, accountConnectionId: connectionId }), 'EXPORT_ACCOUNT_CONTEXT_REQUIRED');
+    }
+    // Moving the selected row outside its owner/pod also fails closed.
+    await db.query('INSERT INTO auth.users (id) VALUES ($1)', [uuid(32)]);
+    await db.query('INSERT INTO public.pods (id, user_id) VALUES ($1, $2)', [uuid(33), ids.user]);
+    for (const [column, outside, original] of [['user_id', uuid(32), ids.user], ['pod_id', uuid(33), ids.pod], ['provider', 'instagram', 'facebook']]) {
+      await db.query(`UPDATE private.meta_organic_connections SET ${column} = $1 WHERE id = $2`, [outside, duplicateId]);
+      await setTarget({ ...baseTarget, accountConnectionId: duplicateId });
+      await expectRejected(prepare, 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED');
+      await expectRejected(() => exportContext({ ...exportBase, accountConnectionId: duplicateId }), 'EXPORT_ACCOUNT_CONTEXT_REQUIRED');
+      await db.query(`UPDATE private.meta_organic_connections SET ${column} = $1 WHERE id = $2`, [original, duplicateId]);
+    }
+
+    const discoveryId = publishFirst ? duplicateId : ids.account;
+    const publishId = publishFirst ? ids.account : duplicateId;
+    await db.query("UPDATE private.meta_organic_connections SET status = 'revoked' WHERE id = $1", [publishId]);
+    await setTarget(baseTarget);
+    assert.equal((await prepare()).entries[0].accountConnectionId, discoveryId, 'unique legacy discovery remains compatible');
+    assert.equal((await exportContext(exportBase)).account.accountConnectionId, discoveryId);
+    await setTarget({ ...baseTarget, accountConnectionId: ids.account2 });
+    await expectRejected(prepare, 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED');
+    await expectRejected(() => exportContext({ ...exportBase, accountConnectionId: ids.account2 }), 'EXPORT_ACCOUNT_CONTEXT_REQUIRED');
+    await setTarget(baseTarget);
+    await db.query("UPDATE private.meta_organic_connections SET status = 'connected' WHERE id = $1", [publishId]);
+    await db.query("UPDATE private.meta_organic_connections SET status = 'revoked' WHERE id = $1", [discoveryId]);
+    await expectRejected(prepare, 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED');
+    await expectRejected(() => exportContext(exportBase), 'EXPORT_ACCOUNT_CONTEXT_REQUIRED');
+
+    // The export pipeline stops before any source read/render/storage work on rejection.
+    let externalWork = 0;
+    const forbiddenWork = async () => { externalWork += 1; throw new Error('rejected account must not perform external work'); };
+    await assert.rejects(() => exportApprovedMetaOrganicArtwork({
+      request: exportBase,
+      store: createRpcMetaOrganicArtworkExportStore({ rpc }),
+      storage: { readPodAsset: forbiddenWork, putImmutableObject: forbiddenWork, createReadOnlySignedUrl: forbiddenWork },
+      renderer: forbiddenWork,
+    }), /EXPORT_ACCOUNT_CONTEXT_REQUIRED/);
+    assert.equal(externalWork, 0);
+    await db.close();
+  }
+  console.log('publishing authority connection identity checks passed (both row orders)');
+}
+
+
 async function checkCalendarPublishingPrepareRpc() {
   const db = await setupDb();
   const first = proposal();
@@ -1470,6 +1595,7 @@ async function checkAllowanceWindowRolloverAndReservations() {
   );
 }
 
+await checkPublishingAuthorityConnectionIdentity();
 await checkExecutableQueueAndContext();
 await checkCalendarPublishingPrepareRpc();
 await checkAtomicCalendarPublishingConfirmRpc();

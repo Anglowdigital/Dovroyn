@@ -2,6 +2,8 @@ import { getBearerToken, readJsonBody, requirePost, sendJson } from '../../_lib/
 import { loadActiveSubscription, loadOwnedPod, verifySupabaseUser } from '../../_lib/supabaseAuth.js';
 import {
   assertMetaOrganicReady,
+  assertMetaPublishingConnectionReady,
+  normalizeConnectionIntent,
   authorizeMetaConnection,
   buildOAuthCookie,
   buildMetaAuthorizeUrl,
@@ -25,7 +27,9 @@ export default async function handler(req, res) {
     if (!podId) return sendJson(res, 400, { error: 'Choose a pod before connecting Meta.' });
 
     const config = getMetaOrganicConfig();
+    const connectionIntent = normalizeConnectionIntent(body.connectionIntent);
     await assertMetaOrganicReady(config);
+    if (connectionIntent === 'publish') await assertMetaPublishingConnectionReady(config);
 
     const user = await verifySupabaseUser(accessToken);
     if (!user?.id) return sendJson(res, 401, { error: 'Sign in before connecting Meta.' });
@@ -42,12 +46,13 @@ export default async function handler(req, res) {
       idempotencyKey,
     });
 
-    const requiredScopes = requiredScopesForProvider(authorization.providerKey || META_PROVIDER_KEY);
+    const requiredScopes = requiredScopesForProvider(authorization.providerKey || META_PROVIDER_KEY, connectionIntent);
     const stateRecord = createStateRecord({
       userId: user.id,
       podId,
       redirectUri: config.redirectUri,
       requestedProviderKey: authorization.providerKey,
+      connectionIntent,
       requiredScopes,
     });
     await createOAuthState(stateRecord);
@@ -57,6 +62,7 @@ export default async function handler(req, res) {
       authorizationUrl: buildMetaAuthorizeUrl(config, stateRecord.state, requiredScopes),
       provider: authorization.providerKey || META_PROVIDER_KEY,
       loginRoute: META_LOGIN_ROUTE,
+      connectionIntent,
       requiredScopes,
       expiresAt: stateRecord.expiresAt,
     });
