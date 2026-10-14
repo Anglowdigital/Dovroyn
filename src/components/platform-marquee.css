@@ -1,0 +1,41 @@
+.platform-marquee { min-width: 0; margin-top: -40px; padding: 24px 0 18px; border: 0; border-radius: 0; background: #fffaf0; color: #07162d; overflow: hidden; }
+.platform-marquee-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; padding: 0 24px 10px; }
+.platform-marquee-heading p { margin: 0; font-size: 14px; line-height: 1.6; color: #655d50; }
+.platform-marquee-heading strong { color: #07162d; }
+.platform-marquee-viewport { overflow: hidden; padding: 22px 0 30px; }
+.platform-marquee-track { display: flex; width: max-content; animation: platform-marquee-scroll 28s linear infinite; }
+.platform-marquee:is(:hover, :focus-within) .platform-marquee-track, .platform-marquee:is(:hover, :focus-within) .brand-platform-mark, .platform-marquee:is(:hover, :focus-within) .platform-marquee-name { animation-play-state: paused; }
+.platform-marquee-group { display: flex; flex: 0 0 auto; gap: 16px; margin: 0; padding: 0 16px 0 0; list-style: none; }
+.platform-marquee-group li { box-sizing: border-box; width: 300px; min-height: 124px; display: flex; align-items: center; gap: 18px; padding: 18px 20px; color: #07162d; font-size: 15px; font-weight: 700; perspective: 500px; }
+.platform-marquee-group .brand-platform-mark { width: 76px; height: 76px; flex: 0 0 76px; border: 1px solid #ffffff; border-radius: 21px; background: linear-gradient(145deg, #ffffff 35%, #fff0cf); box-shadow: inset 0 2px 1px #fff, 0 2px 0 #e2c78c, 0 5px 0 #d5b777, 0 8px 0 #c5a56a, 0 13px 15px #8a642b30, 0 22px 30px #8a642b20; animation: platform-logo-float 5s ease-in-out infinite; }
+.platform-marquee-group .brand-platform-mark svg { filter: drop-shadow(0 2px 1px #07162d18); }
+.platform-marquee-group li:nth-child(2n) .brand-platform-mark { animation-delay: -1.7s; }
+.platform-marquee-group li:nth-child(3n) .brand-platform-mark { animation-delay: -3.3s; }
+.platform-marquee-note { margin: 0; padding: 0 24px; color: #655d50; font-size: 11px; line-height: 1.6; }
+@keyframes platform-marquee-scroll { to { transform: translateX(-50%); } }
+@keyframes platform-logo-float { 0%, 100% { transform: translateY(2px) rotateX(5deg) rotateY(-7deg); } 50% { transform: translateY(-4px) rotateX(-4deg) rotateY(7deg); } }
+@media (max-width: 760px) {
+  .platform-marquee { margin-top: 0; }
+  .platform-marquee-heading { padding-inline: 16px; }
+  .platform-marquee-group li { width: 274px; padding: 12px; gap: 14px; }
+  .platform-marquee-note { padding-inline: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .platform-marquee-track { width: 100%; animation: none; transform: none; }
+  .platform-marquee-group .brand-platform-mark, .platform-marquee-name { animation: none; transform: none; }
+  .platform-marquee-group { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); padding: 0 16px; }
+  .platform-marquee-group li { width: auto; min-width: 0; }
+  .platform-marquee-group[aria-hidden="true"] { display: none; }
+}
+.platform-marquee:focus-visible { outline: 2px solid #755518; outline-offset: 3px; }
+.platform-marquee-group li { --platform-ink: #a42679; --platform-edge: #692150; }
+.platform-marquee-group li:nth-child(2), .platform-marquee-group li:nth-child(5) { --platform-ink: #075dc4; --platform-edge: #123b78; }
+.platform-marquee-group li:nth-child(3) { --platform-ink: #182a35; --platform-edge: #086c72; }
+.platform-marquee-group li:nth-child(4), .platform-marquee-group li:nth-child(6) { --platform-ink: #c71e35; --platform-edge: #811c2e; }
+.platform-marquee-name { display: inline-block; white-space: nowrap; color: var(--platform-ink); font-size: 28px; font-weight: 900; line-height: 1.25; letter-spacing: -.7px; text-shadow: 0 -1px 0 #fff, 0 1px 0 var(--platform-edge), 0 2px 0 var(--platform-edge), 0 3px 0 var(--platform-edge), 0 4px 0 #fff5d8, 0 6px 3px #72511e30, 0 10px 9px #72511e24; animation: platform-word-float 5s ease-in-out infinite; }
+@keyframes platform-word-float { 0%, 100% { transform: translateY(2px) rotateY(-5deg); } 50% { transform: translateY(-4px) rotateY(5deg); } }
+@media (max-width: 760px) {
+  .platform-marquee-group .brand-platform-mark { width: 68px; height: 68px; flex-basis: 68px; }
+  .platform-marquee-name { font-size: 26px; }
+}
+@media (prefers-reduced-motion: reduce) { .platform-marquee-name { animation: none; transform: none; } }

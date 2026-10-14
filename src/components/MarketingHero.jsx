@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { ArrowUpRight, Check, ArrowRight } from 'lucide-react';
 import PlatformMark from './PlatformMark';
+import PlatformMarquee from './PlatformMarquee';
 
 export default function MarketingHero() {
   return <>
@@ -34,11 +35,7 @@ export default function MarketingHero() {
         </article>
       </div>
     </section>
-    <section className="editorial-platform-strip" aria-label="Examples of platforms available for planning">
-      <p>One direction.<br /><strong>Made for your channels.</strong></p>
-      <div>{['Instagram', 'Facebook', 'TikTok', 'YouTube', 'LinkedIn', 'Pinterest'].map(name => <span key={name}><PlatformMark platform={name} size={25} /><span>{name}</span></span>)}</div>
-      <small>Planning & drafts.<br />Connections depend on provider availability.</small>
-    </section>
+    <PlatformMarquee />
     <section className="editorial-workspace-intro">
       <div><p className="eyebrow">A home for every brand</p><h2>Your sources in.<br /><em>Your story comes together.</em></h2></div>
       <p>Start with the source. Review the AI analysis. Shape the direction before choosing channels and creating content. Explore the fictional pod below.</p>

@@ -157,6 +157,9 @@ body { background: #F7F2E8; }
   .pod-post-card .pod-post-photo { height: 350px; }
   .editorial-pod-setup .card-form, .editorial-pod-setup .section-header, .editorial-pod-library .section-header { padding: 22px; }
 }
+@media (max-width: 360px) {
+  .campaign-channel-card { right: 10px; }
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
