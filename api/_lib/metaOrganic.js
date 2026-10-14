@@ -16,6 +16,11 @@ export const META_ORGANIC_SCOPES = Object.freeze(['instagram_basic', 'pages_show
 export const META_FACEBOOK_PAGE_SCOPES = Object.freeze(['pages_show_list']);
 export const META_ORGANIC_CONTRACT_VERSION = 'meta_organic_facebook_login_selection_v2';
 export const META_ORGANIC_PROVENANCE = 'meta_organic_server_v1';
+export const META_PUBLISH_CONNECTION_CONTRACT = 'meta_organic_facebook_login_publish_selection_v1';
+const PUBLISH_CONNECTION_SCOPES = Object.freeze({
+  facebook: Object.freeze(['pages_show_list', 'pages_manage_posts', 'pages_read_engagement']),
+  instagram: Object.freeze(['instagram_basic', 'pages_show_list', 'instagram_content_publish', 'pages_read_engagement']),
+});
 export const META_STATE_TTL_MS = 10 * 60 * 1000;
 export const META_SELECTION_TTL_MS = 10 * 60 * 1000;
 export const META_OAUTH_COOKIE = 'dovroyn_meta_oauth';
@@ -90,6 +95,7 @@ export function getMetaOrganicConfig(env = process.env) {
     encryptionKeyVersion,
     cookieSecret,
     activationEnabled,
+    publishConnectionsEnabled: env.META_ORGANIC_PUBLISH_CONNECTIONS_ENABLED === 'true',
     configured,
     scopes: [...META_ORGANIC_SCOPES],
     loginRoute: META_LOGIN_ROUTE,
@@ -122,11 +128,17 @@ export function createStateRecord({
   podId,
   redirectUri,
   requestedProviderKey = META_PROVIDER_KEY,
-  requiredScopes = META_ORGANIC_SCOPES,
+  connectionIntent = 'discovery',
+  requiredScopes,
   now = Date.now(),
   random = randomToken,
 } = {}) {
   if (!userId || !podId || !redirectUri) throw new Error('OAuth state requires user, pod and redirect URI.');
+  connectionIntent = normalizeConnectionIntent(connectionIntent);
+  const provider = normalizeProviderKey(requestedProviderKey);
+  if (!provider) throw Object.assign(new Error('Meta provider is invalid.'), { status: 400, code: 'account_unavailable' });
+  requiredScopes = requiredScopes || requiredScopesForProvider(provider, connectionIntent);
+  validateScopeContract(requiredScopes, provider, connectionIntent);
   const state = random();
   const browserNonce = random();
   if (!STATE_PATTERN.test(state) || !COOKIE_NONCE_PATTERN.test(browserNonce)) throw new Error('Generated OAuth state is invalid.');
@@ -138,7 +150,8 @@ export function createStateRecord({
     userId,
     podId,
     redirectUri,
-    requestedProviderKey: normalizeProviderKey(requestedProviderKey) || META_PROVIDER_KEY,
+    requestedProviderKey: provider,
+    connectionIntent,
     requiredScopes: [...requiredScopes],
     expiresAt: new Date(now + META_STATE_TTL_MS).toISOString(),
     expiresUnix: Math.floor((now + META_STATE_TTL_MS) / 1000),
@@ -237,7 +250,8 @@ export async function assertMetaOrganicReady(config = getMetaOrganicConfig(), de
 export async function createOAuthState(record, deps = {}) {
   const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
   if (!deps.rpcWithServiceRole) requireServiceStorage();
-  await rpc('create_meta_organic_oauth_state', {
+  const intent = normalizeConnectionIntent(record.connectionIntent);
+  await rpc(intent === 'publish' ? 'create_meta_organic_publish_oauth_state' : 'create_meta_organic_oauth_state', {
     p_state_hash: record.stateHash,
     p_browser_binding_hash: record.browserBindingHash,
     p_user_id: record.userId,
@@ -289,7 +303,8 @@ export async function listMetaConnections(userId, podId, deps = {}) {
 export async function createPendingMetaSelection(selection, deps = {}) {
   const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
   if (!deps.rpcWithServiceRole) requireServiceStorage();
-  await rpc('create_meta_organic_pending_selection', {
+  const intent = normalizeConnectionIntent(selection.connectionIntent);
+  await rpc(intent === 'publish' ? 'create_meta_organic_publish_pending_selection' : 'create_meta_organic_pending_selection', {
     p_selection_hash: selection.selectionHash,
     p_user_id: selection.userId,
     p_pod_id: selection.podId,
@@ -299,6 +314,7 @@ export async function createPendingMetaSelection(selection, deps = {}) {
     p_encrypted_access_token: selection.encryptedAccessToken,
     p_encrypted_candidates: selection.encryptedCandidates,
     p_encryption_key_version: selection.encryptionKeyVersion,
+    ...(intent === 'publish' ? { p_requested_provider: selection.requestedProviderKey } : {}),
   });
 }
 
@@ -446,10 +462,39 @@ export function validateGrantedScopes(grantedScopes, requiredScopes = META_ORGAN
   }
 }
 
-export function requiredScopesForProvider(provider) {
+export function normalizeConnectionIntent(intent = 'discovery') {
+  if (intent === undefined || intent === null) return 'discovery';
+  if (!['discovery', 'publish'].includes(intent)) {
+    throw Object.assign(new Error('Meta connection intent is invalid.'), { status: 400, code: 'connection_unavailable' });
+  }
+  return intent;
+}
+
+export function requiredScopesForProvider(provider, connectionIntent = 'discovery') {
+  const intent = normalizeConnectionIntent(connectionIntent);
+  if (intent === 'publish') return [...(PUBLISH_CONNECTION_SCOPES[provider] || [])];
   if (provider === META_FACEBOOK_PROVIDER_KEY) return [...META_FACEBOOK_PAGE_SCOPES];
   if (provider === META_PROVIDER_KEY) return [...META_ORGANIC_SCOPES];
   return [];
+}
+
+function validateScopeContract(scopes, provider, intent) {
+  const required = requiredScopesForProvider(provider, intent);
+  if (!required.length || !Array.isArray(scopes) || scopes.length !== required.length
+    || !required.every(scope => scopes.includes(scope))) {
+    throw Object.assign(new Error('Meta connection intent scope contract is invalid.'), { status: 403, code: 'missing_scope' });
+  }
+  return required;
+}
+
+export async function assertMetaPublishingConnectionReady(config = getMetaOrganicConfig(), deps = {}) {
+  assertProviderSetupReady(config);
+  if (config.publishConnectionsEnabled !== true) throw readinessError('Meta publishing connections have not been enabled.');
+  const rpc = deps.rpcWithServiceRole || rpcWithServiceRole;
+  if (!deps.rpcWithServiceRole) requireServiceStorage();
+  const payload = await rpc('get_meta_organic_connection_readiness', {});
+  if (!validReadiness(payload, config) || payload.publish_connection_ready !== true
+    || payload.publish_connection_contract_version !== META_PUBLISH_CONNECTION_CONTRACT) throw readinessError();
 }
 
 export function filterRequiredScopes(grantedScopes, requiredScopes) {
@@ -492,6 +537,10 @@ export async function loadInstagramAccount(accessToken, deps = {}) {
 export async function discoverMetaAccountCandidates(accessToken, deps = {}) {
   const pages = [];
   let after = '';
+  const intent = normalizeConnectionIntent(deps.connectionIntent);
+  const publishing = intent === 'publish';
+  const requiredScopes = publishing ? validateScopeContract(deps.requiredScopes,
+    deps.requestedProviderKey, intent) : null;
   const includeInstagram = deps.includeInstagram !== false;
   for (let page = 0; page < 10; page += 1) {
     const payload = await graphGet('/me/accounts', {
@@ -504,16 +553,31 @@ export async function discoverMetaAccountCandidates(accessToken, deps = {}) {
       if (!pageId) continue;
       const pageLabel = sanitizeAccountLabel(item?.name || pageId);
       let instagramId = '';
-      if (includeInstagram) {
-        const pagePayload = await graphGet(`/${pageId}`, {
-          fields: 'instagram_business_account',
-        }, accessToken, deps);
+      const pageAccessToken = typeof item?.access_token === 'string' ? item.access_token : '';
+      const publishCredential = publishing
+        ? await verifyPagePublishingCredential(pageId, pageAccessToken, requiredScopes, deps) : null;
+      if (includeInstagram || publishing) {
+        const pagePayload = await graphGet('/' + pageId, {
+          fields: publishing ? (includeInstagram ? 'id,instagram_business_account' : 'id') : 'instagram_business_account',
+        }, publishing ? pageAccessToken : accessToken, deps);
+        if (publishing && sanitizeProviderAccountId(pagePayload?.id) !== pageId) {
+          throw Object.assign(new Error('Page credential identity does not match the enumerated Page.'), { status: 403, code: 'account_unavailable' });
+        }
         instagramId = sanitizeProviderAccountId(pagePayload?.instagram_business_account?.id);
+        if (publishCredential) publishCredential.linkedInstagramAccountId = instagramId || null;
+      }
+      const previous = pages.find(candidate => candidate.id === pageId);
+      if (publishing && previous) {
+        if ((previous.instagramAccount?.id || '') !== instagramId || previous.pageAccessToken !== pageAccessToken) {
+          throw Object.assign(new Error('Page account credentials or linkage are inconsistent.'), { status: 409, code: 'account_ambiguous' });
+        }
+        continue;
       }
       pages.push({
         id: pageId,
         label: pageLabel,
-        pageAccessToken: typeof item?.access_token === 'string' ? item.access_token : '',
+        pageAccessToken,
+        ...(publishCredential ? { publishCredential } : {}),
         instagramAccount: instagramId ? {
           id: instagramId,
           label: sanitizeAccountLabel(`${pageLabel} Instagram (${instagramId})`),
@@ -534,6 +598,9 @@ export async function discoverMetaAccountCandidates(accessToken, deps = {}) {
   const instagramAccounts = pages
     .map((page) => page.instagramAccount)
     .filter(Boolean);
+  if (publishing && new Set(instagramAccounts.map(account => account.id)).size !== instagramAccounts.length) {
+    throw Object.assign(new Error('Instagram account linkage is ambiguous.'), { status: 409, code: 'account_ambiguous' });
+  }
   if (pages.length === 0 && instagramAccounts.length === 0) {
     const error = new Error('No page-linked Instagram professional account is available.');
     error.status = 422;
@@ -541,6 +608,44 @@ export async function discoverMetaAccountCandidates(accessToken, deps = {}) {
     throw error;
   }
   return { pages, instagramAccounts };
+}
+
+async function verifyPagePublishingCredential(pageId, pageToken, requiredScopes, deps) {
+  const config = deps.config || getMetaOrganicConfig();
+  const reject = () => { throw Object.assign(new Error('Meta Page publishing credential proof is invalid.'), { status: 403, code: 'account_unavailable' }); };
+  if (!pageToken) reject();
+  const payload = await graphGet('/debug_token', { input_token: pageToken }, config.appId + '|' + config.appSecret, deps);
+  const proof = payload?.data;
+  // profile_id is the impersonated Page identity; type is checked when supplied.
+  // No undocumented granular_scopes shape is required.
+  if (proof?.is_valid !== true || String(proof.app_id) !== config.appId
+    || sanitizeProviderAccountId(proof.profile_id) !== pageId
+    || (proof.type !== undefined && proof.type !== 'PAGE')) reject();
+  validateGrantedScopes(proof.scopes, requiredScopes);
+  const expiries = [proof.expires_at, proof.data_access_expires_at].filter(value => value !== undefined);
+  if (proof.expires_at === undefined || expiries.some(value => !Number.isInteger(value) || value < 0)) reject();
+  const deadlines = expiries.filter(value => value > 0).map(value => value * 1000);
+  const userDeadline = Date.parse(deps.tokenExpiresAt);
+  if (Number.isFinite(userDeadline)) deadlines.push(userDeadline);
+  const expiry = Math.min(...deadlines);
+  if (!Number.isFinite(expiry) || expiry <= Date.now() + 60_000) reject();
+  return {
+    source: 'meta_page_token_debug_v1', appId: config.appId, pageId, tokenKind: 'page',
+    tokenHash: sha256Hex(pageToken), grantedScopes: filterRequiredScopes(proof.scopes, requiredScopes),
+    expiresAt: new Date(expiry).toISOString(), verifiedAt: new Date().toISOString(),
+  };
+}
+
+function requireStoredPageProof(page, scopes, config) {
+  const proof = page?.publishCredential;
+  if (!page?.pageAccessToken || proof?.source !== 'meta_page_token_debug_v1'
+    || proof.appId !== config.appId || proof.pageId !== page.id || proof.tokenKind !== 'page'
+    || proof.tokenHash !== sha256Hex(page.pageAccessToken)
+    || !Number.isFinite(Date.parse(proof.expiresAt)) || Date.parse(proof.expiresAt) <= Date.now() + 60_000) {
+    throw Object.assign(new Error('Verified Page publishing credential is required.'), { status: 403, code: 'account_unavailable' });
+  }
+  validateGrantedScopes(proof.grantedScopes, scopes);
+  return proof;
 }
 
 function decodeEncryptionKey(raw) {
@@ -575,6 +680,8 @@ export function createSelectionRecord({
   tokenExpiresAt,
   grantedScopes,
   candidates,
+  connectionIntent = 'discovery',
+  requestedProviderKey = META_PROVIDER_KEY,
   now = Date.now(),
   random = randomToken,
   config = getMetaOrganicConfig(),
@@ -591,6 +698,8 @@ export function createSelectionRecord({
     expiresAt: new Date(now + META_SELECTION_TTL_MS).toISOString(),
     tokenExpiresAt,
     grantedScopes,
+    connectionIntent: normalizeConnectionIntent(connectionIntent),
+    requestedProviderKey,
     encryptedAccessToken: encrypt(token, config),
     encryptedCandidates: encrypt(JSON.stringify(sanitizeMetaCandidates(candidates, { includeCredentials: true })), config),
     encryptionKeyVersion: config.encryptionKeyVersion,
@@ -625,6 +734,7 @@ export function sanitizeMetaCandidates(candidates = {}, { includeCredentials = f
     if (includeCredentials && typeof item.pageAccessToken === 'string' && item.pageAccessToken) {
       page.pageAccessToken = item.pageAccessToken;
       page.pageCredentialAvailable = true;
+      if (item.publishCredential && typeof item.publishCredential === 'object') page.publishCredential = { ...item.publishCredential };
     }
     const instagramId = sanitizeProviderAccountId(item.instagramAccount?.id);
     if (instagramId) {
@@ -650,7 +760,8 @@ export function normalizeConnection(connection, now = Date.now()) {
   const hasValidFutureExpiry = Boolean(expiresAt) && Number.isFinite(expiresMillis) && expiresMillis > now;
   const provenance = connection.providerVerifiedSource || connection.provider_verified_source || null;
   const contractVersion = connection.providerContractVersion || connection.provider_contract_version || null;
-  const hasVerifiedProvenance = provenance === META_ORGANIC_PROVENANCE && contractVersion === META_ORGANIC_CONTRACT_VERSION;
+  const hasVerifiedProvenance = provenance === META_ORGANIC_PROVENANCE
+    && [META_ORGANIC_CONTRACT_VERSION, META_PUBLISH_CONNECTION_CONTRACT].includes(contractVersion);
   const status = rawStatus === 'connected'
     ? (!hasVerifiedProvenance ? 'reconnect_required' : (!hasValidFutureExpiry ? 'expired' : 'connected'))
     : rawStatus;
@@ -666,6 +777,7 @@ export function normalizeConnection(connection, now = Date.now()) {
     updatedAt: connection.updatedAt || connection.updated_at || null,
     providerVerifiedSource: provenance,
     providerContractVersion: contractVersion,
+    connectionIntent: connection.connectionIntent || connection.connection_intent || 'discovery',
   };
 }
 
@@ -734,6 +846,17 @@ export function buildAtomicSelectionCommit({
   decrypt = decryptProviderPayload,
   encrypt = encryptProviderToken,
 } = {}) {
+  const intent = normalizeConnectionIntent(record.connection_intent ?? record.connectionIntent);
+  const requestedProvider = record.requested_provider || record.requestedProviderKey || META_PROVIDER_KEY;
+  const recordUserId = record.user_id || record.userId;
+  const recordPodId = record.pod_id || record.podId;
+  // Discovery v2 omits these fields, but its server RPC lookup and commit bind both.
+  // Publishing requires the new explicit returned identity proof.
+  if ((intent === 'publish' && (!recordUserId || !recordPodId))
+    || (recordUserId && recordUserId !== userId) || (recordPodId && recordPodId !== podId)) {
+    throw Object.assign(new Error('Meta selection owner/pod context is invalid.'), { status: 403, code: 'account_unavailable' });
+  }
+  if (intent === 'publish' && config.publishConnectionsEnabled !== true) throw readinessError('Meta publishing connections have not been enabled.');
   const candidates = decryptPendingCandidates(record, config, decrypt);
   const selected = findSelectedCandidate(candidates, { selectedFacebookPageId, selectedInstagramAccountId });
   const userAccessToken = decrypt(record.encrypted_access_token || record.encryptedAccessToken, config);
@@ -746,8 +869,29 @@ export function buildAtomicSelectionCommit({
     error.code = 'expired_state';
     throw error;
   }
-  const facebookRequired = requiredScopesForProvider(META_FACEBOOK_PROVIDER_KEY);
-  const instagramRequired = requiredScopesForProvider(META_PROVIDER_KEY);
+  const facebookRequired = requiredScopesForProvider(META_FACEBOOK_PROVIDER_KEY, intent);
+  const instagramRequired = requiredScopesForProvider(META_PROVIDER_KEY, intent);
+  let publishingPage;
+  let publishingProof;
+  if (intent === 'publish') {
+    const required = validateScopeContract(grantedScopes, requestedProvider, intent);
+    if ((requestedProvider === 'instagram' && (selected.page || !selected.instagram))
+      || (requestedProvider === 'facebook' && (selected.instagram || !selected.page))) {
+      throw Object.assign(new Error('Selected account does not match the publishing provider intent.'), { status: 403, code: 'account_unavailable' });
+    }
+    publishingPage = selected.page || candidates.pages.find(page => page.id === selected.instagram?.pageId
+      && page.instagramAccount?.id === selected.instagram.id);
+    publishingProof = requireStoredPageProof(publishingPage, required, config);
+    if (selected.instagram && publishingProof.linkedInstagramAccountId !== selected.instagram.id) {
+      throw Object.assign(new Error('Page credential proof does not match the selected Instagram account.'), { status: 403, code: 'account_unavailable' });
+    }
+  }
+  const publishMetadata = intent === 'publish' ? {
+    connectionIntent: intent, providerContractVersion: META_PUBLISH_CONNECTION_CONTRACT,
+    providerVerifiedSource: META_ORGANIC_PROVENANCE,
+    linkedFacebookPageId: publishingPage.id,
+    credentialProof: publishingProof,
+  } : {};
   if (selected.page && !selected.page.pageAccessToken) {
     const error = new Error('Selected Facebook Page did not return a Page credential. Choose Instagram only or reconnect Meta.');
     error.status = 422;
@@ -763,8 +907,9 @@ export function buildAtomicSelectionCommit({
       providerAccountId: selected.page.id,
       accountLabel: selected.page.label,
       grantedScopes: filterRequiredScopes(grantedScopes, facebookRequired),
-      expiresAt,
+      expiresAt: intent === 'publish' ? publishingProof.expiresAt : expiresAt,
       tokenKind: 'page',
+      ...publishMetadata,
       encryptedAccessToken: encrypt(selected.page.pageAccessToken, config),
       encryptionKeyVersion: config.encryptionKeyVersion,
     } : null,
@@ -774,9 +919,10 @@ export function buildAtomicSelectionCommit({
       accountLabel: selected.instagram.label,
       linkedFacebookPageId: selected.instagram.pageId,
       grantedScopes: filterRequiredScopes(grantedScopes, instagramRequired),
-      expiresAt,
-      tokenKind: 'user',
-      encryptedAccessToken: encrypt(userAccessToken, config),
+      expiresAt: intent === 'publish' ? publishingProof.expiresAt : expiresAt,
+      tokenKind: intent === 'publish' ? 'page' : 'user',
+      ...publishMetadata,
+      encryptedAccessToken: encrypt(intent === 'publish' ? publishingPage.pageAccessToken : userAccessToken, config),
       encryptionKeyVersion: config.encryptionKeyVersion,
     } : null,
   };
@@ -800,15 +946,18 @@ export async function completeMetaCallback({ code, state, errorCode, cookieHeade
   }
   try {
     const requestedProvider = normalizeProviderKey(consumed.requested_provider || consumed.requestedProvider) || META_PROVIDER_KEY;
-    const trustedRequiredScopes = Array.isArray(consumed.required_scopes || consumed.requiredScopes)
-      ? (consumed.required_scopes || consumed.requiredScopes)
-      : requiredScopesForProvider(requestedProvider);
+    const intent = normalizeConnectionIntent(consumed.connection_intent ?? consumed.connectionIntent);
+    const trustedRequiredScopes = consumed.required_scopes || consumed.requiredScopes || requiredScopesForProvider(requestedProvider, intent);
+    validateScopeContract(trustedRequiredScopes, requestedProvider, intent);
+    if (intent === 'publish') await assertMetaPublishingConnectionReady(config, deps);
     const token = await exchangeCodeForUserToken(code, consumed.redirect_uri, deps);
     const grantedScopes = await loadGrantedScopes(token.accessToken, deps);
     const filteredScopes = filterRequiredScopes(grantedScopes, trustedRequiredScopes);
     const candidates = await discoverMetaAccountCandidates(token.accessToken, {
       ...deps,
       includeInstagram: trustedRequiredScopes.includes('instagram_basic'),
+      connectionIntent: intent, requestedProviderKey: requestedProvider,
+      requiredScopes: trustedRequiredScopes, tokenExpiresAt: token.expiresAt,
     });
     const selectionRecord = createSelectionRecord({
       userId: consumed.user_id,
@@ -816,6 +965,8 @@ export async function completeMetaCallback({ code, state, errorCode, cookieHeade
       token: token.accessToken,
       tokenExpiresAt: token.expiresAt,
       grantedScopes: filteredScopes,
+      connectionIntent: intent,
+      requestedProviderKey: requestedProvider,
       candidates,
       config,
       encrypt: deps.encryptProviderToken || encryptProviderToken,
@@ -853,6 +1004,9 @@ export async function selectMetaAccounts({ selectionId, userId, podId, selectedF
     error.status = 404;
     error.code = 'expired_state';
     throw error;
+  }
+  if (normalizeConnectionIntent(record.connection_intent ?? record.connectionIntent) === 'publish') {
+    await assertMetaPublishingConnectionReady(config, deps);
   }
   const commit = buildAtomicSelectionCommit({
     selectionId,

@@ -660,8 +660,8 @@ test('atomic selection commit leaves rollback and exactly-once replay guarantees
   const sql = readFileSync(new URL('../supabase/proposed-migrations/20261012000000_proposed_meta_organic_connection_cutover.sql', import.meta.url), 'utf8');
   assert.match(sql, /commit_meta_organic_account_selection/);
   assert.match(sql, /FOR UPDATE/);
-  assert.match(sql, /private\.meta_store_connection\(p_user_id, p_pod_id, p_facebook_page\)/);
-  assert.match(sql, /private\.meta_store_connection\(p_user_id, p_pod_id, p_instagram_account\)/);
+  assert.match(sql, /private\.meta_store_connection\(p_user_id, p_pod_id, p_facebook_page, pending\.connection_intent\)/);
+  assert.match(sql, /private\.meta_store_connection\(p_user_id, p_pod_id, p_instagram_account, pending\.connection_intent\)/);
   assert.match(sql, /DELETE FROM private\.meta_organic_pending_selections/);
   assert.doesNotMatch(sql, /REVOKE ALL ON SCHEMA private/);
   assert.equal(selectionHash.length, 64);

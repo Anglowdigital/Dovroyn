@@ -258,5 +258,5 @@ test('content UI gates exact Meta artwork review to Meta posts with available sa
   assert.match(source, /<CreativeReview canReviewExactMetaArtwork=\{canReviewExactMetaArtwork\}/);
   assert.doesNotMatch(source, /canReviewExactMetaArtwork \? <CreativeReview/);
   assert.match(source, /This platform is planning-only in this release/);
-  assert.match(source, /aria-label=\{account\.accountLabel\}/);
+  assert.match(source, /aria-label=\{choiceLabel\}/);
 });

@@ -1,3 +1,4 @@
+import { normalizeAccountTarget } from './podState.js';
 export const META_ORGANIC_PROVIDER = 'instagram';
 export const META_FACEBOOK_PROVIDER = 'facebook';
 export const META_PROVIDERS = [META_ORGANIC_PROVIDER, META_FACEBOOK_PROVIDER];
@@ -17,9 +18,10 @@ export function isMetaOrganicProvider(provider) {
   return META_PROVIDERS.includes(String(provider || '').toLowerCase());
 }
 
-export async function initiateMetaOrganicConnection({ accessToken, podId, providerKey = META_ORGANIC_PROVIDER, target = globalThis }) {
+export async function initiateMetaOrganicConnection({ accessToken, podId, providerKey = META_ORGANIC_PROVIDER, connectionIntent = 'discovery', target = globalThis }) {
   if (!accessToken) throw new Error('Sign in before connecting Meta.');
   if (!podId) throw new Error('Choose a pod before connecting Meta.');
+  if (!['discovery', 'publish'].includes(connectionIntent)) throw new Error('Choose a valid Meta connection purpose.');
   const provider = isMetaOrganicProvider(providerKey) ? providerKey : META_ORGANIC_PROVIDER;
   const response = await fetch('/api/integrations/meta/connect', {
     method: 'POST',
@@ -30,6 +32,7 @@ export async function initiateMetaOrganicConnection({ accessToken, podId, provid
     body: JSON.stringify({
       podId,
       providerKey: provider,
+      connectionIntent,
       idempotencyKey: idempotencyKey(provider, podId, target),
     }),
   });
@@ -144,4 +147,42 @@ export function summarizeMetaConnection(status = {}, provider = META_ORGANIC_PRO
   const failed = connections.find((connection) => connection.provider === provider && ['expired', 'revoked', 'error', 'reconnect_required'].includes(connection.status));
   if (failed) return { status: failed.status, label: 'Reconnect required' };
   return { status: 'setup-ready', label: 'Official Meta sign-in available' };
+}
+
+export function metaAccountTargetKey(account) {
+  const provider = account?.provider || '';
+  return provider + ':' + (account?.accountConnectionId
+    ? 'connection:' + account.accountConnectionId : 'legacy:' + (account?.providerAccountId || ''));
+}
+
+export function resolveMetaAccountTargets(targets, accounts) {
+  return (Array.isArray(targets) ? targets : []).flatMap(target => {
+    const matches = (Array.isArray(accounts) ? accounts : []).filter(account =>
+      account.provider === target?.provider && account.providerAccountId === target?.providerAccountId
+      && (!target.accountConnectionId || account.accountConnectionId === target.accountConnectionId));
+    if (matches.length !== 1) return [];
+    // A legacy discovery snapshot is never implicitly promoted to publishing access.
+    if (!target.accountConnectionId && matches[0].connectionIntent === 'publish') return [];
+    return [normalizeAccountTarget(matches[0])];
+  });
+}
+
+export function toggleMetaAccountTarget(existing, accounts, connectionId, checked) {
+  const matches = accounts.filter(account => account.accountConnectionId
+    ? account.accountConnectionId === connectionId : account.providerAccountId === connectionId);
+  if (matches.length !== 1) throw new Error('Choose a current account connection before saving.');
+  const target = matches[0];
+  if (checked) {
+    // Selecting a different connection for the same account is explicit; never select both.
+    return [...existing.filter(account => account.provider !== target.provider
+      || account.providerAccountId !== target.providerAccountId), normalizeAccountTarget(target)];
+  }
+  return existing.filter(account => !resolveMetaAccountTargets([account], accounts)
+    .some(current => metaAccountTargetKey(current) === metaAccountTargetKey(target)));
+}
+
+export function metaAccountChoiceLabel(account, distinguish = false) {
+  if (!distinguish) return account.accountLabel;
+  return account.accountLabel + (account.connectionIntent === 'publish'
+    ? ' · Publishing access' : ' · Account discovery');
 }

@@ -36,7 +36,7 @@ import { getPlatform, getPlanningPlatforms } from '../lib/platforms';
 import { MAX_BRAND_PHOTOS, POD_SOURCE_TYPES, sourceNeedsUrl, validatePodSetup } from '../lib/podSetup';
 import { askPodAssistant, requestCompetitorSnapshot, requestPodAnalysis, requestSocialContent } from '../lib/aiClient';
 import { canMutatePod, DEMO_WORKSPACE, getNextDemoTab } from '../lib/demoPod';
-import { confirmMetaCalendarPublishingReview, initiateMetaOrganicConnection, isMetaOrganicProvider, loadMetaAccountSelection, loadMetaConnectionStatus, prepareMetaCalendarPublishingReview, selectMetaAccounts, summarizeMetaConnection } from '../lib/metaOrganic';
+import { confirmMetaCalendarPublishingReview, initiateMetaOrganicConnection, isMetaOrganicProvider, metaAccountChoiceLabel, metaAccountTargetKey, resolveMetaAccountTargets, toggleMetaAccountTarget, loadMetaAccountSelection, loadMetaConnectionStatus, prepareMetaCalendarPublishingReview, selectMetaAccounts, summarizeMetaConnection } from '../lib/metaOrganic';
 import {
   approvePodDirection,
   getAssetPreview,
@@ -189,7 +189,7 @@ function confirmSavedSocialPosts(expectedPosts, savedRows, podId) {
   });
 }
 
-const targetKey = (targets = []) => targets.map((target) => `${target.provider}:${target.providerAccountId}:${target.accountLabel}`).sort().join('|');
+const targetKey = (targets = []) => targets.map((target) => `${target.provider}:${target.providerAccountId}:${target.accountConnectionId || ''}:${target.accountLabel}`).sort().join('|');
 
 function preferenceValue(value) {
   if (typeof value !== 'string') return value;
@@ -670,24 +670,21 @@ function LivePodWorkspace({ session, subscription }) {
       providerAccountId: connection.providerAccountId,
       ...(connection.id ? { accountConnectionId: connection.id } : {}),
       accountLabel: connection.accountLabel,
+      connectionIntent: connection.connectionIntent || 'discovery',
     }));
   const selectedTargetsFor = (platformKey) => Array.isArray(accountTargetSelection[platformKey]) ? accountTargetSelection[platformKey] : (accountTargetSelection[platformKey] ? [accountTargetSelection[platformKey]] : []);
-  const currentTargetsFor = (platformKey) => {
-    const current = new Map(connectedAccountsFor(platformKey).map((account) => [account.providerAccountId, account]));
-    return selectedTargetsFor(platformKey).flatMap((target) => current.get(target.providerAccountId) || []);
-  };
-  const targetIsCurrent = (target) => Boolean(target && connectedAccountsFor(target.provider).some((account) => account.providerAccountId === target.providerAccountId));
+  const currentTargetsFor = (platformKey) => resolveMetaAccountTargets(
+    selectedTargetsFor(platformKey), connectedAccountsFor(platformKey));
+  const targetIsCurrent = (target) => Boolean(target && resolveMetaAccountTargets([target], connectedAccountsFor(target.provider)).length === 1);
 
-  const saveAccountTarget = async (platformKey, providerAccountId, checked) => {
+  const saveAccountTarget = async (platformKey, accountConnectionId, checked) => {
     if (!beginAction() || actionPending('operational')) return;
-    const target = connectedAccountsFor(platformKey).find((account) => account.providerAccountId === providerAccountId) || null;
-    if (!target) return;
+    const accounts = connectedAccountsFor(platformKey);
+    if (!accounts.some(account => (account.accountConnectionId || account.providerAccountId) === accountConnectionId)) return;
     const previous = accountTargetSelection;
     const next = { ...accountTargetSelection };
     const existing = selectedTargetsFor(platformKey);
-    const selected = checked
-      ? [...existing.filter((account) => account.providerAccountId !== target.providerAccountId), target]
-      : existing.filter((account) => account.providerAccountId !== target.providerAccountId);
+    const selected = toggleMetaAccountTarget(existing, accounts, accountConnectionId, checked);
     if (selected.length) next[platformKey] = selected;
     else delete next[platformKey];
     await saveOperational('account-targets', async (isCurrent) => {
@@ -1360,8 +1357,8 @@ function LivePodWorkspace({ session, subscription }) {
                 const connectionSummary = isMetaOrganicProvider(platform.key) ? summarizeMetaConnection(metaConnectionStatus, platform.key) : null;
                 const connectedAccounts = isMetaOrganicProvider(platform.key) ? connectedAccountsFor(platform.key) : [];
                 const savedTargets = selectedTargetsFor(platform.key);
-                const selectedIds = new Set(currentTargetsFor(platform.key).map((account) => account.providerAccountId));
-                const unavailableTargets = savedTargets.filter((target) => !selectedIds.has(target.providerAccountId));
+                const selectedIds = new Set(currentTargetsFor(platform.key).map(metaAccountTargetKey));
+                const unavailableTargets = savedTargets.filter((target) => !resolveMetaAccountTargets([target], connectedAccounts).length);
                 return (
                   <label key={platform.key} className={`pod-platform-select${selected ? ' selected' : ''}`}>
                     <input type="checkbox" checked={selected} disabled={Boolean(operationalMutation)} onChange={() => togglePlatform(platform.key)} />
@@ -1370,7 +1367,10 @@ function LivePodWorkspace({ session, subscription }) {
                       {selected && unavailableTargets.length > 0 && <small>{unavailableTargets.map((target) => target.accountLabel).join(' · ')} saved previously · unavailable for new drafts</small>}
                       {selected && connectedAccounts.length > 0 && <fieldset className="pod-account-targets" onClick={(event) => event.stopPropagation()}>
                         <legend>Draft targets</legend>
-                        {connectedAccounts.map((account) => <span key={account.providerAccountId}><input type="checkbox" aria-label={account.accountLabel} checked={selectedIds.has(account.providerAccountId)} disabled={Boolean(operationalMutation)} onChange={(event) => saveAccountTarget(platform.key, account.providerAccountId, event.target.checked)} />{account.accountLabel}</span>)}
+                        {connectedAccounts.map((account) => {
+                          const choiceLabel = metaAccountChoiceLabel(account, connectedAccounts.filter(candidate => candidate.providerAccountId === account.providerAccountId).length > 1);
+                          return <span key={metaAccountTargetKey(account)}><input type="checkbox" aria-label={choiceLabel} checked={selectedIds.has(metaAccountTargetKey(account))} disabled={Boolean(operationalMutation)} onChange={(event) => saveAccountTarget(platform.key, account.accountConnectionId || account.providerAccountId, event.target.checked)} />{choiceLabel}</span>;
+                        })}
                       </fieldset>}
                     </div>
                     {selected && <button className="button button-ghost button-sm" type="button" disabled={connectionMutation === platform.key || connectionSummary?.status === 'unavailable'} onClick={(event) => { event.preventDefault(); connectPlatform(platform); }}>{connectionMutation === platform.key ? 'Opening…' : connectionSummary?.status === 'unavailable' ? 'Unavailable' : connectionSummary?.status === 'connected' ? 'Reconnect' : 'Connect account'}</button>}
