@@ -740,16 +740,24 @@ BEGIN
         RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED';
       END IF;
 
-      SELECT * INTO connection
-      FROM private.meta_organic_connections
-      WHERE user_id = p_user_id
-        AND pod_id = p_pod_id
-        AND provider = target_provider
-        AND provider_account_id = target_account_id
-        AND (target_connection_id IS NULL OR id = target_connection_id)
-        AND status = 'connected'
-        AND expires_at > now() + interval '1 minute';
-      IF NOT FOUND THEN RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED'; END IF;
+      -- Legacy ID-less targets may resolve only one eligible discovery connection.
+      -- STRICT makes ambiguity fail within this lookup, without a count/select race.
+      BEGIN
+        SELECT * INTO STRICT connection
+        FROM private.meta_organic_connections
+        WHERE user_id = p_user_id
+          AND pod_id = p_pod_id
+          AND provider = target_provider
+          AND provider_account_id = target_account_id
+          AND (target_connection_id IS NULL OR id = target_connection_id)
+          AND status = 'connected'
+          AND expires_at > now() + interval '1 minute';
+      EXCEPTION WHEN NO_DATA_FOUND OR TOO_MANY_ROWS THEN
+        RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED';
+      END;
+      IF target_connection_id IS NULL AND connection.connection_intent IS DISTINCT FROM 'discovery' THEN
+        RAISE EXCEPTION 'PUBLISH_ACCOUNT_CONTEXT_REQUIRED';
+      END IF;
 
       SELECT * INTO export_row
       FROM private.meta_organic_publish_exports
@@ -1980,18 +1988,26 @@ BEGIN
     RAISE EXCEPTION 'EXPORT_APPROVAL_ATTESTATION_REQUIRED';
   END IF;
 
-  SELECT * INTO connection
-  FROM private.meta_organic_connections
-  WHERE user_id = pod.user_id
-    AND pod_id = pod.id
-    AND provider = p_request->>'provider'
-    AND provider_account_id = p_request->>'providerAccountId'
-    AND status = 'connected'
-    AND (
-      nullif(p_request->>'accountConnectionId', '') IS NULL
-      OR id = (p_request->>'accountConnectionId')::uuid
-    );
-  IF NOT FOUND THEN RAISE EXCEPTION 'EXPORT_ACCOUNT_CONTEXT_REQUIRED'; END IF;
+  -- Supplied IDs remain exact; legacy fallback cannot choose or promote an intent.
+  BEGIN
+    SELECT * INTO STRICT connection
+    FROM private.meta_organic_connections
+    WHERE user_id = pod.user_id
+      AND pod_id = pod.id
+      AND provider = p_request->>'provider'
+      AND provider_account_id = p_request->>'providerAccountId'
+      AND status = 'connected'
+      AND (
+        nullif(p_request->>'accountConnectionId', '') IS NULL
+        OR id = (p_request->>'accountConnectionId')::uuid
+      );
+  EXCEPTION WHEN NO_DATA_FOUND OR TOO_MANY_ROWS THEN
+    RAISE EXCEPTION 'EXPORT_ACCOUNT_CONTEXT_REQUIRED';
+  END;
+  IF nullif(p_request->>'accountConnectionId', '') IS NULL
+    AND connection.connection_intent IS DISTINCT FROM 'discovery' THEN
+    RAISE EXCEPTION 'EXPORT_ACCOUNT_CONTEXT_REQUIRED';
+  END IF;
 
   SELECT coalesce(jsonb_agg(jsonb_build_object(
     'id', asset.id,

@@ -12,6 +12,7 @@ body { background: #F7F2E8; }
 .editorial-hero-copy { max-width: 650px; }
 .editorial-hero h1 { font-size: clamp(54px, 5.7vw, 83px); line-height: 1.06; letter-spacing: -.055em; margin: 24px 0; font-weight: 600; }
 .editorial-hero h1 em, .editorial-workspace-intro em { color: #896421; font-weight: 500; }
+.editorial-hero-tagline { font-size: 14px; line-height: 1.6; letter-spacing: .06em; color: #7a571d; margin: 0 0 24px; }
 .editorial-intro { max-width: 460px; font-size: 18px; line-height: 1.75; color: #4d5360; }
 .editorial-actions { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; margin: 30px 0 18px; }
 .editorial-actions .button { border-radius: 8px; padding: 17px 22px; background: #07162D; color: #fffdf8; box-shadow: 0 7px 16px #07162d15; }
@@ -118,7 +119,6 @@ body { background: #F7F2E8; }
   .landing-shell > .announcement-bar { margin: -28px 0 -20px; font-size: 10px; }
   .editorial-hero { grid-template-columns: 1fr; gap: 36px; padding: 10px 0 0; }
   .editorial-hero h1 { font-size: clamp(47px, 11.4vw, 76px); letter-spacing: -.05em; margin: 18px 0; }
-  .editorial-hero-copy .eyebrow { font-size: 9px; }
   .editorial-intro { font-size: 16px; }
   .editorial-actions { gap: 16px; margin: 24px 0 16px; }
   .editorial-actions .button { padding: 15px 18px; font-size: 12px; }
@@ -156,6 +156,9 @@ body { background: #F7F2E8; }
   .pod-post-list { grid-template-columns: 1fr; }
   .pod-post-card .pod-post-photo { height: 350px; }
   .editorial-pod-setup .card-form, .editorial-pod-setup .section-header, .editorial-pod-library .section-header { padding: 22px; }
+}
+@media (max-width: 360px) {
+  .campaign-channel-card { right: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }

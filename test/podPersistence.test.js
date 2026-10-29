@@ -12,6 +12,7 @@ import * as state from '../src/lib/podState.js';
 import * as calendarCreative from '../src/lib/calendarCreative.js';
 import * as learning from '../src/lib/podLearning.js';
 import * as lifecycle from '../src/lib/podLifecycle.js';
+import * as metaAccountClient from '../src/lib/metaOrganic.js';
 
 // Exercise the real Supabase query builder against a deterministic HTTP boundary.
 function database(seed = {}, { fail, empty, wait, failMessage } = {}) {
@@ -518,7 +519,7 @@ async function workspaceHarness(workspace, services = {}) {
     '../lib/podLifecycle': lifecycle,
     '../lib/plans': { getPlan }, '../lib/platforms': platforms, '../lib/podSetup': setup,
     '../lib/aiClient': services.ai || {}, '../lib/demoPod': demo, '../lib/podRepository': repository, '../lib/podState': state, '../lib/calendarCreative': calendarCreative, '../lib/podLearning': learning,
-    '../lib/metaOrganic': { initiateMetaOrganicConnection: async () => {}, isMetaOrganicProvider: (provider) => ['instagram', 'facebook'].includes(provider), loadMetaAccountSelection: async () => ({ pages: [], instagramAccounts: [] }), loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), selectMetaAccounts: async () => ({}), prepareMetaCalendarPublishingReview: async () => { throw new Error('Calendar publishing review unavailable.'); }, confirmMetaCalendarPublishingReview: async () => { throw new Error('Calendar publishing confirmation unavailable.'); }, summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }), ...(services.metaOrganic || {}) },
+    '../lib/metaOrganic': { metaAccountChoiceLabel: metaAccountClient.metaAccountChoiceLabel, metaAccountTargetKey: metaAccountClient.metaAccountTargetKey, resolveMetaAccountTargets: metaAccountClient.resolveMetaAccountTargets, toggleMetaAccountTarget: metaAccountClient.toggleMetaAccountTarget, initiateMetaOrganicConnection: async () => {}, isMetaOrganicProvider: (provider) => ['instagram', 'facebook'].includes(provider), loadMetaAccountSelection: async () => ({ pages: [], instagramAccounts: [] }), loadMetaConnectionStatus: async () => ({ available: false, connections: [] }), selectMetaAccounts: async () => ({}), prepareMetaCalendarPublishingReview: async () => { throw new Error('Calendar publishing review unavailable.'); }, confirmMetaCalendarPublishingReview: async () => { throw new Error('Calendar publishing confirmation unavailable.'); }, summarizeMetaConnection: () => ({ status: 'unavailable', label: 'Meta connection unavailable' }), ...(services.metaOrganic || {}) },
     '../components/pod/PodCommandPalette': { default: () => null }, '../components/pod/PodModal': { default: () => null },
   };
   let commandItems = [];
@@ -1415,4 +1416,43 @@ test('creative saves reconcile across tabs but reject previous pod lifecycles an
   await ui.navigate('one'); await ui.tab('Social content');
   callback({ ...row, id: 'late-old-lifecycle' }); await ui.flush();
   assert.equal(editor.savedPreferences.some(value => value.id === 'late-old-lifecycle'), false);
+});
+
+test('live picker retains exact saved discovery and saves explicit publishing targets in both connection orders', async () => {
+  for (const publishingFirst of [false, true]) {
+    const workspace = actionableWorkspace('one');
+    const discovery = { provider: 'instagram', providerAccountId: '201', accountLabel: 'Synthetic IG', accountConnectionId: 'discovery-id' };
+    workspace.preferences = [
+      { active: true, preference_type: 'platform_selection', preference_value: { platforms: ['instagram'] } },
+      { active: true, preference_type: 'account_target_selection', preference_value: { targets: { instagram: [discovery] } } },
+    ];
+    const records = [
+      { id: 'discovery-id', provider: 'instagram', providerAccountId: '201', accountLabel: 'Synthetic IG', status: 'connected', connectionIntent: 'discovery' },
+      { id: 'publishing-id', provider: 'instagram', providerAccountId: '201', accountLabel: 'Synthetic IG', status: 'connected', connectionIntent: 'publish' },
+    ];
+    const calls = [];
+    const ui = await workspaceHarness(workspace, {
+      saveAccountTargetSelection: async (_pod, targets) => { calls.push(['selection', targets]); return {}; },
+      saveSocialPosts: async (id, posts) => confirmRows(id, posts),
+      savePostTargetSnapshots: async (id, snapshots) => { calls.push(['snapshots', snapshots]); return confirmSnapshotRows(id, snapshots); },
+      ai: { requestSocialContent: async () => ({ posts: [{ platformKey: 'instagram', platformName: 'Instagram', content: 'Synthetic caption', characterCount: 17, contentStyle: 'Image' }] }) },
+      metaOrganic: { loadMetaConnectionStatus: async () => ({ available: true, connections: publishingFirst ? [...records].reverse() : records }) },
+    });
+    await ui.tab('Social accounts');
+    const checkbox = label => ui.nodes().find(node => node.type === 'input' && node.props['aria-label'] === label);
+    assert.equal(checkbox('Synthetic IG · Account discovery').props.checked, true);
+    assert.equal(checkbox('Synthetic IG · Publishing access').props.checked, false);
+    const choices = ui.nodes().filter(node => node.type === 'span' && node.children?.some(child => child.type === 'input' && child.props['aria-label']?.startsWith('Synthetic IG')));
+    assert.equal(new Set(choices.map(node => node.props.key)).size, 2);
+    await checkbox('Synthetic IG · Publishing access').props.onChange({ target: { checked: true } });
+    await ui.flush();
+    assert.equal(calls[0][1].instagram[0].accountConnectionId, 'publishing-id');
+    assert.equal(workspace.preferences[1].preference_value.targets.instagram[0].accountConnectionId, 'discovery-id');
+    assert.equal(checkbox('Synthetic IG · Account discovery').props.checked, false);
+    assert.equal(checkbox('Synthetic IG · Publishing access').props.checked, true);
+    await ui.tab('Social content');
+    await ui.button('Generate content').props.onClick();
+    await ui.flush();
+    assert.equal(calls.find(call => call[0] === 'snapshots')[1][0].targets[0].accountConnectionId, 'publishing-id');
+  }
 });

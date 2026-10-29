@@ -1,14 +1,15 @@
 import { Link } from 'react-router-dom';
 import { ArrowUpRight, Check, ArrowRight } from 'lucide-react';
 import PlatformMark from './PlatformMark';
+import PlatformMarquee from './PlatformMarquee';
 
 export default function MarketingHero() {
   return <>
     <section className="editorial-hero" aria-labelledby="marketing-promise">
       <div className="editorial-hero-copy">
-        <p className="eyebrow">Your brand. Its own AI marketing pod.</p>
-        <h1 id="marketing-promise">Less blank page.<br />More <em>brand magic.</em></h1>
-        <p className="editorial-intro">Turn your website and photos into a clear marketing direction — then build the campaign around it.</p>
+        <h1 id="marketing-promise">Your brand.<br />Its own AI <em>marketing pod.</em></h1>
+        <p className="editorial-hero-tagline">Less blank page.<br />More <em>brand magic.</em></p>
+        <p className="editorial-intro">Turn your website into a marketing powerhouse. Add it to a pod and let Dovroyn AI build your campaign.</p>
         <div className="editorial-actions">
           <Link className="button button-primary button-lg" to="/signup">Build my first pod <ArrowUpRight size={19} /></Link>
           <Link className="editorial-text-link" to="/demo-pod">Explore a demo pod <ArrowRight size={17} /></Link>
@@ -34,11 +35,7 @@ export default function MarketingHero() {
         </article>
       </div>
     </section>
-    <section className="editorial-platform-strip" aria-label="Examples of platforms available for planning">
-      <p>One direction.<br /><strong>Made for your channels.</strong></p>
-      <div>{['Instagram', 'Facebook', 'TikTok', 'YouTube', 'LinkedIn', 'Pinterest'].map(name => <span key={name}><PlatformMark platform={name} size={25} /><span>{name}</span></span>)}</div>
-      <small>Planning & drafts.<br />Connections depend on provider availability.</small>
-    </section>
+    <PlatformMarquee />
     <section className="editorial-workspace-intro">
       <div><p className="eyebrow">A home for every brand</p><h2>Your sources in.<br /><em>Your story comes together.</em></h2></div>
       <p>Start with the source. Review the AI analysis. Shape the direction before choosing channels and creating content. Explore the fictional pod below.</p>

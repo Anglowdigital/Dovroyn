@@ -42,7 +42,7 @@ export function normalizeAccountTargets(value, expectedPlatform = '') {
 }
 
 function targetSetKey(targets) {
-  return normalizeAccountTargets(targets).map((target) => `${target.provider}:${target.providerAccountId}:${target.accountLabel}`).sort().join('|');
+  return normalizeAccountTargets(targets).map((target) => `${target.provider}:${target.providerAccountId}:${target.accountConnectionId || ''}:${target.accountLabel}`).sort().join('|');
 }
 
 function parsePreferenceValue(value) {
