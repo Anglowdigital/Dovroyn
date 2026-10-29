@@ -37,11 +37,29 @@ export function imageReferenceKey(reference) {
   return reference?.kind === 'upload' ? `upload:${reference.storage_path}` : reference?.kind === 'source' ? `source:${reference.url}` : '';
 }
 
-export function latestCreativeReview(preferences, podId, postId) {
+// Match PostgreSQL created_at DESC, id DESC, including sub-millisecond precision.
+function reviewTime(value) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return '';
+  const fraction = String(value).match(/\.(\d+)(?:Z|[+-]\d{2}:?\d{2})$/i)?.[1] || '';
+  return new Date(parsed).toISOString().slice(0, 19) + '.' + fraction.padEnd(9, '0');
+}
+
+export function latestCreativeReviewEntry(preferences, podId, postId) {
   return list(preferences).map((row, index) => ({ row, index })).filter(({ row }) => row.pod_id === podId && row.active !== false && row.preference_type === 'creative_review')
-    .sort((a, b) => (Date.parse(b.row.created_at) || 0) - (Date.parse(a.row.created_at) || 0) || b.index - a.index)
-    .map(({ row }) => { try { return typeof row.preference_value === 'string' ? JSON.parse(row.preference_value) : row.preference_value; } catch { return null; } })
-    .find((value) => value?.post_id === postId) || null;
+    .sort((a, b) => {
+      const left = reviewTime(a.row.created_at);
+      const right = reviewTime(b.row.created_at);
+      if (left !== right) return left < right ? 1 : -1;
+      if (a.row.id && b.row.id && a.row.id !== b.row.id) return a.row.id < b.row.id ? 1 : -1;
+      return b.index - a.index;
+    })
+    .map(({ row }) => { try { return { row, value: typeof row.preference_value === 'string' ? JSON.parse(row.preference_value) : row.preference_value }; } catch { return null; } })
+    .find((entry) => entry?.value?.post_id === postId) || null;
+}
+
+export function latestCreativeReview(preferences, podId, postId) {
+  return latestCreativeReviewEntry(preferences, podId, postId)?.value || null;
 }
 
 export function initialCreativeHeadline(content = '') {

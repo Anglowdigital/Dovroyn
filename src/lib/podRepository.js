@@ -1,4 +1,5 @@
 import { supabase, supabaseConfigured } from './supabaseClient';
+import { persistCreativeDraft } from './creativeDraft.js';
 import { persistPodDirectionApproval, persistPodDirectionOverride } from './podDirection.js';
 import { normalizePodLearning, selectPodCompetitorSnapshot } from './podLearning.js';
 import {
@@ -266,6 +267,8 @@ export const savePostTargetSnapshots = (podId, snapshots) => persistPostTargetSn
 export const saveCalendarItems = (podId, items) => persistCalendarItems(requireSupabase(), podId, items);
 export const saveCampaignDecision = (podId, decision) => persistCampaignDecision(requireSupabase(), podId, decision);
 export const saveBudgetPlan = (podId, plan) => persistBudgetPlan(requireSupabase(), podId, plan);
+export const saveCreativeDraft = (podId, post, headline, cta, selected, brandName) => persistCreativeDraft(requireSupabase(), podId, post, headline, cta, selected, brandName);
+
 export const savePreferenceDecision = (podId, type, value) => persistPreferenceDecision(requireSupabase(), podId, type, value);
 export const saveHolidayPreference = (podId, preference) => persistHolidayPreference(requireSupabase(), podId, preference);
 

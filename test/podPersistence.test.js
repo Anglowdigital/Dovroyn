@@ -510,7 +510,7 @@ async function workspaceHarness(workspace, services = {}) {
     ...services,
   };
   const modules = {
-    '../components/pod/CreativeReview': { default: () => null },
+    '../components/pod/CreativeReview': { default: services.CreativeReview || (() => null) },
     '../components/PlatformMark': { default: () => null },
     '../components/pod/PodJourney': { default: () => null },
     react: hooks, 'react-router-dom': { Link: ({ children }) => h('a', {}, children), useParams: () => ({ podId: currentPodId }) },
@@ -1395,6 +1395,27 @@ test('saved unavailable targets are historical only and are not used for new dra
   await ui.flush();
   assert.deepEqual(calls[0][0].targetAccounts, []);
   assert.doesNotMatch(ui.text(), /New caption.*Revoked Instagram/);
+});
+
+test('creative saves reconcile across tabs but reject previous pod lifecycles and foreign rows', async () => {
+  let editor;
+  const workspace = savedWorkspace({ posts: [{ id: 'creative-post', platform: 'facebook', body: 'Caption', status: 'draft' }] });
+  const ui = await workspaceHarness(workspace, { CreativeReview: props => { editor = props; return null; }, loadPodWorkspace: async podId => ({ ...workspace, pod: { ...workspace.pod, id: podId } }) });
+  await ui.tab('Social content');
+  const callback = editor.onSaved;
+  await ui.tab('Calendar');
+  const row = { id: 'draft-row', pod_id: 'one', active: true, preference_type: 'creative_review', preference_value: { post_id: 'creative-post', status: 'draft' } };
+  callback(row); await ui.flush(); await ui.tab('Social content');
+  assert.ok(editor.savedPreferences.some(value => value.id === row.id));
+  const current = editor.onSaved;
+  current({ ...row, id: 'foreign', pod_id: 'two' }); await ui.flush();
+  assert.equal(editor.savedPreferences.some(value => value.id === 'foreign'), false);
+  await ui.navigate('two'); await ui.tab('Social content');
+  callback({ ...row, id: 'late-old-pod' }); await ui.flush();
+  assert.equal(editor.savedPreferences.some(value => value.id === 'late-old-pod'), false);
+  await ui.navigate('one'); await ui.tab('Social content');
+  callback({ ...row, id: 'late-old-lifecycle' }); await ui.flush();
+  assert.equal(editor.savedPreferences.some(value => value.id === 'late-old-lifecycle'), false);
 });
 
 test('live picker retains exact saved discovery and saves explicit publishing targets in both connection orders', async () => {
