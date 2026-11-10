@@ -336,6 +336,46 @@ async function readBoundedResponse(response, maxBytes) {
   }
 }
 
+const MAX_ANALYSIS_IMAGE_BYTES = 2 * 1024 * 1024;
+const ANALYSIS_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
+
+export async function fetchWebsiteImageBytes(rawUrl, pageUrl) {
+  const signal = AbortSignal.timeout(3500);
+  const url = await withAbort(() => validatePublicWebsiteUrl(rawUrl), signal);
+  if (url.origin !== new URL(pageUrl).origin) return null;
+
+  const response = await fetchPinnedWebsite(url, {
+    signal,
+    maxPageBytes: MAX_ANALYSIS_IMAGE_BYTES,
+    headers: { 'User-Agent': 'DovroynWebsiteAnalyzer/1.0' },
+  });
+  const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  const length = Number(response.headers.get('content-length') || 0);
+  // This transport does not follow redirects. Only inspect raster image bodies.
+  if (!response.ok || !ANALYSIS_IMAGE_TYPES.has(contentType) || length > MAX_ANALYSIS_IMAGE_BYTES) {
+    await response.body.cancel().catch(() => undefined);
+    return null;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, bytes);
+      bytes += value.byteLength;
+      if (bytes > MAX_ANALYSIS_IMAGE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export function extractReadableText(html) {
   return decodeHtmlEntities(stripInertContent(html))
     .replace(/<br\s*\/?\s*>/gi, '\n')

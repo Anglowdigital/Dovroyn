@@ -1,4 +1,4 @@
-import { fetchWebsiteText, validatePublicWebsiteUrl } from './webSource.js';
+import { fetchWebsiteImageBytes, fetchWebsiteText, validatePublicWebsiteUrl } from './webSource.js';
 
 const MAX_PAGES = 5;
 const MAX_TOTAL_READABLE_CHARS = 40_000;
@@ -156,4 +156,41 @@ export async function fetchWebsiteIntelligence(rawUrl, options = {}) {
   }
 
   return { rootUrl: rootFinalUrl.toString(), pages, totalReadableChars };
+}
+
+function isRasterImage(bytes) {
+  return bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+    || bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))
+    || ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6))
+    || (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP')
+    || bytes.toString('ascii', 4, 12) === 'ftypavif';
+}
+
+export async function loadWebsiteAnalysisImages(website, media, uploadedImages, slots) {
+  if (!website || slots <= 0) return [];
+  const candidates = media.filter(({ url }) => !uploadedImages.includes(url) && !containsBlockedRoute(new URL(url).pathname));
+  // Prefer product and brand imagery over logos and icons. Keep crawl order within each group.
+  candidates.sort((a, b) => Number(a.role === 'brand_logo') - Number(b.role === 'brand_logo'));
+  const results = await Promise.all(candidates.slice(0, slots).map(async (item, index) => {
+    try {
+      const bytes = await fetchWebsiteImageBytes(item.url, item.source_url);
+      if (!bytes || !isRasterImage(bytes)) return null;
+      const { default: sharp } = await import('sharp');
+      const image = sharp(bytes, { limitInputPixels: 16_000_000 });
+      const { format, pages } = await image.metadata();
+      if (!['jpeg', 'png', 'webp', 'gif', 'heif'].includes(format) || pages > 1) return null;
+      const jpeg = await image.rotate().resize(768, 768, { fit: 'inside', withoutEnlargement: true })
+        .flatten({ background: '#ffffff' }).jpeg({ quality: 82 }).toBuffer();
+      return {
+        url: item.url,
+        pageReference: website.pages.find(({ url }) => url === item.source_url).sourceReference,
+        sourceReference: `website_image_${index + 1}`,
+        imageUrl: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
+      };
+    } catch {
+      // Broken, unsupported, oversized and unavailable images must not block page analysis.
+      return null;
+    }
+  }));
+  return results.filter(Boolean);
 }
