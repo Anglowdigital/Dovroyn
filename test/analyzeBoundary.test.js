@@ -100,7 +100,7 @@ test('photos-only analysis advertises and accepts image evidence labels without 
       body: { podId: 'photo-pod', imageUrls: ['https://assets.example/photo.jpg'] },
     }, response);
 
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 200, result.body?.error);
     assert.equal(result.body.analysis.evidence[0].source_reference, 'image_1');
     assert.match(openAIRequest.instructions, /Allowed evidence labels: image_1\./);
     assert.doesNotMatch(openAIRequest.instructions, /Allowed evidence labels:[^.]*website/);
@@ -128,6 +128,8 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
   const originalOpenAIKey = process.env.OPENAI_API_KEY;
   let openAIRequest;
   let finalizedPayload;
+  const requestedImages = [];
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVQImWP4jwQYiOMAANuQL9HsugRzAAAAAElFTkSuQmCC', 'base64');
   process.env.VITE_SUPABASE_URL = 'https://supabase.test';
   process.env.VITE_SUPABASE_ANON_KEY = 'public-test-key';
   process.env.OPENAI_API_KEY = 'test-openai-key';
@@ -136,7 +138,9 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
     products_services: ['Barrier cream', 'Skin consultation'],
     best_landing_pages: [{ source_reference: 'website_page_2', reason: 'Clear product offer' }],
     weak_pages: [{ source_reference: 'website_home', issue: 'The value proposition is below the fold' }],
+    content_opportunities: ['Recommendation: publish a product care guide.'],
     evidence: [
+      { source_type: 'image', source_reference: 'website_image_1', finding: 'The product photo has a light background.', confidence: 0.9 },
       { source_type: 'website', source_reference: 'website_home', finding: 'The home page leads with barrier care.', confidence: 0.9 },
       { source_type: 'user', source_reference: 'user_notes', finding: 'The owner prioritises wholesale growth.', confidence: 0.8 },
     ],
@@ -158,11 +162,14 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
       }]);
     }
     if (target === 'https://8.8.8.8/' || target === 'https://8.8.8.8') {
-      return new Response('<title>Aurora home</title><meta name="description" content="Barrier care"><h1>Calm skin</h1><p>Home source text</p><img src="/product.png" alt="Brand product"><a href="/products">Products</a>', { headers: { 'content-type': 'text/html' } });
+      return new Response('<title>Aurora home</title><meta name="description" content="Barrier care"><h1>Calm skin</h1><p>Home source text</p><img src="/product.png" alt="Brand product"><img src="/blocked.png"><img src="/outside-budget.png"><img src="https://1.0.0.1/external.png"><a href="/products">Products</a>', { headers: { 'content-type': 'text/html' } });
     }
     if (target === 'https://8.8.8.8/products') {
       return new Response('<title>Products</title><h1>Barrier cream</h1><p>Product source text</p>', { headers: { 'content-type': 'text/html' } });
     }
+    if (target.endsWith('.png')) requestedImages.push(target);
+    if (target === 'https://8.8.8.8/product.png') return new Response(png, { headers: { 'content-type': 'image/png' } });
+    if (target === 'https://8.8.8.8/blocked.png') return Response.redirect('https://1.0.0.1/external.png');
     if (target === 'https://api.openai.com/v1/responses') {
       openAIRequest = JSON.parse(options.body);
       return jsonResponse({
@@ -189,16 +196,27 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
     await analyzeHandler({
       method: 'POST',
       headers: { authorization: 'Bearer user-token', 'x-forwarded-for': '198.51.100.48' },
-      body: { podId: 'website-pod', notes, imageUrls: [] },
+      body: { podId: 'website-pod', notes, imageUrls: ['https://assets.example/1.jpg', 'https://assets.example/2.jpg', 'https://assets.example/3.jpg'] },
     }, response);
 
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 200, result.body?.error);
     assert.deepEqual(result.body.analysis.products_services, ['Barrier cream', 'Skin consultation']);
     assert.equal(result.body.analysis.source_pages[0].url, 'https://8.8.8.8/');
     assert.equal(result.body.analysis.source_pages[0].extraction_mode, 'page_text');
     assert.equal(result.body.analysis.source_media[0].url, 'https://8.8.8.8/product.png');
     assert.equal(result.body.analysis.source_media[0].approval_status, 'needs_review');
-    assert.deepEqual(result.body.analysis.source_warnings, []);
+    assert.deepEqual(requestedImages, ['https://8.8.8.8/product.png', 'https://8.8.8.8/blocked.png']);
+    assert.equal(result.body.analysis.source_media[0].source_reference, 'website_image_1');
+    assert.equal(result.body.analysis.source_media[1].source_reference, undefined);
+    assert.equal(result.body.analysis.evidence[0].source_type, 'image');
+    assert.match(result.body.analysis.content_opportunities[0], /^Recommendation:/);
+    assert.ok(result.body.analysis.evidence.every(({ finding }) => !finding.includes('product care guide')));
+    const imageInputs = openAIRequest.input[0].content;
+    assert.equal(imageInputs.filter(({ type }) => type === 'input_image').length, 4);
+    const [label, image] = imageInputs.slice(-2);
+    assert.match(label.text, /website_image_1.*website_home/);
+    assert.match(image.image_url, /^data:image\/jpeg;base64,/);
+    assert.match(openAIRequest.instructions, /Keep recommendations out of evidence/);
     assert.equal('pages' in result.body, false);
     assert.equal('website' in result.body, false);
     assert.deepEqual(finalizedPayload.p_analysis, result.body.analysis);
@@ -215,7 +233,7 @@ test('website analysis supplies bounded labelled pages and user notes to the ric
     assert.match(openAIRequest.instructions, /website_home, website_page_2, user_notes/);
 
     const schema = openAIRequest.text.format.schema;
-    assert.deepEqual(schema.properties.evidence.items.properties.source_reference.enum, ['website_home', 'website_page_2', 'user_notes']);
+    assert.deepEqual(schema.properties.evidence.items.properties.source_reference.enum, ['website_home', 'website_page_2', 'user_notes', 'image_1', 'image_2', 'image_3', 'website_image_1']);
     assert.deepEqual(schema.properties.best_landing_pages.items.properties.source_reference.enum, ['website_home', 'website_page_2']);
     assert.deepEqual(schema.properties.weak_pages.items.properties.source_reference.enum, ['website_home', 'website_page_2']);
   } finally {
