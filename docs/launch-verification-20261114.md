@@ -61,7 +61,7 @@ No database schema migration is planned for these launch fixes. Existing subscri
 
 ## Remaining live acceptance checks
 
-- [ ] Deploy the final reviewed commit to Vercel Preview; check public routes, demo tabs, signup/login and all eight displayed prices. Vite's local preview alone does not exercise the deployed `/api` functions.
+- [x] Final code deployed to Vercel Preview. Verified all eight AUD prices, annual selection, signup/login continuation, Terms currency and Aurora demo. Deployed checkout/content reject unsigned calls with HTTP 401. The webhook still reports the known missing Stripe configuration.
 - [ ] Verify authenticated checkout rejects an unknown plan, currency/amount/interval mismatch, or unavailable Stripe configuration. Confirm a valid checkout is bound to the signed-in Dovroyn user.
 - [ ] Complete the isolated payment test and verify the signed webhook persists the correct customer/subscription identity, tier, active paid period and pod allowance. HTTP 200 alone is insufficient: inspect whether the event was actually provisioned or ignored.
 - [ ] Verify the account refreshes to its paid entitlement and can use the appropriate pod allowance. A free pod is already available; a paid checkout unlocks the plan's paid capabilities.
@@ -74,12 +74,18 @@ For webhook troubleshooting, `stripe_not_configured` means Stripe server values 
 
 | Evidence | Final result |
 | --- | --- |
-| Branch / final commit | `fix/launch-verification-20261114` / pending |
-| Pull request / review | Pending |
+| Release code | `1b9f4e4bef6a351487f7120b63977358a7a696c3`, merged to `main` as `fe3f2a48cc401c2d5dd0545881a89d7cf645a4ce`. |
+| Pull request / review | [PR #63](https://github.com/Anglowdigital/Dovroyn/pull/63) merged after independent focused review and 525 passing tests. |
 | Final test and build results | 525/525 passing; Vite production build passed; `git diff --check` clean. |
-| Preview deployment / smoke checks | Pending |
-| Production deployment / commit | Pending |
-| Stripe checkout → subscription → pod access | Pending |
-| Authenticated OpenAI generation → saved draft → reload | Pending |
+| Preview deployment / smoke checks | [Preview](https://dovroyn-3c0xt0ruk-anglowdigital.vercel.app/pricing), deployment `dpl_7v63CDCuHrBWgwogK14ocpNtMeG2`, READY. Public page and authentication-boundary checks passed. |
+| Production deployment / commit | Deployment `dpl_CSnj1zYJzx3A8SUzUWJaPmuzb4TM`, release commit `fe3f2a48cc401c2d5dd0545881a89d7cf645a4ce`, READY. Updated AUD prices verified at [dovroyn.com/pricing](https://dovroyn.com/pricing). |
+| Stripe checkout → subscription → pod access | Blocked on the correct Stripe server API key and webhook signing secret, followed by a controlled payment test. No payment was made during verification. |
+| Authenticated OpenAI generation → saved draft → reload | Awaiting Dovroyn sign-in and an eligible test pod; key presence alone is not success. |
 
 Record statuses, non-sensitive error categories and verification times here. Never add secret values, payment data or customer/account identifiers.
+
+## Live pricing evidence
+
+Captured from the production pricing page after release. This screenshot contains public plan data only.
+
+![Verified live AUD pricing](launch-verification-20261114/pricing-live.jpg)
