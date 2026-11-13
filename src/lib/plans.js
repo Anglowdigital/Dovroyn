@@ -1,4 +1,11 @@
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+export const PLAN_CURRENCY = 'AUD';
+const priceFormatter = new Intl.NumberFormat('en-AU', {
+  style: 'currency',
+  currency: PLAN_CURRENCY,
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
 
 export const PLAN_ENTITLEMENTS = Object.freeze({
   free: Object.freeze({
@@ -60,6 +67,26 @@ export const TIER_LIMITS = Object.freeze(
 
 export function getPlan(tier = 'free') {
   return PLAN_ENTITLEMENTS[tier] || PLAN_ENTITLEMENTS.free;
+}
+
+export function formatPlanPrice(tier, billing = 'monthly') {
+  const plan = getPlan(tier);
+  const amount = billing === 'yearly' ? plan.yearlyPrice : plan.monthlyPrice;
+  return `${PLAN_CURRENCY} ${priceFormatter.format(amount)}`;
+}
+
+export function getPlanSelection(search) {
+  const params = new URLSearchParams(search);
+  const tier = params.get('plan');
+  const billing = params.get('billing') || 'monthly';
+  if (!Object.hasOwn(PLAN_ENTITLEMENTS, tier) || tier === 'free' || !['monthly', 'yearly'].includes(billing)) return null;
+  return { tier, billing };
+}
+
+export function getPlanSelectionQuery(tier, billing = 'monthly') {
+  return getPlanSelection(new URLSearchParams({ plan: tier, billing }))
+    ? `?plan=${tier}&billing=${billing}`
+    : '';
 }
 
 export function canCreatePod(tier, currentPodCount) {

@@ -56,14 +56,8 @@ test('pricing, account and preview surfaces sell planning allowances without pro
     assert.doesNotMatch(commercialCopy, misleading);
   }
 
-  for (const days of [2, 3, 6, 7]) {
-    assert.equal(
-      (source.match(new RegExp(`${days} campaign content-planning days per week`, 'g')) || []).length,
-      2,
-      `both public pricing tables must preserve the ${days}-day planning allowance`,
-    );
-    assert.match(account, new RegExp(`${days} campaign content-planning days per week`));
-  }
+  // billingUi.test.js checks the rendered allowances on both pricing surfaces
+  // and Account. Shared plan data no longer duplicates each literal in source.
 
   assert.match(landing, /Direct provider connections, publishing, and ad actions are not available yet/i);
   assert.match(account, /Direct social connections and publishing are not available yet/i);

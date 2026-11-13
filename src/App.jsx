@@ -74,8 +74,9 @@ import PlatformMark from './components/PlatformMark';
 import { supabase, supabaseConfigured } from './lib/supabaseClient';
 import Header from './components/Header';
 import BrandLogo from './components/BrandLogo';
+import CheckoutButton from './components/CheckoutButton';
 import Footer from './components/Footer';
-import { PLAN_ENTITLEMENTS, hasActivePaidAccess } from './lib/plans.js';
+import { PLAN_ENTITLEMENTS, formatPlanPrice, getPlanSelection, getPlanSelectionQuery, hasActivePaidAccess } from './lib/plans.js';
 import { verifyPurchase, trackVerifiedPurchase, purchaseLoginPath, purchaseReturnPath } from './lib/purchaseConversion.js';
 import AiPodAssistant from './components/AiPodAssistant';
 import PodsPage from './pages/Pods';
@@ -120,17 +121,6 @@ function GoogleConsentBanner() {
     </aside>
   );
 }
-
-const STRIPE_PRICING_LINKS = {
-  starter_monthly: import.meta.env.VITE_STRIPE_STARTER_MONTHLY || null,
-  starter_yearly: import.meta.env.VITE_STRIPE_STARTER_YEARLY || null,
-  growth_monthly: import.meta.env.VITE_STRIPE_GROWTH_MONTHLY || null,
-  growth_yearly: import.meta.env.VITE_STRIPE_GROWTH_YEARLY || null,
-  pro_monthly: import.meta.env.VITE_STRIPE_PRO_MONTHLY || null,
-  pro_yearly: import.meta.env.VITE_STRIPE_PRO_YEARLY || null,
-  scale_monthly: import.meta.env.VITE_STRIPE_SCALE_MONTHLY || null,
-  scale_yearly: import.meta.env.VITE_STRIPE_SCALE_YEARLY || null,
-};
 
 const LANDING_SECTIONS = [
   {
@@ -277,9 +267,6 @@ const PLATFORMS = [
 
 const PRICING_TIERS = [
   {
-    name: 'Free',
-    monthly: '$0',
-    yearly: '$0',
     bestFor: 'See what a pod can do. Upgrade to unlock your full marketing plan.',
     features: [
       '1 active pod',
@@ -291,13 +278,10 @@ const PRICING_TIERS = [
       'Campaign calendar planning — upgrade to unlock',
       'Budget tracking — upgrade to unlock',
     ],
-    stripeKey: null,
+    key: 'free',
     highlight: false,
   },
   {
-    name: 'Starter Pod',
-    monthly: '$89',
-    yearly: '$855',
     bestFor: 'Best for one brand, launch, or campaign.',
     features: [
       '1 active pod',
@@ -309,12 +293,9 @@ const PRICING_TIERS = [
       'Manual budget tracking',
       'Core pod workspace',
     ],
-    stripeKey: 'starter',
+    key: 'starter',
   },
   {
-    name: 'Growth Pods',
-    monthly: '$249',
-    yearly: '$2,390',
     bestFor: 'Best for small businesses and creators with multiple offers.',
     features: [
       'Up to 3 active pods',
@@ -327,12 +308,9 @@ const PRICING_TIERS = [
       'Ad analysis preview',
       'Extra campaign content-planning days available as add-ons',
     ],
-    stripeKey: 'growth',
+    key: 'growth',
   },
   {
-    name: 'Pro Marketing Pods',
-    monthly: '$599',
-    yearly: '$5,750',
     bestFor: 'Best for brands running multiple campaigns.',
     features: [
       'Up to 7 active pods',
@@ -344,12 +322,9 @@ const PRICING_TIERS = [
       'Ad analysis dashboard',
       'Approval workflow for AI recommendations',
     ],
-    stripeKey: 'pro',
+    key: 'pro',
   },
   {
-    name: 'Scale / Agency Pods',
-    monthly: '$1,299',
-    yearly: '$12,470',
     bestFor: 'Best for agencies, teams, or users managing many brands.',
     features: [
       'Up to 12 active pods',
@@ -361,99 +336,16 @@ const PRICING_TIERS = [
       'Priority support',
       'Founder support',
     ],
-    stripeKey: 'scale',
+    key: 'scale',
   },
-];
+].map((tier) => ({
+  ...tier,
+  name: PLAN_ENTITLEMENTS[tier.key].name,
+  monthly: formatPlanPrice(tier.key, 'monthly'),
+  yearly: formatPlanPrice(tier.key, 'yearly'),
+}));
 
-const PRICING_PAGE_TIERS = [
-  {
-    name: 'Free',
-    monthly: '$0',
-    yearly: '$0',
-    bestFor: 'See what a pod can do. Upgrade to unlock your full marketing plan.',
-    features: [
-      '1 active pod',
-      'Website or image analysis',
-      'AI brand/tone summary',
-      'Audience and offer direction',
-      'Campaign angles — upgrade to unlock',
-      'Content calendar — upgrade to unlock',
-      'Campaign calendar planning — upgrade to unlock',
-      'Budget tracking — upgrade to unlock',
-    ],
-    stripeKey: null,
-    highlight: false,
-  },
-  {
-    name: 'Starter Pod',
-    monthly: '$89',
-    yearly: '$855',
-    bestFor: 'Best for one brand, launch, or campaign.',
-    features: [
-      '1 active pod',
-      'Website or image analysis',
-      'AI brand/tone summary',
-      'Audience and offer direction',
-      'Campaign angles',
-      '2 campaign content-planning days per week',
-      'Manual budget tracking',
-      'Core pod workspace',
-    ],
-    stripeKey: 'starter',
-  },
-  {
-    name: 'Growth Pods',
-    monthly: '$249',
-    yearly: '$2,390',
-    bestFor: 'Best for small businesses and creators with multiple offers.',
-    features: [
-      'Up to 3 active pods',
-      'Website/app/image analysis',
-      'Campaign strategy',
-      'Social platform recommendations',
-      '3 campaign content-planning days per week',
-      'Holiday-aware calendar planning',
-      'Budget tracking',
-      'Ad analysis preview',
-      'Extra campaign content-planning days available as add-ons',
-    ],
-    stripeKey: 'growth',
-  },
-  {
-    name: 'Pro Marketing Pods',
-    monthly: '$599',
-    yearly: '$5,750',
-    bestFor: 'Best for brands running multiple campaigns.',
-    features: [
-      'Up to 7 active pods',
-      'Full pod analysis',
-      'Launch planning',
-      'Content calendar generation',
-      '6 campaign content-planning days per week',
-      'Budget dashboard',
-      'Ad analysis dashboard',
-      'Approval workflow for AI recommendations',
-    ],
-    stripeKey: 'pro',
-  },
-  {
-    name: 'Scale / Agency Pods',
-    monthly: '$1,299',
-    yearly: '$12,470',
-    bestFor: 'Best for agencies, teams, or users managing many brands.',
-    features: [
-      'Up to 12 active pods',
-      'Multi-brand campaign planning',
-      'Advanced calendar generation',
-      '7 campaign content-planning days per week',
-      'Budget and performance tracking',
-      'Ad analysis recommendations',
-      'Priority support',
-      'Founder support',
-    ],
-    stripeKey: 'scale',
-  },
-];
+const PRICING_PAGE_TIERS = PRICING_TIERS;
 
 const POD_TABS = [
   'Overview', 'Source', 'AI Analysis', 'Brand DNA', 'Audience', 'Offer',
@@ -1211,19 +1103,15 @@ function LandingPage({ session }) {
                   <li key={f} className={f.includes('upgrade to unlock') ? 'locked' : ''}>{f}</li>
                 ))}
               </ul>
-              {session && tier.stripeKey && STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`] ? (
-                <a className="button button-primary" href={STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`]}>Subscribe</a>
-              ) : tier.name === 'Free' ? (
+              {tier.key === 'free' ? (
                 <NavLink className="button button-primary" to="/signup">Start Free</NavLink>
-              ) : !session ? (
-                <NavLink className="button button-primary" to="/signup">Create account</NavLink>
               ) : (
-                <p className="subtle">Checkout is being configured — please try again shortly.</p>
+                <CheckoutButton tier={tier.key} billing={billing} session={session} />
               )}
             </article>
           ))}
         </div>
-        <p className="pricing-billing-note">Save 20% with yearly billing.</p>
+        <p className="pricing-billing-note">All prices are in Australian dollars (AUD). Save 20% with yearly billing.</p>
       </section>
 
       <Footer variant="full" />
@@ -1280,7 +1168,10 @@ function DemoPodPage() {
 function AuthPage({ session, defaultMode = 'login' }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const loginDestination = purchaseReturnPath(location.search);
+  const selectedPlan = getPlanSelection(location.search);
+  const planQuery = selectedPlan ? getPlanSelectionQuery(selectedPlan.tier, selectedPlan.billing) : '';
+  const purchaseDestination = purchaseReturnPath(location.search);
+  const loginDestination = purchaseDestination !== '/dashboard' ? purchaseDestination : planQuery ? `/pricing${planQuery}` : '/dashboard';
   const [mode, setMode] = useState(defaultMode);
 
   useEffect(() => {
@@ -1336,8 +1227,8 @@ function AuthPage({ session, defaultMode = 'login' }) {
       if (data?.session) trackConfirmedSignup(data.session, undefined, window);
       // Some projects return a session immediately — go straight to the app
       // instead of racing two navigations through /login.
-      if (data?.session) navigate('/signup-success', { replace: true });
-      else { setMessage('Check your inbox to confirm your email.'); navigate('/login', { replace: true }); }
+      if (data?.session) navigate(`/signup-success${planQuery}`, { replace: true });
+      else { setMessage('Check your inbox to confirm your email.'); navigate(`/login${planQuery}`, { replace: true }); }
     }
     else { navigate(loginDestination, { replace: true }); }
     setSubmitting(false);
@@ -1376,7 +1267,7 @@ function AuthPage({ session, defaultMode = 'login' }) {
           {message && <p className="subtle">{message}</p>}
           <button className="button button-primary" type="submit" disabled={submitting}>{submitting ? 'Working...' : (mode === 'login' ? 'Log in' : mode === 'signup' ? 'Create account' : 'Set new password')}</button>
         </form>
-        <button className="button button-link" type="button" onClick={() => { setError(''); setMessage(''); const next = mode === 'login' ? 'signup' : 'login'; setMode(next); navigate(`/${next}`); }}>
+        <button className="button button-link" type="button" onClick={() => { setError(''); setMessage(''); const next = mode === 'login' ? 'signup' : 'login'; setMode(next); navigate(`/${next}${location.search}`); }}>
           {mode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Log in'}
         </button>
       </div>
@@ -1385,6 +1276,10 @@ function AuthPage({ session, defaultMode = 'login' }) {
 }
 
 function SignupSuccessPage({ session }) {
+  const location = useLocation();
+  const selectedPlan = getPlanSelection(location.search);
+  const planQuery = selectedPlan ? getPlanSelectionQuery(selectedPlan.tier, selectedPlan.billing) : '';
+  const destination = planQuery ? `/pricing${planQuery}` : '/dashboard';
   useEffect(() => {
     if (!session) return;
     trackConfirmedSignup(session, undefined, window);
@@ -1396,9 +1291,9 @@ function SignupSuccessPage({ session }) {
         <Wordmark />
         <CheckCircle size={38} aria-hidden="true" />
         <h1 style={{ fontSize: '1.5rem' }}>Account created</h1>
-        <p>Your Dovroyn account is ready. Continue to your private Pod workspace.</p>
-        <Link className="button button-primary" to={session ? '/dashboard' : '/login'}>
-          {session ? 'Open my Pods' : 'Log in'}
+        <p>{selectedPlan ? 'Your Dovroyn account is ready. Review your selected plan to continue.' : 'Your Dovroyn account is ready. Continue to your private Pod workspace.'}</p>
+        <Link className="button button-primary" to={session ? destination : `/login${planQuery}`}>
+          {session ? selectedPlan ? 'Review selected plan' : 'Open my Pods' : 'Log in'}
         </Link>
       </div>
     </main>
@@ -1541,7 +1436,11 @@ function PodDashboardPage({ session }) {
 
 /* ─── PRICING PAGE ─── */
 function PricingPage({ session }) {
-  const [billing, setBilling] = useState('monthly');
+  const location = useLocation();
+  const selectedPlan = getPlanSelection(location.search);
+  const selectedBilling = selectedPlan?.billing;
+  const [billing, setBilling] = useState(selectedBilling || 'monthly');
+  useEffect(() => { if (selectedBilling) setBilling(selectedBilling); }, [selectedBilling]);
   return (
     <main className="landing-shell pricing-shell">
       <header className="top-nav">
@@ -1560,6 +1459,7 @@ function PricingPage({ session }) {
       </section>
 
       <div className="pricing-toggle-row">
+        {selectedPlan && <p className="subtle" role="status">Your {PLAN_ENTITLEMENTS[selectedPlan.tier].name} selection is ready. Review the price and select Subscribe to continue.</p>}
         <BillingToggle billing={billing} onChange={setBilling} />
       </div>
 
@@ -1585,20 +1485,16 @@ function PricingPage({ session }) {
                 <li key={f} className={f.includes('upgrade to unlock') ? 'locked' : ''}>{f}</li>
               ))}
             </ul>
-            {session && tier.stripeKey && STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`] ? (
-              <a className="button button-primary" href={STRIPE_PRICING_LINKS[`${tier.stripeKey}_${billing}`]}>Subscribe</a>
-            ) : tier.name === 'Free' ? (
+            {tier.key === 'free' ? (
               <NavLink className="button button-primary" to="/signup">Start Free</NavLink>
-            ) : session ? (
-              <p className="subtle">Checkout is being configured — please try again shortly.</p>
             ) : (
-              <NavLink className="button button-primary" to="/signup">Create account</NavLink>
+              <CheckoutButton tier={tier.key} billing={billing} session={session} />
             )}
           </article>
         ))}
       </section>
 
-      <p className="pricing-billing-note" style={{ textAlign: 'center' }}>Save 20% with yearly billing.</p>
+      <p className="pricing-billing-note" style={{ textAlign: 'center' }}>All prices are in Australian dollars (AUD). Save 20% with yearly billing.</p>
 
       <Footer variant="full" />
     </main>
@@ -1767,7 +1663,7 @@ function TermsPage() {
         <section>
           <h2 className="waitlist-heading" style={{ marginBottom: '0.5rem' }}>4. Subscription and Billing</h2>
           <h3 style={{ fontSize: '1rem', margin: '0.8rem 0 0.3rem', color: 'var(--navy)' }}>4.1 Payment Terms</h3>
-          <p className="subtle">Certain features require a paid subscription. All payments are processed securely through Stripe. By subscribing, you authorise us to charge your designated payment method for the subscription fees plus any applicable taxes. Prices are listed in USD unless otherwise stated.</p>
+          <p className="subtle">Certain features require a paid subscription. All payments are processed securely through Stripe. By subscribing, you authorise us to charge your designated payment method for the subscription fees plus any applicable taxes. Prices are listed in Australian dollars (AUD).</p>
           
           <h3 style={{ fontSize: '1rem', margin: '0.8rem 0 0.3rem', color: 'var(--navy)' }}>4.2 Billing Cycle</h3>
           <p className="subtle">Subscriptions automatically renew at the end of each billing period (monthly or yearly) unless cancelled. You may cancel at any time through your account settings or by contacting us. Cancellations take effect at the end of the current billing period.</p>
