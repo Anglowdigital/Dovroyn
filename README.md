@@ -52,4 +52,13 @@ The later migrations lock analysed sources and add evidence provenance, explicit
 
 ## Release gate
 
+Paid checkout is created by `/api/stripe/checkout` after Supabase authentication. It
+resolves the configured Payment Link for the chosen plan, validates the exact AUD
+price and recurring interval, and binds the Checkout Session and subscription to
+the authenticated user. Both `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` must be
+configured before checkout opens. Browser input cannot supply a price or account ID.
+
+See [launch verification and Stripe setup](docs/launch-verification-20261114.md) for
+the observed production blockers, secure configuration steps and live acceptance checks.
+
 Do not deploy solely because the build passes. First validate Stripe links and webhooks, run all migrations in the intended Supabase project, configure server-only API variables, complete each social provider's OAuth approval, and perform the landing/pod button audit described in `DOVROYN_PRODUCT_SPEC.md`.

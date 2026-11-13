@@ -9,7 +9,8 @@ import {
 
 const env = {
   STRIPE_WEBHOOK_SECRET: 'whsec_test',
-  STRIPE_SECRET_KEY: 'sk_test',
+  STRIPE_SECRET_KEY: 'sk_test_webhook',
+  VITE_STRIPE_STARTER_MONTHLY: 'https://buy.stripe.com/test_DovroynStarter',
   VITE_SUPABASE_URL: 'https://example.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'service-test',
 };
@@ -77,7 +78,7 @@ function adminHarness({
           const rows = existingSequence || [existing];
           const data = rows[Math.min(loadIndex, rows.length - 1)];
           loadIndex += 1;
-          return { data, error: null };
+          return { data: data?.stripe_subscription_id ? { stripe_customer_id: 'cus_owned', tier: 'growth', ...data } : data, error: null };
         },
         update(row) { builder.action = 'update'; builder.row = row; return builder; },
         async insert(row) {
@@ -91,9 +92,17 @@ function adminHarness({
   return { admin, writes, updateAttempts, listCalls };
 }
 
+function legacyPrice(tier = 'starter') {
+  return { id: `price_${tier}`, active: true, livemode: false, currency: 'aud', unit_amount: tier === 'growth' ? 24900 : 8900,
+    type: 'recurring', billing_scheme: 'per_unit', product: { id: `prod_${tier}`, active: true },
+    recurring: { interval: 'month', interval_count: 1, usage_type: 'licensed' } };
+}
+
 function stripeHarness(event, overrides = {}) {
   const calls = [];
   const stripe = {
+    paymentLinks: { async list() { return { data: [{ id: 'plink_dovroyn', active: true, livemode: false, url: env.VITE_STRIPE_STARTER_MONTHLY }], has_more: false }; }, async listLineItems() { return { data: [{ quantity: 1, price: legacyPrice() }], has_more: false }; } },
+    prices: { async retrieve() { return legacyPrice(); } },
     webhooks: { constructEvent(raw, signature, secret) {
       calls.push(['signature', Buffer.from(raw).toString('utf8'), signature, secret]);
       return event;
@@ -103,10 +112,11 @@ function stripeHarness(event, overrides = {}) {
       return {
         id,
         mode: 'subscription',
+        status: 'complete', payment_status: 'paid', livemode: false, payment_link: 'plink_dovroyn',
         customer: 'cus_owned',
         subscription: 'sub_owned',
         customer_details: { email: 'OWNER@example.test' },
-        line_items: { data: [{ description: 'Dovroyn Starter' }] },
+        line_items: { data: [{ description: 'Dovroyn Starter', quantity: 1, price: legacyPrice() }] },
       };
     } } },
     subscriptions: { async retrieve(id) {
@@ -151,7 +161,7 @@ test('checkout webhook verifies exact raw bytes and stores trusted Stripe paymen
   const { admin, writes } = adminHarness({ existing: { user_id: 'user-1', subscription_started_at: '2026-01-01T00:00:00.000Z' } });
   const handler = createStripeWebhookHandler({
     env,
-    createStripe: (key) => { assert.equal(key, 'sk_test'); return stripe; },
+    createStripe: (key) => { assert.equal(key, env.STRIPE_SECRET_KEY); return stripe; },
     createAdmin: (url, key) => { assert.equal(url, env.VITE_SUPABASE_URL); assert.equal(key, env.SUPABASE_SERVICE_ROLE_KEY); return admin; },
     clock: () => '2026-10-11T00:00:00.000Z',
   });
@@ -189,17 +199,17 @@ test('subscription updates and deletions preserve Stripe IDs and normalized stat
       status: 'active',
       current_period_start: 1_700_000_000,
       current_period_end: 1_702_592_000,
-      items: { data: [{ price: { nickname: null, product: { id: 'prod_growth' } } }] },
+      items: { data: [{ quantity: 1, price: legacyPrice('growth') }] },
     };
     const event = { type, data: { object: subscription } };
     const { stripe } = stripeHarness(event);
-    const { admin, writes } = adminHarness();
+    const { admin, writes } = adminHarness({ existing: { user_id: 'user-1', tier: 'growth', stripe_customer_id: 'cus_owned', stripe_subscription_id: 'sub_owned' } });
     const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => admin });
     const { res, result } = response();
     await handler(request(), res);
     assert.equal(result.status, 200);
     assert.equal(result.body.status, expectedStatus);
-    assert.equal(writes[0].operation, 'insert');
+    assert.equal(writes[0].operation, 'update');
     assert.equal(writes[0].row.tier, 'growth');
     assert.equal(writes[0].row.stripe_customer_id, 'cus_owned');
     assert.equal(writes[0].row.stripe_subscription_id, 'sub_owned');
@@ -215,7 +225,7 @@ test('an older subscription event cannot overwrite the currently stored subscrip
     status: 'canceled',
     current_period_start: 1_600_000_000,
     current_period_end: 1_602_592_000,
-    items: { data: [{ price: { nickname: 'Dovroyn Starter' } }] },
+    items: { data: [{ quantity: 1, price: legacyPrice('starter') }] },
   };
   const event = { type: 'customer.subscription.deleted', data: { object: subscription } };
   const { stripe } = stripeHarness(event);
@@ -228,7 +238,7 @@ test('an older subscription event cannot overwrite the currently stored subscrip
   const { res, result } = response();
   await handler(request(), res);
   assert.equal(result.status, 200);
-  assert.deepEqual(result.body, { received: true, ignored: 'different_subscription' });
+  assert.deepEqual(result.body, { received: true, ignored: 'unbound_subscription' });
   assert.deepEqual(writes, []);
 });
 
@@ -239,7 +249,7 @@ test('a concurrent subscription replacement makes the guarded write a safe no-op
     status: 'active',
     current_period_start: 1_700_000_000,
     current_period_end: 1_702_592_000,
-    items: { data: [{ price: { nickname: 'Dovroyn Growth' } }] },
+    items: { data: [{ quantity: 1, price: legacyPrice('growth') }] },
   };
   const event = { type: 'customer.subscription.updated', data: { object: subscription } };
   const { stripe } = stripeHarness(event);
@@ -267,8 +277,8 @@ test('a stale retried checkout cannot replace a newer stored subscription', asyn
   const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_old', mode: 'subscription' } } };
   const { stripe } = stripeHarness(event);
   stripe.subscriptions.retrieve = async (id) => id === 'sub_owned'
-    ? { id, status: 'active', created: 100, current_period_start: 100, current_period_end: 200 }
-    : { id, status: 'active', created: 200, current_period_start: 200, current_period_end: 300 };
+    ? { id, customer: 'cus_owned', status: 'active', created: 100, current_period_start: 100, current_period_end: 200 }
+    : { id, customer: 'cus_owned', status: 'active', created: 200, current_period_start: 200, current_period_end: 300 };
   const { admin, writes } = adminHarness({ existing: {
     user_id: 'user-1',
     subscription_started_at: '2026-01-01T00:00:00.000Z',
@@ -282,8 +292,8 @@ test('a stale retried checkout cannot replace a newer stored subscription', asyn
   assert.deepEqual(writes, []);
 
   stripe.subscriptions.retrieve = async (id) => id === 'sub_owned'
-    ? { id, status: 'active', created: 300, current_period_start: 300, current_period_end: 400 }
-    : { id, status: 'active', created: 200, current_period_start: 200, current_period_end: 300 };
+    ? { id, customer: 'cus_owned', status: 'active', created: 300, current_period_start: 300, current_period_end: 400 }
+    : { id, customer: 'cus_owned', status: 'active', created: 200, current_period_start: 200, current_period_end: 300 };
   const newer = response();
   await handler(request(), newer.res);
   assert.deepEqual(newer.result.body, { received: true, tier: 'starter' });
@@ -297,6 +307,7 @@ test('the newest checkout reconciles and retries after losing a guarded write ra
   const created = { sub_owned: 300, sub_prior: 100, sub_concurrent: 200 };
   stripe.subscriptions.retrieve = async (id) => ({
     id,
+    customer: 'cus_owned',
     status: 'active',
     created: created[id],
     current_period_start: created[id],
@@ -324,6 +335,7 @@ test('same-second checkouts converge with a stable subscription ID tie-breaker',
   const { stripe } = stripeHarness(event);
   stripe.subscriptions.retrieve = async (id) => ({
     id,
+    customer: 'cus_owned',
     status: 'active',
     created: 300,
     current_period_start: 300,
@@ -405,12 +417,116 @@ test('real Stripe SDK accepts the streamed payload and generated signature uncha
   assert.deepEqual(result.body, { received: true, ignored: 'unhandled.test' });
 });
 
-test('paid Payment Links require the existing signed-in session without changing destinations', () => {
+test('paid plans use the authenticated checkout component rather than static payment links', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   for (const marker of ['{PRICING_TIERS.map((tier) => (', '{PRICING_PAGE_TIERS.map((tier) => (']) {
     const pricing = source.split(marker)[1].split('</section>')[0];
-    assert.match(pricing, /session && tier\.stripeKey && STRIPE_PRICING_LINKS/);
-    assert.match(pricing, /href=\{STRIPE_PRICING_LINKS\[`\$\{tier\.stripeKey\}_\$\{billing\}`\]\}/);
-    assert.match(pricing, /<NavLink className="button button-primary" to="\/signup">Create account<\/NavLink>/);
+    assert.match(pricing, /<CheckoutButton tier=\{tier.key\} billing=\{billing\} session=\{session\}/);
+    assert.doesNotMatch(pricing, /STRIPE_PRICING_LINKS|buy\.stripe\.com/);
+  }
+});
+
+const boundUserId = '12345678-1234-4234-8234-123456789abc';
+function boundBillingHarness(type = 'checkout.session.completed') {
+  const binding = { source: 'dovroyn_checkout_v1', user_id: boundUserId, tier: 'starter', billing: 'monthly', price_id: 'price_starter' };
+  const price = { id: 'price_starter', currency: 'aud', unit_amount: 8900, type: 'recurring', billing_scheme: 'per_unit', recurring: { interval: 'month', interval_count: 1, usage_type: 'licensed' } };
+  const subscription = { id: 'sub_bound', customer: 'cus_bound', status: 'active', metadata: { ...binding }, items: { data: [{ quantity: 1, price: structuredClone(price), current_period_start: 1700000000, current_period_end: 1702592000 }] } };
+  const checkout = { id: 'cs_live_bound', mode: 'subscription', status: 'complete', payment_status: 'paid', customer: 'cus_bound', subscription: 'sub_bound', client_reference_id: boundUserId, metadata: { ...binding }, customer_details: { email: 'different-payer@example.test' }, line_items: { data: [{ quantity: 1, price: structuredClone(price) }] } };
+  const event = { type, data: { object: type === 'checkout.session.completed' ? checkout : subscription } };
+  const { stripe } = stripeHarness(event);
+  stripe.checkout.sessions.retrieve = async () => checkout;
+  stripe.subscriptions.retrieve = async () => subscription;
+  const h = adminHarness();
+  h.admin.auth.admin.getUserById = async (id) => ({ data: { user: { id, email: 'authenticated-owner@example.test' } }, error: null });
+  const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => h.admin });
+  return { ...h, checkout, subscription, handler };
+}
+
+test('server-bound checkout activates its authenticated owner despite a different payer email and modern item periods', async () => {
+  const h = boundBillingHarness(); const out = response(); await h.handler(request(), out.res);
+  assert.equal(out.result.status, 200); assert.equal(h.writes.length, 1);
+  assert.equal(h.writes[0].row.user_id, boundUserId); assert.equal(h.writes[0].row.tier, 'starter');
+  assert.equal(h.writes[0].row.stripe_customer_id, 'cus_bound'); assert.equal(h.writes[0].row.stripe_subscription_id, 'sub_bound');
+  assert.equal(h.writes[0].row.current_period_end, new Date(1702592000 * 1000).toISOString());
+  assert.equal(h.listCalls.length, 0);
+});
+
+test('server-bound subscription renewals and cancellation use trusted user ID without customer email lookup', async () => {
+  for (const type of ['customer.subscription.updated', 'customer.subscription.deleted']) {
+    const h = boundBillingHarness(type); const out = response(); await h.handler(request(), out.res);
+    assert.equal(out.result.status, 200); assert.equal(h.writes.length, 1);
+    assert.equal(h.writes[0].row.user_id, boundUserId);
+    assert.equal(h.writes[0].row.status, type.endsWith('deleted') ? 'cancelled' : 'active');
+    assert.equal(h.listCalls.length, 0);
+  }
+});
+
+test('mismatched binding, altered prices, multiple items, missing users and unpaid sessions cannot grant access', async () => {
+  const cases = [
+    (h) => { h.checkout.client_reference_id = 'other-user'; },
+    (h) => { h.subscription.metadata.user_id = '22345678-1234-4234-8234-123456789abc'; },
+    (h) => { h.checkout.line_items.data[0].price.unit_amount = 1; },
+    (h) => { h.subscription.items.data[0].price.currency = 'usd'; },
+    (h) => { h.subscription.items.data.push(structuredClone(h.subscription.items.data[0])); },
+    (h) => { h.checkout.line_items.data[0].quantity = 2; },
+    (h) => { h.checkout.payment_status = 'unpaid'; },
+    (h) => { h.admin.auth.admin.getUserById = async () => ({ data: { user: null }, error: null }); },
+  ];
+  for (const change of cases) {
+    const h = boundBillingHarness(); change(h); const out = response(); await h.handler(request(), out.res);
+    assert.equal(out.result.status, 500); assert.equal(h.writes.length, 0);
+    assert.deepEqual(out.result.body, { error: 'handler_failed' });
+  }
+});
+
+test('legacy public Payment Link client reference cannot choose another account', async () => {
+  const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_legacy', mode: 'subscription' } } };
+  const { stripe } = stripeHarness(event); const original = stripe.checkout.sessions.retrieve;
+  stripe.checkout.sessions.retrieve = async (...args) => ({ ...await original(...args), client_reference_id: 'victim-account' });
+  const h = adminHarness(); const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => h.admin });
+  const out = response(); await handler(request(), out.res);
+  assert.equal(out.result.status, 200); assert.equal(h.writes[0].row.user_id, 'user-1');
+});
+
+test('legacy checkout rejects unrelated links, price or currency drift, unpaid state and additional quantities', async () => {
+  const changes = [
+    (c) => { c.payment_link = 'plink_other_brand'; },
+    (c) => { delete c.payment_link; },
+    (c) => { c.payment_status = 'unpaid'; },
+    (c) => { c.status = 'open'; },
+    (c) => { c.livemode = true; },
+    (c) => { c.line_items.data[0].price.id = 'price_other'; },
+    (c) => { c.line_items.data[0].price.currency = 'usd'; },
+    (c) => { c.line_items.data[0].price.unit_amount = 1; },
+    (c) => { c.line_items.data[0].price.recurring.interval_count = 2; },
+    (c) => { c.line_items.data[0].quantity = 2; },
+    (c) => { c.line_items.data.push(structuredClone(c.line_items.data[0])); },
+  ];
+  for (const change of changes) {
+    const event = { type: 'checkout.session.completed', data: { object: { id: 'cs_live_legacy', mode: 'subscription' } } };
+    const { stripe } = stripeHarness(event); const original = stripe.checkout.sessions.retrieve;
+    stripe.checkout.sessions.retrieve = async (...args) => { const checkout = await original(...args); change(checkout); return checkout; };
+    const h = adminHarness(); const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => h.admin });
+    const out = response(); await handler(request(), out.res);
+    assert.equal(h.writes.length, 0); assert.equal(h.listCalls.length, 0);
+    assert.deepEqual(out.result.body, { received: true, ignored: 'unverified_legacy_checkout' });
+  }
+});
+
+test('legacy subscription events cannot create access or target an account through email or product name', async () => {
+  for (const type of ['customer.subscription.updated', 'customer.subscription.deleted']) {
+    for (const existing of [null,
+      { user_id: 'victim', tier: 'growth', stripe_subscription_id: 'sub_other', stripe_customer_id: 'cus_owned' },
+      { user_id: 'victim', tier: 'growth', stripe_subscription_id: 'sub_owned', stripe_customer_id: 'cus_other' },
+    ]) {
+      const subscription = { id: 'sub_owned', customer: 'cus_owned', status: 'active', current_period_start: 1700000000, current_period_end: 1702592000, items: { data: [{ quantity: 1, price: legacyPrice('growth') }] } };
+      const event = { type, data: { object: subscription } };
+      const { stripe, calls } = stripeHarness(event); const h = adminHarness({ existing });
+      const handler = createStripeWebhookHandler({ env, createStripe: () => stripe, createAdmin: () => h.admin });
+      const out = response(); await handler(request(), out.res);
+      assert.equal(out.result.status, 200); assert.equal(h.writes.length, 0); assert.equal(h.listCalls.length, 0);
+      assert.deepEqual(out.result.body, { received: true, ignored: 'unbound_subscription' });
+      assert.ok(calls.every(([operation]) => !['customer', 'product'].includes(operation)));
+    }
   }
 });

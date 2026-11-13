@@ -80,6 +80,6 @@ test('successful account creation has a dedicated Google Ads confirmation route'
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(source, /Route path="\/signup-success"/);
   assert.match(source, /emailRedirectTo: `\$\{window\.location\.origin\}\/signup-success`/);
-  assert.match(source, /navigate\('\/signup-success', \{ replace: true \}\)/);
+  assert.match(source, /navigate\(`\/signup-success\$\{planQuery\}`, \{ replace: true \}\)/);
   assert.match(source, /Account created/);
 });

@@ -7,7 +7,7 @@ import tls from 'node:tls';
 import { Socket, isIP } from 'node:net';
 import { syncBuiltinESMExports } from 'node:module';
 import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
-import { fetchWebsiteText, validatePublicWebsiteUrl } from '../api/_lib/webSource.js';
+import { fetchWebsiteImageBytes, fetchWebsiteText, validatePublicWebsiteUrl } from '../api/_lib/webSource.js';
 import { key, cert } from './fixtures/webSourceTls.js';
 
 function writeChunkedBody(response, body, encoding, finish = true) {
@@ -361,6 +361,38 @@ test('compressed website text is decoded with the same bounded readable semantic
   mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
   await localWire(t, (_request, response) => response.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' }).end(gzipSync('Public compressed evidence')));
   assert.equal((await fetchWebsiteText('http://public-wire.test')).text, 'Public compressed evidence');
+});
+
+test('decoder EOF cannot accept website text before the HTTP body completes', async (t) => {
+  mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
+  const encoded = Buffer.concat([gzipSync('Public wire evidence'), Buffer.alloc(128)]);
+  let closed;
+  const wire = await localWire(t, (_request, response) => {
+    closed = responseClosed(response);
+    writeChunkedBody(response, encoded, 'gzip', false);
+  });
+  await assert.rejects(() => fetchWebsiteText('http://public-wire.test', { timeoutMs: 100 }), { status: 422 });
+  assert.equal(wire.requests.length, 1);
+  await assertClosedWithin(closed);
+});
+
+test('compressed image bytes require a completed HTTP body', async (t) => {
+  mockDns(t, () => [{ address: '8.8.8.8', family: 4 }]);
+  const imageBytes = Buffer.from('Raster image transport fixture');
+  const encoded = Buffer.concat([gzipSync(imageBytes), Buffer.alloc(128)]);
+  const closed = [];
+  await localWire(t, (request, response) => {
+    closed.push(responseClosed(response));
+    response.writeHead(200, {
+      'content-type': 'image/png', 'content-encoding': 'gzip', 'transfer-encoding': 'chunked',
+    });
+    response.write(encoded);
+    if (request.url === '/complete.png') response.end();
+    else setTimeout(() => response.destroy(), 30);
+  });
+  assert.deepEqual(await fetchWebsiteImageBytes('http://public-wire.test/complete.png', 'http://public-wire.test'), imageBytes);
+  await assert.rejects(() => fetchWebsiteImageBytes('http://public-wire.test/incomplete.png', 'http://public-wire.test'), /aborted|premature|closed/i);
+  await assertClosedWithin(Promise.all(closed));
 });
 
 test('chunked gzip empty members cannot bypass the encoded one-megabyte ceiling', async (t) => {

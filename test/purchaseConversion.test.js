@@ -203,13 +203,14 @@ test('browser requests server verification with bearer token and no client-provi
   }
 });
 
-test('purchase success route calls verification before tracking and does not alter checkout destinations', () => {
+test('purchase success route calls verification before tracking alongside authenticated checkout', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(source, /Route path="\/purchase-success" element={<PurchaseSuccessPage session={session} \/>} \/>/);
   const page = source.split('function PurchaseSuccessPage(')[1].split('/* ─── APP LAYOUT ─── */')[0];
   assert.ok(page.indexOf('verifyPurchase(sessionId, session.access_token)') < page.indexOf('trackVerifiedPurchase(purchase'));
   assert.match(page, /if \(cancelled\) return;/);
-  assert.match(source, /href={STRIPE_PRICING_LINKS\[`\$\{tier\.stripeKey\}_\$\{billing\}`\]}/);
+  assert.match(source, /<CheckoutButton tier=\{tier\.key\} billing=\{billing\} session=\{session\} \/>/);
+  assert.doesNotMatch(source, /STRIPE_PRICING_LINKS/);
 });
 
 test('unmounted purchase page cannot emit a late conversion or show stale confirmation', async () => {

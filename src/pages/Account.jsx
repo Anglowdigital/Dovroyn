@@ -1,53 +1,34 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { supabase, supabaseConfigured } from '../lib/supabaseClient';
-import { redirectToCheckout } from '../lib/stripe';
+import CheckoutButton from '../components/CheckoutButton';
+import { PLAN_ENTITLEMENTS, formatPlanPrice } from '../lib/plans.js';
 
-// Tier display config — matches exact pricing and pod limits
-const TIER_INFO = {
+// Descriptive details supplement the shared plan prices and allowances.
+const TIER_DETAILS = {
   free: {
-    label: 'Free',
-    pods: '1 pod',
-    price: 'Free',
-    posting: null,
     seats: '1 seat',
     note: 'Build your pod free — subscribe to unlock campaign planning tools.',
   },
-  starter: {
-    label: 'Starter Pod',
-    pods: '1 active pod',
-    price: '$89/mo',
-    posting: '2 campaign content-planning days per week',
-    seats: '1 seat',
-    note: null,
-  },
+  starter: { seats: '1 seat', note: null },
   growth: {
-    label: 'Growth Pods',
-    pods: 'Up to 3 active pods',
-    price: '$249/mo',
-    posting: '3 campaign content-planning days per week',
     seats: '3 team seats',
     note: 'Extra campaign content-planning days available as add-ons.',
   },
-  pro: {
-    label: 'Pro Marketing Pods',
-    pods: 'Up to 7 active pods',
-    price: '$599/mo',
-    posting: '6 campaign content-planning days per week',
-    seats: '5 team seats',
-    note: null,
-  },
-  scale: {
-    label: 'Scale / Agency Pods',
-    pods: 'Up to 12 active pods',
-    price: '$1,299/mo',
-    posting: '7 campaign content-planning days per week',
-    seats: 'Unlimited team seats',
-    note: null,
-  },
+  pro: { seats: '5 team seats', note: null },
+  scale: { seats: 'Unlimited team seats', note: null },
 };
 
-function TierBadge({ tier }) {
+const TIER_INFO = Object.fromEntries(Object.entries(PLAN_ENTITLEMENTS).map(([key, plan]) => [key, {
+  label: plan.name,
+  pods: key === 'free' ? '1 pod' : plan.maxPods === 1 ? '1 active pod' : `Up to ${plan.maxPods} active pods`,
+  price: key === 'free' ? 'Free' : `${formatPlanPrice(key, 'monthly')}/month`,
+  yearlyPrice: key === 'free' ? null : `${formatPlanPrice(key, 'yearly')}/year`,
+  posting: plan.weeklyPostingDays ? `${plan.weeklyPostingDays} campaign content-planning days per week` : null,
+  ...TIER_DETAILS[key],
+}]));
+
+function TierBadge({ tier, subscription }) {
   const info = TIER_INFO[tier] || TIER_INFO.free;
   return (
     <article className="panel detail-card" style={{ borderColor: 'var(--gold)' }}>
@@ -55,9 +36,16 @@ function TierBadge({ tier }) {
       <h3 style={{ fontFamily: "'Playfair Display', serif", margin: '0.25rem 0 0.5rem' }}>
         {info.label}
       </h3>
+      {info.yearlyPrice && <p className="subtle">Plan prices</p>}
       <p className="pricing-price" style={{ fontSize: '1.5rem', margin: '0.25rem 0' }}>
         {info.price}
       </p>
+      {info.yearlyPrice && (
+        <>
+          <p className="subtle">or {info.yearlyPrice}</p>
+          <p className="subtle">Subscription status: {(subscription?.status || 'unavailable').replaceAll('_', ' ')}</p>
+        </>
+      )}
       <ul className="simple-list" style={{ listStyle: 'none', padding: 0, margin: '0.75rem 0 0' }}>
         <li style={{ padding: '0.25rem 0', color: 'var(--navy)' }}>✓ {info.pods}</li>
         {info.posting && (
@@ -79,7 +67,7 @@ function TierBadge({ tier }) {
   );
 }
 
-function UpgradeOptions({ currentTier, onCheckoutUnavailable }) {
+function UpgradeOptions({ currentTier, session }) {
   const tiers = [
     { key: 'starter', ...TIER_INFO.starter },
     { key: 'growth',  ...TIER_INFO.growth },
@@ -115,13 +103,9 @@ function UpgradeOptions({ currentTier, onCheckoutUnavailable }) {
             {t.seats && (
               <p className="subtle" style={{ marginBottom: '0.75rem' }}>{t.seats}</p>
             )}
-            <button
-              className="button button-primary"
-              type="button"
-              onClick={() => redirectToCheckout(t.key, 'monthly', { onUnavailable: onCheckoutUnavailable })}
-            >
+            <CheckoutButton tier={t.key} billing="monthly" session={session}>
               Upgrade to {t.label}
-            </button>
+            </CheckoutButton>
           </div>
         ))}
       </div>
@@ -175,15 +159,10 @@ function ProfileSection({ user }) {
 export default function AccountPage({ session, subscription }) {
   const user = session?.user;
   const tier = subscription?.tier || 'free';
-  const [checkoutNotice, setCheckoutNotice] = useState('');
 
   const handleSignOut = async () => {
     if (!supabaseConfigured || !supabase) return;
     await supabase.auth.signOut();
-  };
-
-  const handleCheckoutUnavailable = () => {
-    setCheckoutNotice('Checkout is being configured — please try again shortly.');
   };
 
   return (
@@ -203,11 +182,10 @@ export default function AccountPage({ session, subscription }) {
       <ProfileSection user={user} />
 
       {/* Subscription */}
-      <TierBadge tier={tier} />
+      <TierBadge tier={tier} subscription={subscription} />
 
       {/* Upgrade options */}
-      <UpgradeOptions currentTier={tier} onCheckoutUnavailable={handleCheckoutUnavailable} />
-      {checkoutNotice && <p className="form-error" style={{ padding: '0.5rem' }}>{checkoutNotice}</p>}
+      <UpgradeOptions currentTier={tier} session={session} />
 
       {/* Billing note */}
       {tier !== 'free' && (

@@ -2,6 +2,28 @@ import { createHash } from 'node:crypto';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const DEFAULT_OPENAI_MODEL = 'gpt-6-astra';
+const OPENAI_SERVICE_LIMIT_CODES = new Set([
+  'insufficient_quota',
+  'credit_balance_exhausted',
+  'organization_spend_limit_exceeded',
+  'project_spend_limit_exceeded',
+  'organization_usage_limit_exceeded',
+]);
+
+export function getOpenAIClientError(error, { busyMessage, unavailableMessage }) {
+  if (error?.provider !== 'openai') return null;
+  // Billing and usage limits also return 429, but retrying cannot restore access.
+  if (OPENAI_SERVICE_LIMIT_CODES.has(error.code) || error.type === 'insufficient_quota') {
+    return {
+      status: 503,
+      message: "Dovroyn's AI service has reached a usage limit. Please contact Dovroyn support.",
+    };
+  }
+  return {
+    status: error.status === 429 ? 429 : 503,
+    message: error.status === 429 ? busyMessage : unavailableMessage,
+  };
+}
 
 export function resolveOpenAIModel(workloadVariable, env = process.env) {
   const workloadModel = String(env?.[workloadVariable] || '').trim();
@@ -19,6 +41,7 @@ export async function createOpenAIResponse(body) {
   if (!apiKey) {
     console.error('dovroyn_openai_failure', { category: 'missing_api_key' });
     const error = new Error('OPENAI_API_KEY is not configured.');
+    error.provider = 'openai';
     error.code = 'missing_api_key';
     throw error;
   }
@@ -35,6 +58,7 @@ export async function createOpenAIResponse(body) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(payload?.error?.message || 'OpenAI request failed.');
+    error.provider = 'openai';
     error.status = response.status;
     error.code = payload?.error?.code || 'openai_request_failed';
     error.type = payload?.error?.type || 'openai_error';
