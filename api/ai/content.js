@@ -1,4 +1,4 @@
-import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, resolveOpenAIModel } from '../_lib/openai.js';
+import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, getOpenAIClientError, resolveOpenAIModel } from '../_lib/openai.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit } from '../_lib/rateLimit.js';
 import {
@@ -147,6 +147,11 @@ export default async function handler(req, res) {
     if (reservation?.allowed && !reservation.alreadyReserved && accessToken && podId && generationDate) {
       await releaseContentDay(accessToken, podId, generationDate).catch(() => {});
     }
+    const providerError = getOpenAIClientError(error, {
+      busyMessage: 'AI capacity is busy. Please try again shortly.',
+      unavailableMessage: 'Content generation is temporarily unavailable.',
+    });
+    if (providerError) return sendJson(res, providerError.status, { error: providerError.message });
     const status = error.status === 429 ? 429 : 503;
     return sendJson(res, status, { error: status === 429 ? 'AI capacity is busy. Please try again shortly.' : (error.message || 'Content generation is temporarily unavailable.') });
   }

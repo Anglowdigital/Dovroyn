@@ -1,4 +1,4 @@
-import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, resolveOpenAIModel } from '../_lib/openai.js';
+import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, getOpenAIClientError, resolveOpenAIModel } from '../_lib/openai.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit, requestIdentity } from '../_lib/rateLimit.js';
 import { finalizePodAnalysis, loadOwnedPod, verifySupabaseUser } from '../_lib/supabaseAuth.js';
@@ -249,9 +249,11 @@ export default async function handler(req, res) {
     const sourceLockedAt = typeof result === 'string' ? result : result?.sourceLockedAt;
     return sendJson(res, 200, { ok: true, analysis, sourceLockedAt });
   } catch (err) {
-    if (err && err.code === 'missing_api_key') {
-      return sendJson(res, 500, { error: 'AI analysis is not configured yet. The site owner needs to add OPENAI_API_KEY.' });
-    }
+    const providerError = getOpenAIClientError(err, {
+      busyMessage: 'AI analysis is busy. Please try again shortly.',
+      unavailableMessage: 'AI analysis is temporarily unavailable.',
+    });
+    if (providerError) return sendJson(res, providerError.status, { error: providerError.message });
     const status = err && Number.isInteger(err.status) ? err.status : 500;
     return sendJson(res, status, { error: (err && err.message) || 'Analysis failed.' });
   }

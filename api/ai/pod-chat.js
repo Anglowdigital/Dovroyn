@@ -1,5 +1,5 @@
 import { buildPodAiContext } from '../_lib/podContext.js';
-import { createOpenAIResponse, createSafetyIdentifier, extractOutputText, resolveOpenAIModel } from '../_lib/openai.js';
+import { createOpenAIResponse, createSafetyIdentifier, extractOutputText, getOpenAIClientError, resolveOpenAIModel } from '../_lib/openai.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit } from '../_lib/rateLimit.js';
 import { MARKETING_TRUTH_RULES } from '../_lib/marketingTruth.js';
@@ -79,6 +79,11 @@ export default async function handler(req, res) {
     }
     return sendJson(res, 200, { answer, memorySaved });
   } catch (error) {
+    const providerError = getOpenAIClientError(error, {
+      busyMessage: 'The pod AI is busy. Please try again shortly.',
+      unavailableMessage: 'This pod AI is temporarily unavailable.',
+    });
+    if (providerError) return sendJson(res, providerError.status, { error: providerError.message });
     const status = error.status === 429 ? 429 : 503;
     return sendJson(res, status, { error: status === 429 ? 'The pod AI is busy. Please try again shortly.' : 'This pod AI is temporarily unavailable.' });
   }

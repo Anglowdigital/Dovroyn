@@ -145,8 +145,16 @@ function fetchPinnedWebsite(url, { signal, headers, maxPageBytes = MAX_PAGE_BYTE
       const body = Readable.toWeb(stream);
       // Bound encoded bytes before decompression; pipeline tears down the response
       // and socket on this cap or cancellation at the separate decoded-byte cap.
-      pipeline(decompress ? [response, boundedWire, stream] : [response, boundedWire], (error) => {
-        if (error) stream.destroy(error);
+      // A decoder can end before the HTTP body (for example, before trailing
+      // compressed padding). Keep that early EOF from accepting an incomplete
+      // response or hiding a later encoded-byte limit failure.
+      const bodyCompletion = new Promise((resolveCompletion) => {
+        pipeline(decompress ? [response, boundedWire, stream] : [response, boundedWire], (error) => {
+          if (error) stream.destroy(error);
+          // Resolve the outcome so cancellation/rejected response headers cannot
+          // leave an unobserved promise rejection.
+          resolveCompletion(error || null);
+        });
       });
       resolve({
         url: url.toString(),
@@ -159,6 +167,7 @@ function fetchPinnedWebsite(url, { signal, headers, maxPageBytes = MAX_PAGE_BYTE
           },
         },
         body,
+        bodyCompletion,
       });
     });
     request.on('error', reject);
@@ -306,10 +315,16 @@ function pageTooLargeError() {
   return Object.assign(new Error('That website page is too large to analyse safely.'), { status: 422 });
 }
 
+async function requireCompletedBody(response) {
+  const error = await response.bodyCompletion;
+  if (error) throw error;
+}
+
 async function readBoundedResponse(response, maxBytes) {
   if (!response.body?.getReader) {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength > maxBytes) throw pageTooLargeError();
+    await requireCompletedBody(response);
     return new TextDecoder().decode(bytes);
   }
 
@@ -329,6 +344,7 @@ async function readBoundedResponse(response, maxBytes) {
       }
       body += decoder.decode(bytes, { stream: true });
     }
+    await requireCompletedBody(response);
     body += decoder.decode();
     return body;
   } finally {
@@ -363,7 +379,10 @@ export async function fetchWebsiteImageBytes(rawUrl, pageUrl) {
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) return Buffer.concat(chunks, bytes);
+      if (done) {
+        await requireCompletedBody(response);
+        return Buffer.concat(chunks, bytes);
+      }
       bytes += value.byteLength;
       if (bytes > MAX_ANALYSIS_IMAGE_BYTES) {
         await reader.cancel().catch(() => undefined);

@@ -141,7 +141,9 @@ test('duplicate month: repeated calendar generation returns existing Pod rows wi
   assert.ok([...db.requests[0].query].some(([key, value]) => key === 'scheduled_date' && value === 'lt.2026-11-01'));
 });
 
-test('calendar publishing review requires exact rendered image load before confirm and ignores stale errors', async () => {
+test('calendar publishing review requires exact rendered image load before confirm and ignores stale errors', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-12T00:00:00.000Z') });
+  t.after(() => t.mock.timers.reset());
   const calls = [];
   const workspace = savedWorkspace({
     calendarItems: [{
@@ -194,7 +196,9 @@ test('calendar publishing review requires exact rendered image load before confi
   assert.match(ui.text(), /Queue status:\s+queued/);
 });
 
-test('calendar publishing review ignores stale image events from a replaced candidate', async () => {
+test('calendar publishing review ignores stale image events from a replaced candidate', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-12T00:00:00.000Z') });
+  t.after(() => t.mock.timers.reset());
   let prepareCount = 0;
   const workspace = savedWorkspace({
     calendarItems: [{
@@ -251,7 +255,9 @@ test('calendar publishing review ignores stale image events from a replaced cand
   assert.match(ui.text(), /12 Oct 2026, 12:00 UTC/);
 });
 
-test('calendar publishing review requires every account-specific render for one calendar row', async () => {
+test('calendar publishing review requires every account-specific render for one calendar row', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-12T00:00:00.000Z') });
+  t.after(() => t.mock.timers.reset());
   const calls = [];
   const workspace = savedWorkspace({
     calendarItems: [{
@@ -317,7 +323,9 @@ test('calendar publishing review requires every account-specific render for one 
   ]);
 });
 
-test('blocked calendar publishing review shows per-account outcome and prepare-again path', async () => {
+test('blocked calendar publishing review shows per-account outcome and prepare-again path', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-12T00:00:00.000Z') });
+  t.after(() => t.mock.timers.reset());
   const workspace = savedWorkspace({
     calendarItems: [{
       id: 'cal-publish-1',
