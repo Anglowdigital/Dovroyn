@@ -247,6 +247,11 @@ kbd {
 .pod-ai-message-assistant span { color: var(--gold); }
 .pod-ai-message-user { align-self: flex-end; color: white; background: var(--navy); }
 .pod-ai-message-user span { color: var(--gold-soft); }
+.pod-ai-sources { display: grid; gap: 0.28rem; padding-top: 0.25rem; border-top: 1px solid var(--gold-border); }
+.pod-ai-sources strong { color: var(--navy); font-size: 0.68rem; }
+.pod-ai-sources ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.2rem; }
+.pod-ai-sources a { color: var(--navy); font-size: 0.72rem; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.pod-ai-sources a:hover { color: var(--gold); }
 .pod-ai-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 0.65rem; }
 .pod-ai-composer textarea { width: 100%; padding: 0.78rem; resize: vertical; border: 1px solid var(--gold-border); border-radius: 12px; color: var(--navy); background: var(--panel); outline: none; line-height: 1.45; }
 .pod-ai-composer textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(184, 138, 50, 0.12); }

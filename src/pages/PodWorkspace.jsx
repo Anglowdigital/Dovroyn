@@ -1248,7 +1248,7 @@ function LivePodWorkspace({ session, subscription }) {
             <header className="pod-panel-heading"><div><p className="eyebrow">Private pod intelligence</p><h2>{pod.pod_name} AI</h2><p className="subtle">One Dovroyn AI service, isolated memory for this pod only. It uses this pod's sources, approved direction and corrections.</p></div><StatusPill tone="green">Pod-isolated</StatusPill></header>
             <div className="pod-ai-thread" aria-live="polite">
               {aiMessages.length === 0 && <div className="pod-ai-welcome"><Bot size={22} /><strong>Ask this pod anything</strong><p>I can explain the analysis, refine the direction, plan campaigns or help shape platform-specific content.</p></div>}
-              {aiMessages.map((message) => <article key={message.id || `${message.role}-${message.created_at}`} className={`pod-ai-message pod-ai-message-${message.role}`}><span>{message.role === 'assistant' ? 'Pod AI' : 'You'}</span><p>{message.content}</p></article>)}
+              {aiMessages.map((message) => <PodAiMessage key={message.id || `${message.role}-${message.created_at}`} message={message} />)}
               {aiSending && <article className="pod-ai-message pod-ai-message-assistant"><span>Pod AI</span><p>Thinking inside this pod…</p></article>}
             </div>
             <form className="pod-ai-composer" onSubmit={askPodAi}>
@@ -1527,5 +1527,38 @@ function LivePodWorkspace({ session, subscription }) {
       <PodModal open={modal?.type === 'invite'} title="Invite a collaborator" description="Invitations will be sent only after private pod-membership policies and email delivery are enabled." onClose={() => setModal(null)}><label className="pod-modal-field">Email address<input type="email" placeholder="collaborator@example.com" /></label><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Invite saved as pending setup; no email was sent.')}>Save pending invite</button></PodModal>
       <PodModal open={modal?.type === 'launch'} title="Coming-soon draft created" description="The page stays private until publishing infrastructure and its address are configured." onClose={() => setModal(null)}><div className="pod-provider-message"><Mail /><div><strong>Draft ready inside this pod</strong><p>The page uses the approved brand direction and stores email captures separately from marketing content.</p></div></div><button className="button button-primary" type="button" onClick={() => saveLocalDraft('Coming-soon page draft saved.')}>Save page draft</button></PodModal>
     </section>
+  );
+}
+function parsePodAiMessage(content) {
+  const value = String(content || '');
+  const marker = '\n\nSources:\n';
+  const markerIndex = value.lastIndexOf(marker);
+  if (markerIndex < 0) return { body: value, sources: [] };
+  const sources = value.slice(markerIndex + marker.length).split('\n').map((line) => {
+    const match = line.match(/^-\s+(.+?)\s+\|\s+(https?:\/\/\S+)$/);
+    if (!match) return null;
+    try {
+      const url = new URL(match[2]);
+      return ['http:', 'https:'].includes(url.protocol) ? { title: match[1], url: url.toString() } : null;
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+  return sources.length ? { body: value.slice(0, markerIndex), sources } : { body: value, sources: [] };
+}
+
+function PodAiMessage({ message }) {
+  const display = parsePodAiMessage(message.content);
+  return (
+    <article className={`pod-ai-message pod-ai-message-${message.role}`}>
+      <span>{message.role === 'assistant' ? 'Pod AI' : 'You'}</span>
+      <p>{display.body}</p>
+      {display.sources.length > 0 && (
+        <div className="pod-ai-sources" aria-label="Web sources">
+          <strong>Sources</strong>
+          <ul>{display.sources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul>
+        </div>
+      )}
+    </article>
   );
 }
