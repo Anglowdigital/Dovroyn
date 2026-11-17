@@ -2,7 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import publicChatHandler from '../api/ai/chat.js';
-import { createSafetyIdentifier, DEFAULT_OPENAI_MODEL, extractOutputText, resolveOpenAIModel } from '../api/_lib/openai.js';
+import {
+  appendWebSources,
+  createSafetyIdentifier,
+  DEFAULT_OPENAI_MODEL,
+  extractOutputText,
+  extractWebSources,
+  resolveOpenAIModel,
+} from '../api/_lib/openai.js';
 import { buildPodAiContext } from '../api/_lib/podContext.js';
 import * as webSource from '../api/_lib/webSource.js';
 import { MARKETING_TRUTH_RULES } from '../api/_lib/marketingTruth.js';
@@ -55,6 +62,33 @@ test('completed Responses output is accepted while partial and refusal output fa
     output_text: 'Unsafe shortcut',
     output: [{ type: 'message', status: 'completed', content: [{ type: 'refusal', refusal: 'No' }] }],
   }), /declined/);
+});
+
+test('web-search citations are reduced to safe unique links and persist with the pod answer', () => {
+  const sources = extractWebSources({
+    output: [
+      { type: 'web_search_call', action: { sources: [
+        { title: 'Useful | source', url: 'https://example.com/research' },
+        { title: 'Duplicate', url: 'https://example.com/research' },
+        { title: 'Unsafe', url: 'javascript:alert(1)' },
+      ] } },
+      { type: 'message', content: [{ type: 'output_text', annotations: [
+        { type: 'url_citation', title: 'Official update', url: 'https://official.example/update' },
+      ] }] },
+    ],
+  });
+
+  assert.deepEqual(sources, [
+    { title: 'Useful source', url: 'https://example.com/research' },
+    { title: 'Official update', url: 'https://official.example/update' },
+  ]);
+  assert.equal(appendWebSources('Current answer.', sources), [
+    'Current answer.',
+    '',
+    'Sources:',
+    '- Useful source | https://example.com/research',
+    '- Official update | https://official.example/update',
+  ].join('\n'));
 });
 
 test('shared marketing rules prohibit fabricated proof and unconfirmed external actions', () => {

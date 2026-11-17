@@ -146,8 +146,16 @@ for (const [name, handler] of [['content', contentHandler], ['pod chat', podChat
       assert.match(result.body.posts[0].content, /Seasonal flowers/);
     } else {
       assert.equal(result.body.answer, 'Start with one useful flower care tip.');
+      assert.deepEqual(result.body.sources, []);
       assert.equal(result.body.memorySaved, true);
       assert.equal(result.savedMessages.length, 1);
+      assert.deepEqual(result.providerCalls[0].tools, [{
+        type: 'web_search',
+        search_context_size: 'medium',
+        user_location: { type: 'approximate', country: 'AU', city: 'Perth', region: 'Western Australia' },
+      }]);
+      assert.equal(result.providerCalls[0].tool_choice, 'auto');
+      assert.deepEqual(result.providerCalls[0].include, ['web_search_call.action.sources']);
     }
   });
 }

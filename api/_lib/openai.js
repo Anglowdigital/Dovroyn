@@ -98,3 +98,48 @@ export function extractOutputText(response) {
   if (text.trim()) return text;
   throw new Error('The model returned no text output.');
 }
+
+function safeWebSource(source) {
+  try {
+    const url = new URL(String(source?.url || ''));
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const title = String(source?.title || url.hostname)
+      .replace(/[|\r\n]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 180) || url.hostname;
+    return { title, url: url.toString() };
+  } catch {
+    return null;
+  }
+}
+
+export function extractWebSources(response, limit = 8) {
+  const sources = [];
+  const addSource = (source) => {
+    const clean = safeWebSource(source);
+    if (!clean || sources.some((item) => item.url === clean.url)) return;
+    sources.push(clean);
+  };
+
+  for (const item of Array.isArray(response?.output) ? response.output : []) {
+    if (item?.type === 'message') {
+      for (const content of Array.isArray(item.content) ? item.content : []) {
+        for (const annotation of Array.isArray(content?.annotations) ? content.annotations : []) {
+          if (annotation?.type === 'url_citation') addSource(annotation);
+        }
+      }
+    }
+    if (item?.type === 'web_search_call') {
+      for (const source of Array.isArray(item?.action?.sources) ? item.action.sources : []) addSource(source);
+    }
+  }
+  return sources.slice(0, Math.max(0, limit));
+}
+
+export function appendWebSources(answer, sources) {
+  const cleanAnswer = String(answer || '').trim();
+  if (!sources?.length) return cleanAnswer;
+  const sourceLines = sources.map((source) => `- ${source.title} | ${source.url}`);
+  return `${cleanAnswer}\n\nSources:\n${sourceLines.join('\n')}`;
+}
