@@ -1,4 +1,5 @@
-import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, getOpenAIClientError, resolveOpenAIModel } from '../_lib/openai.js';
+import { createSafetyIdentifier, extractOutputText, resolveOpenAIModel } from '../_lib/openai.js';
+import { createAIResponse, getAIClientError } from '../_lib/aiProvider.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit } from '../_lib/rateLimit.js';
 import {
@@ -102,7 +103,7 @@ export default async function handler(req, res) {
       const platform = getPlatform(key);
       return `${key}: ${platform?.rules?.contentStyle}; hashtag style ${platform?.rules?.hashtagStyle}.`;
     }).join('\n');
-    const response = await createOpenAIResponse({
+    const response = await createAIResponse({
       model: resolveOpenAIModel('OPENAI_CONTENT_MODEL'),
       safety_identifier: createSafetyIdentifier(user.id),
       reasoning: { effort: 'low' },
@@ -128,7 +129,7 @@ export default async function handler(req, res) {
       ].join('\n'),
       text: { verbosity: 'low', format: { type: 'json_schema', name: 'dovroyn_platform_content', strict: true, schema: CONTENT_SCHEMA } },
       max_output_tokens: 8000,
-    });
+    }, { workload: 'CONTENT' });
 
     const generated = JSON.parse(extractOutputText(response)).posts;
     const byPlatform = new Map(generated.map((post) => [post.platform, post]));
@@ -147,7 +148,7 @@ export default async function handler(req, res) {
     if (reservation?.allowed && !reservation.alreadyReserved && accessToken && podId && generationDate) {
       await releaseContentDay(accessToken, podId, generationDate).catch(() => {});
     }
-    const providerError = getOpenAIClientError(error, {
+    const providerError = getAIClientError(error, {
       busyMessage: 'AI capacity is busy. Please try again shortly.',
       unavailableMessage: 'Content generation is temporarily unavailable.',
     });

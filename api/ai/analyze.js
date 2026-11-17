@@ -1,4 +1,5 @@
-import { createSafetyIdentifier, extractOutputText, createOpenAIResponse, getOpenAIClientError, resolveOpenAIModel } from '../_lib/openai.js';
+import { createSafetyIdentifier, extractOutputText, resolveOpenAIModel } from '../_lib/openai.js';
+import { createAIResponse, getAIClientError } from '../_lib/aiProvider.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit, requestIdentity } from '../_lib/rateLimit.js';
 import { finalizePodAnalysis, loadOwnedPod, verifySupabaseUser } from '../_lib/supabaseAuth.js';
@@ -216,7 +217,7 @@ export default async function handler(req, res) {
       multimodalContent.push({ type: 'input_image', image_url: imageUrl, detail: 'low' });
     }
 
-    const response = await createOpenAIResponse({
+    const response = await createAIResponse({
       model: resolveOpenAIModel('OPENAI_ANALYSIS_MODEL'),
       reasoning: { effort: 'medium' },
       instructions: `${PROMPT} Allowed evidence labels: ${sourceReferences.join(', ')}. Use one of those exact values for every source_reference.`,
@@ -224,7 +225,7 @@ export default async function handler(req, res) {
       safety_identifier: createSafetyIdentifier(user.id),
       text: { verbosity: 'low', format: { type: 'json_schema', name: 'pod_brand_analysis', schema: buildAnalysisSchema(sourceReferences, pageReferences), strict: true } },
       max_output_tokens: 24000,
-    });
+    }, { workload: 'ANALYSIS' });
     const modelAnalysis = JSON.parse(extractOutputText(response));
     validatePageProvenance(modelAnalysis, pageReferences);
     const visualReferences = new Set(websiteImageReferences.values());
@@ -249,7 +250,7 @@ export default async function handler(req, res) {
     const sourceLockedAt = typeof result === 'string' ? result : result?.sourceLockedAt;
     return sendJson(res, 200, { ok: true, analysis, sourceLockedAt });
   } catch (err) {
-    const providerError = getOpenAIClientError(err, {
+    const providerError = getAIClientError(err, {
       busyMessage: 'AI analysis is busy. Please try again shortly.',
       unavailableMessage: 'AI analysis is temporarily unavailable.',
     });

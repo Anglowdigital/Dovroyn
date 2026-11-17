@@ -10,9 +10,12 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "3.1170.0",
     "@supabase/supabase-js": "^2.110.0",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/oidc-aws-credentials-provider": "3.3.21",
     "@vitejs/plugin-react": "latest",
+    "ajv": "8.20.0",
     "lucide-react": "^1.23.0",
     "react": "latest",
     "react-dom": "latest",
