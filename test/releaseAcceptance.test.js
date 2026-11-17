@@ -112,7 +112,7 @@ test('release setup accepts one URL-only source and an optional logo without req
 
 test('analysis route keeps source-first evidence ahead of AI generation', () => {
   const source = readFileSync(new URL('../api/ai/analyze.js', import.meta.url), 'utf8');
-  assert.ok(source.indexOf('fetchWebsiteIntelligence(requestedSourceUrl)') < source.indexOf('createOpenAIResponse({'));
+  assert.ok(source.indexOf('fetchWebsiteIntelligence(requestedSourceUrl)') < source.indexOf('createAIResponse({'));
   assert.ok(source.indexOf('const multimodalContent = [{ type:') < source.indexOf('cleanImages.forEach'));
   assert.match(source, /Allowed evidence labels: \$\{sourceReferences\.join\(', '\)\}/);
   assert.match(source, /finalizePodAnalysis\(accessToken, podId, analysis\)/);

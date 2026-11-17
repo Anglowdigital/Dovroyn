@@ -6,7 +6,7 @@ Dovroyn is a React + Vite application for private AI marketing pods, with:
 - Login and signup with Supabase Auth
 - A lean outer pod library and a rich workspace inside each pod
 - Website/photo intake, AI direction approval and overrides, assets, social content, calendars, campaigns, analytics, collaborations, coming-soon pages, and budget/ad review
-- Server-side OpenAI Responses API routes for the public assistant, private pod chat, authenticated pod analysis, and approval-gated content generation
+- Server-side OpenAI web research for private pod chat, plus optional Amazon Bedrock for authenticated analysis, competitor snapshots and approval-gated content generation; the public preview uses local examples
 - Dovroyn's responsive cream, navy, and gold interface with charts, modals, motion, and a command palette
 - Supabase Auth, private storage, row-level ownership policies, and pod persistence
 - Four recurring Stripe subscription tiers with monthly allowance windows
@@ -21,7 +21,7 @@ Dovroyn is a React + Vite application for private AI marketing pods, with:
    ```bash
    cp .env.example .env
    ```
-3. Add the required browser and server values listed in `.env.example`. Keep `OPENAI_API_KEY` server-only and never prefix it with `VITE_`. Dovroyn defaults its four AI workloads to `gpt-6-astra`; `OPENAI_MODEL` changes all four and the workload-specific variables override one route when required.
+3. Add the required browser and server values listed in `.env.example`. Keep `OPENAI_API_KEY` server-only and never prefix it with `VITE_`. OpenAI remains the default provider. `OPENAI_MODEL` changes its shared model and workload-specific variables override individual routes. To use Bedrock alongside OpenAI, follow [Bedrock setup](docs/bedrock-setup.md); configure the AWS role, region and model before changing a provider selector.
 4. Run locally:
    ```bash
    npm run dev

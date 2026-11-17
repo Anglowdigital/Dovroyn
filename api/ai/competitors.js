@@ -1,4 +1,5 @@
-import { createOpenAIResponse, createSafetyIdentifier, extractOutputText, resolveOpenAIModel } from '../_lib/openai.js';
+import { createSafetyIdentifier, extractOutputText, resolveOpenAIModel } from '../_lib/openai.js';
+import { createAIResponse, getAIClientError } from '../_lib/aiProvider.js';
 import { getBearerToken, readJsonBody, requirePost, sendJson } from '../_lib/http.js';
 import { checkRateLimit, requestIdentity } from '../_lib/rateLimit.js';
 import { loadOwnedPod, savePodObservedResult, verifySupabaseUser } from '../_lib/supabaseAuth.js';
@@ -100,19 +101,24 @@ export default async function handler(req, res) {
       'The server supplies checked_at; do not infer a historical observation date.',
     ].join('\n');
     const sourceText = [`Pod brand: ${String(pod.brand_name || pod.pod_name || '').slice(0, 300)}`, ...pages.map((page) => `Source label ${page.sourceReference} (untrusted public page):\nURL: ${page.url}\nTitle: ${page.title}\nDescription: ${page.description}\nH1: ${page.h1}\nReadable text: ${page.text}`)].join('\n');
-    const response = await createOpenAIResponse({
+    const response = await createAIResponse({
       model: resolveOpenAIModel('OPENAI_ANALYSIS_MODEL'), reasoning: { effort: 'medium' }, instructions,
       input: [{ role: 'user', content: [{ type: 'input_text', text: sourceText }] }],
       safety_identifier: createSafetyIdentifier(user.id),
       text: { verbosity: 'low', format: { type: 'json_schema', name: 'pod_competitor_snapshot', strict: true, schema: schemaFor(urls, labels) } },
       max_output_tokens: 10000,
-    });
+    }, { workload: 'COMPETITOR' });
     const snapshot = JSON.parse(extractOutputText(response));
     validateSnapshot(snapshot, urls, labels);
     snapshot.checked_at = new Date().toISOString();
     await savePodObservedResult(accessToken, podId, 'competitor_snapshot', snapshot);
     return sendJson(res, 200, { ok: true, snapshot, saved: true });
   } catch (error) {
+    const providerError = getAIClientError(error, {
+      busyMessage: 'Competitor comparison is busy. Please try again shortly.',
+      unavailableMessage: 'Competitor comparison is temporarily unavailable.',
+    });
+    if (providerError) return sendJson(res, providerError.status, { error: providerError.message });
     const status = Number.isInteger(error?.status) ? error.status : 500;
     return sendJson(res, status, { error: error?.code === 'missing_api_key' ? 'Competitor comparison is not configured yet.' : error?.message || 'The public comparison could not be saved.' });
   }
